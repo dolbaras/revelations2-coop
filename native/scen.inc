@@ -9,6 +9,44 @@
  * `net w door <a> <b> <c>` (state of one set model: action ids, lock word, flags, state byte). */
 #define SF_N 300
 static int scen_door_op(unsigned door, int acttype);
+static void bgl_tick(unsigned now);   /* 6j: loader mirror, below */
+#include "bgl_logic.h"
+static bgl_state_t g_bgl;
+static int g_bgl_mirror = 1;
+static unsigned g_bgl_tx, g_bgl_rx, g_bgl_calls, g_bgl_self_ok, g_bgl_writes, g_bgl_sent_t, g_bgl_scan_t, g_bgl_logs;
+static bgl_t g_bgl_local[BGL_SLOTS], g_bgl_sent[BGL_SLOTS];
+static int g_bgl_local_n, g_bgl_sent_n = -1, g_bgl_was_running;
+typedef void(__attribute__((thiscall)) *bgl_unload_t)(unsigned self);
+static bgl_unload_t o_bgl_unload;
+/* stage change gate: the story stage changes when slot 0 stands on a floor of another stage and the old stage's blocks go away with the change; the human who is still on the old floor falls (s6j1/s6j2).
+ * The hook on the area update (aEpisodeBase vf2, 0x462780) lets the change through only when every other human's floor already belongs to the new stage (or after GATE_MS): while it waits, the area's
+ * own stage id (+0x30) is shown to the game as equal to slot 0's floor stage for the duration of the call. `net w bgl gate 0|1`. */
+#define BGL_GATE_MS 25000
+typedef void(__attribute__((thiscall)) *epi_upd_t)(unsigned self);
+static epi_upd_t o_epi_upd;
+static int g_stage_gate = 1;
+static unsigned g_gate_holds, g_gate_since, g_gate_releases, g_gate_timeouts, g_gate_logs;
+/* puppets in trigger zones (6j, proven by a control run on the pair: SF[18] stayed 0 on the PC where Claire is a puppet while the game's own shape test listed her inside four zones; writing 0 into her slot type
+ * (+0x7920, 2 = remote human) for 3 s set SF[18] there): the action-button system (flag zones and FSM AreaHit zones) registers a human for a button in FUN_0040BFB0(viewer, button) and returns early for
+ * slot type 2. The hook shows the puppet as type 0 for the duration of that one call. `net w bgl pupzones 0|1`. */
+typedef void(__attribute__((thiscall)) *btn_cand_t)(unsigned self, unsigned button);
+static btn_cand_t o_btn_cand;
+static int g_pup_zones;   /* default OFF (6j): proven by hand, the first automatic version disturbed the co-op door (see notes); the scenario-zone-only version is not proven live. `net w bgl pupzones 1` */
+static unsigned g_pup_flips, g_pup_logs;
+
+static void bgl_read(unsigned bg, unsigned off, bgl_t *l)
+{
+    for (unsigned i = 0; i < BGL_SLOTS; i++) l[i].ep = (int)rd32(bg + off + 12 * i), l[i].stage = (int)rd32(bg + off + 12 * i + 4), l[i].block = (int)rd32(bg + off + 12 * i + 8);
+}
+
+static void bgl_fmt(const bgl_t *l, int n, char *s, int size)
+{
+    int o = 0;
+    s[0] = 0;
+    for (int i = 0; i < n && o + 24 < size; i++) o += snprintf(s + o, size - o, "%s[%d,%d,%d]", i ? " " : "", l[i].ep, l[i].stage, l[i].block);
+    if (!n) snprintf(s, size, "-");
+}
+
 static unsigned char g_sf_last[SF_N];
 static int g_sf_watch, g_sf_init, g_sf_log = 400;
 static unsigned g_sf_changes, g_sf_t0, g_sf_scan_t, g_sf_area;
@@ -75,6 +113,7 @@ static void scen_celldoor_tick(unsigned now, unsigned area)
 static void scen_tick(void)
 {
     if (!story_block()) return;
+    bgl_tick(GetTickCount());   /* 6j: the loader mirror (list exchange) runs whenever a session does */
     unsigned area = story_area_id();
     if (area < 100 || area >= 3000 || !game_area()) return;   /* title / menus / loading: the story block holds no stage yet (the flag lookup would walk garbage) */
     unsigned now = GetTickCount();
@@ -329,7 +368,8 @@ static void scen_stages_command(const char *arg, char *out, int size)
  * a new STAGE also runs FUN_00422BF0 (stage resources). Blocks leave when the list no longer holds them (FUN_00466C30). The stage the STORY is in (story+0x140380) changes when aEpisodeBase (0x462780,
  * every frame) sees that player SLOT 0 stands on a floor of another stage (+0x3F54 != the area's id): it creates area aS%04d, whose start (sBioArea_vf10) sets the id.
  *   net w bgl              the lists, the zone registrations, the queue and, for every human slot, the floor ids and the world position
- *   net w bgl req <stage> <block> [episode]   the game's own load order for one block (FUN_00468310), as the zone code gives it */
+ *   net w bgl req <stage> <block> [episode]   the game's own load order for one block (FUN_00468310), as the zone code gives it
+ *   net w bgl hit <stage> <block> [...]       the tail of the zone code: blocks added to the current list, unload / stage start / block loads run */
 static void scen_bgl_command(const char *arg, char *out, int size)
 {
     unsigned bg = rd32(0x1558204), sb = story_block();
@@ -339,7 +379,62 @@ static void scen_bgl_command(const char *arg, char *out, int size)
         return;
     }
     while (*arg == ' ') arg++;
-    if (!strncmp(arg, "req", 3)) {
+    if (!strncmp(arg, "mirror", 6)) {   /* net w bgl mirror [0|1]: the loader serves both humans (6j) */
+        if (arg[6] == ' ' && (arg[7] == '0' || arg[7] == '1')) g_bgl_mirror = arg[7] - '0';
+        char rs[160], ms[160], ls[160];
+        bgl_fmt(g_bgl.remote, g_bgl.remote_n, rs, sizeof rs), bgl_fmt(g_bgl.mo, g_bgl.mo_n, ms, sizeof ms), bgl_fmt(g_bgl_local, g_bgl_local_n, ls, sizeof ls);
+        snprintf(out, size, "loader mirror %s (hook %s, unload step called %u times, %u with the loader as this): my own list %s, the partner's %s, merged-only %s; merged %u, no room %u, dropped %u, slot writes %u; lists sent %u, received %u",
+                 g_bgl_mirror ? "ON" : "off", o_bgl_unload ? "installed" : "NOT installed", g_bgl_calls, g_bgl_self_ok, ls, rs, ms, g_bgl.merged, g_bgl.overflow, g_bgl.removed, g_bgl_writes, g_bgl_tx, g_bgl_rx);
+        return;
+    }
+    if (!strncmp(arg, "pupzones", 8)) {   /* net w bgl pupzones [0|1]: a partner's puppet fires trigger zones on this PC too (6j) */
+        if (arg[8] == ' ' && (arg[9] == '0' || arg[9] == '1')) g_pup_zones = arg[9] - '0';
+        snprintf(out, size, "puppets in trigger zones %s (hook %s): %u checks shown the puppet as a local human", g_pup_zones ? "ON" : "off", o_btn_cand ? "installed" : "NOT installed", g_pup_flips);
+        return;
+    }
+    if (!strncmp(arg, "gate", 4)) {   /* net w bgl gate [0|1]: the story stage change waits until every human stands on the new stage's floor (6j) */
+        if (arg[4] == ' ' && (arg[5] == '0' || arg[5] == '1')) g_stage_gate = arg[5] - '0';
+        snprintf(out, size, "stage gate %s (hook %s): holds %u frames, released %u, timeouts %u (limit %u ms)", g_stage_gate ? "ON" : "off", o_epi_upd ? "installed" : "NOT installed", g_gate_holds, g_gate_releases, g_gate_timeouts, BGL_GATE_MS);
+        return;
+    }
+    if (!strncmp(arg, "hit", 3)) {   /* net w bgl hit <stage> <block> [<stage> <block> ...]: what the zone code does after a zone hit, with the named blocks added to the current list (up to five in all) */
+        int t[5][2], n = 0, k = 0;
+        unsigned ep = rd32(sb + 0x140378);
+        for (int i = 0; i < 5; i++) {
+            int s = (int)rd32(bg + 0x4B84 + 12 * (unsigned)i + 4), b = (int)rd32(bg + 0x4B84 + 12 * (unsigned)i + 8);
+            if (s >= 0 && b >= 0) t[n][0] = s, t[n][1] = b, n++;
+        }
+        const char *q = arg + 3;
+        int s2, b2, c2;
+        while (sscanf(q, "%d %d%n", &s2, &b2, &c2) == 2) {
+            q += c2;
+            int dup = 0;
+            for (int i = 0; i < n; i++) dup |= t[i][0] == s2 && t[i][1] == b2;
+            if (dup) continue;
+            if (n >= 5 || s2 < 100 || s2 > 5000 || b2 < 0 || b2 > 63) {
+                snprintf(out, size, "usage: net w bgl hit <stage> <block> [...]  (the list holds five blocks; now %d)", n);
+                return;
+            }
+            t[n][0] = s2, t[n][1] = b2, n++;
+            k++;
+        }
+        unsigned neg = 0xFFFFFFFFu;
+        for (int i = 0; i < 15; i++) wr(bg + 0x4B48 + 4 * (unsigned)i, (const void *)&(unsigned){rd32(bg + 0x4B84 + 4 * (unsigned)i)}, 4);   /* previous := current */
+        for (int i = 0; i < 5; i++) {
+            unsigned e = i < n ? ep : neg, s = i < n ? (unsigned)t[i][0] : neg, b = i < n ? (unsigned)t[i][1] : neg;
+            wr(bg + 0x4B84 + 12 * (unsigned)i, &e, 4), wr(bg + 0x4B84 + 12 * (unsigned)i + 4, &s, 4), wr(bg + 0x4B84 + 12 * (unsigned)i + 8, &b, 4);
+        }
+        unsigned a1[1] = {bg};
+        do_call(2, 0x466C30, a1, 1);   /* unload what the previous list had and the new one does not */
+        do_call(2, 0x4668F0, a1, 1);   /* new stages: start positions + stage resources */
+        for (int i = 0; i < n; i++) {
+            unsigned a[5] = {bg, ep, (unsigned)t[i][0], (unsigned)t[i][1], 1};
+            do_call(2, 0x468310, a, 5);
+        }
+        snprintf(out, size, "the current list is now %d blocks (%d new): the zone code's tail (unload, stage start, block loads) ran", n, k);
+        o = (int)strlen(out);
+        out[o++] = '\n';
+    } else if (!strncmp(arg, "req", 3)) {
         unsigned st = 0, bl = 0, ep = rd32(sb + 0x140378);
         if (sscanf(arg + 3, "%u %u %u", &st, &bl, &ep) < 2 || st > 5000 || bl > 63 || ep > 9) {
             snprintf(out, size, "usage: net w bgl req <stage> <block> [episode]   (stage 100..5000, block 0..63)");
@@ -392,7 +487,208 @@ static void scen_bgl_command(const char *arg, char *out, int size)
             mp = do_call(2, fn, ca, 2);
             if (mp) mx = rdf(mp + 48), my = rdf(mp + 52), mz = rdf(mp + 56);
         }
-        o += snprintf(out + o, size - o, "human slot %d %08x type %u pos (%.0f,%.1f,%.0f) +E0 (%.0f,%.1f,%.0f) coord matrix %08x (%.0f,%.1f,%.0f) floor stage %d block %d\n", slot, p, rd32(p + 0xC) & 7,
-                      rdf(p + 0x40), rdf(p + 0x44), rdf(p + 0x48), rdf(p + 0xE0), rdf(p + 0xE4), rdf(p + 0xE8), mp, mx, my, mz, (int)rd32(p + 0x3F54), (int)rd32(p + 0x3F58));
+        o += snprintf(out + o, size - o, "human slot %d %08x type %u (flags+C %08x, slot type +7920 %u, seat +7924 %08x) pos (%.0f,%.1f,%.0f) +E0 (%.0f,%.1f,%.0f) coord matrix %08x (%.0f,%.1f,%.0f) floor stage %d block %d\n", slot, p,
+                      rd32(p + 0xC) & 7, rd32(p + 0xC), rd32(p + 0x7920), rd32(p + 0x7924), rdf(p + 0x40), rdf(p + 0x44), rdf(p + 0x48), rdf(p + 0xE0), rdf(p + 0xE4), rdf(p + 0xE8), mp, mx, my, mz,
+                      (int)rd32(p + 0x3F54), (int)rd32(p + 0x3F58));
+    }
+}
+
+/* ---- stage 6j: which trigger zones does the shape test of the game say a human is in? (puppet presence research) -----------------------------------------------------------------------------------
+ * sAreaHit (singleton pointer 0x1578D34, +0x28 count, +0x34 array of cAreaHit zones) runs FUN_00824B90 for every enabled zone every frame: for each player slot in the zone's mask it asks the zone's virtual 0x20
+ * (cAreaHit_vf8: coordinate matrix of the object -> shape test) and, on a hit, ORs 0x100 | (1 << character) into zone+0x10. `net w zonetest [slot|all]` asks the same question once for the human(s) of this PC:
+ * which enabled zones contain the object. It answers whether a PUPPET (type 2 body of the partner) is inside a zone by the game's own test, independent of what the zone's consumer does with it. */
+static void scen_zonetest_command(const char *arg, char *out, int size)
+{
+    unsigned sa = rd32(0x1578D34);
+    int o = 0, only = -1;
+    if (!sa) {
+        snprintf(out, size, "no sAreaHit");
+        return;
+    }
+    while (*arg == ' ') arg++;
+    if (arg[0] >= '0' && arg[0] <= '7') only = arg[0] - '0';
+    unsigned n = rd32(sa + 0x28), arr = rd32(sa + 0x34);
+    if (n > 600) n = 600;
+    o += snprintf(out + o, size - o, "sAreaHit %08x: %u zones\n", sa, n);
+    for (int slot = 0; slot < 8; slot++) {
+        unsigned p = player_obj(slot);
+        if (!p || (only >= 0 && only != slot)) continue;
+        int hits = 0, en = 0;
+        o += snprintf(out + o, size - o, "slot %d %08x type %u at (%.0f,%.1f,%.0f): zones containing it:", slot, p, rd32(p + 0xC) & 7, rdf(p + 0x40), rdf(p + 0x44), rdf(p + 0x48));
+        for (unsigned i = 0; i < n; i++) {
+            unsigned z = rd32(arr + 4 * i);
+            if (!z) continue;
+            unsigned char enabled = 0;
+            r2_safe_read((void *)(z + 0xC), &enabled, 1);
+            if (!enabled) continue;
+            en++;
+            unsigned fn = rd32(rd32(z) + 0x20);
+            if (fn < 0x400000 || fn > 0x1400000) continue;
+            unsigned a[2] = {z, p};
+            if ((do_call(2, fn, a, 2) & 0xFF) == 1) {
+                hits++;
+                if (o + 100 < size) o += snprintf(out + o, size - o, " #%u(%08x flags %08x res %08x)", i, z, rd32(z + 0x18), rd32(z + 0x10));
+            }
+        }
+        o += snprintf(out + o, size - o, " [%d of %d enabled]\n", hits, en);
+    }
+}
+
+/* ---- stage 6j: the loader serves both humans (docs\world.md "6j", logic and tests: bgl_logic.h, tests\test_bgl.c) ----------------------------------------------------------------------------------
+ * Hook on the unload step of the block streamer (`FUN_00466C30`, once a frame, ecx = sBGLoad): before the engine unloads what the previous frame's list had and the current one has not, the partner's own list
+ * (received as EV_W_BGL) is put into the free slots of the current list and the loader is asked for those blocks (FUN_00468310, what the zone code itself calls). This PC's own list (without the merged-only
+ * entries) is sent to the partner when it changes (10 Hz scan in scen_tick) and every 3 s. `net w bgl mirror 0|1` switches it (default on; it only acts while a session runs). */
+static __attribute__((thiscall)) void h_bgl_unload(unsigned self)
+{
+    g_bgl_calls++;
+    if (g_bgl_mirror && self && self == rd32(0x1558204)) {
+        g_bgl_self_ok++;
+        if (w_session_running()) {
+            bgl_t cur[BGL_SLOTS], prev[BGL_SLOTS], cur2[BGL_SLOTS], ask[BGL_SLOTS], local[BGL_SLOTS];
+            int ask_n = 0, ln = 0;
+            bgl_read(self, 0x4B84, cur), bgl_read(self, 0x4B48, prev);
+            if (bgl_merge(&g_bgl, cur, prev, cur2, local, &ln, ask, &ask_n))
+                for (unsigned i = 0; i < BGL_SLOTS; i++)
+                    if (cur2[i].ep != cur[i].ep || cur2[i].stage != cur[i].stage || cur2[i].block != cur[i].block) {
+                        wr(self + 0x4B84 + 12 * i, &cur2[i], 12);
+                        g_bgl_writes++;
+                    }
+            memcpy(g_bgl_local, local, sizeof local);
+            g_bgl_local_n = ln;
+            for (int i = 0; i < ask_n; i++) {
+                unsigned a[5] = {self, (unsigned)ask[i].ep, (unsigned)ask[i].stage, (unsigned)ask[i].block, 1};
+                do_call(2, 0x468310, a, 5);
+            }
+        }
+    }
+    o_bgl_unload(self);
+}
+
+static void bgl_event(const cp_event *e)
+{
+    bgl_t l[BGL_SLOTS];
+    int c = bgl_unpack(e->body, e->len, l);
+    if (c < 0) return;
+    int same = c == g_bgl.remote_n;
+    for (int i = 0; same && i < c; i++) same = l[i].ep == g_bgl.remote[i].ep && l[i].stage == g_bgl.remote[i].stage && l[i].block == g_bgl.remote[i].block;
+    for (int i = 0; i < c; i++) g_bgl.remote[i] = l[i];
+    g_bgl.remote_n = c;
+    g_bgl_rx++;
+    if (!same && g_bgl_logs < 60) {
+        char s[160];
+        bgl_fmt(l, c, s, sizeof s);
+        g_bgl_logs++;
+        r2_log(W_LOG "bgl: the partner's loader list is now %s (merged %u, no room %u, dropped %u)", s, g_bgl.merged, g_bgl.overflow, g_bgl.removed);
+    }
+}
+
+static void bgl_tick(unsigned now)
+{
+    int running = w_session_running();
+    if (!running) {
+        if (g_bgl_was_running) {   /* the session ended: forget the partner's list (the merged-only entries leave with the engine's next zone hit) */
+            g_bgl.remote_n = 0, g_bgl.mo_n = 0, g_bgl_sent_n = -1;
+            g_bgl_was_running = 0;
+        }
+        return;
+    }
+    if (!g_bgl_was_running) g_bgl_was_running = 1, g_bgl_sent_n = -1;
+    if (!g_bgl_mirror || now - g_bgl_scan_t < 100) return;
+    g_bgl_scan_t = now;
+    int same = g_bgl_local_n == g_bgl_sent_n;
+    for (int i = 0; same && i < g_bgl_local_n; i++) same = g_bgl_local[i].ep == g_bgl_sent[i].ep && g_bgl_local[i].stage == g_bgl_sent[i].stage && g_bgl_local[i].block == g_bgl_sent[i].block;
+    if (same && now - g_bgl_sent_t < 3000) return;
+    if (!g_bgl_calls) return;
+    unsigned char b[40];
+    int len = bgl_pack(g_bgl_local, g_bgl_local_n, b);
+    w_ev_send(EV_W_BGL, b, (unsigned)len);
+    if (!same && g_bgl_logs < 60) {
+        char s[160];
+        bgl_fmt(g_bgl_local, g_bgl_local_n, s, sizeof s);
+        g_bgl_logs++;
+        r2_log(W_LOG "bgl: my loader list is now %s (sent)", s);
+    }
+    memcpy(g_bgl_sent, g_bgl_local, sizeof g_bgl_local);
+    g_bgl_sent_n = g_bgl_local_n;
+    g_bgl_sent_t = now;
+    g_bgl_tx++;
+}
+
+static __attribute__((thiscall)) void h_epi_update(unsigned self)
+{
+    int faked = 0, cur = 0;
+    if (g_stage_gate && self && w_session_running()) {
+        unsigned p0 = player_obj(0);
+        int target = p0 ? (int)rd32(p0 + 0x3F54) : -1;
+        cur = (int)rd32(self + 0x30);
+        if (target != -1 && target != 0 && target != cur) {   /* the area update is about to switch to the stage of slot 0's floor */
+            int wait_for = -1;
+            for (int slot = 1; slot < 8; slot++) {
+                unsigned p = player_obj(slot);
+                if (!p || (int)rd32(p + 0x1A08) <= 0 || (rd32(p + 0x7920) & 0xFF) == 1) continue;   /* none / dead / the AI partner */
+                if ((int)rd32(p + 0x3F54) != target) { wait_for = slot; break; }
+            }
+            unsigned now = GetTickCount();
+            if (wait_for >= 0) {
+                if (!g_gate_since) g_gate_since = now ? now : 1;
+                if (now - g_gate_since < BGL_GATE_MS) {
+                    wr(self + 0x30, &target, 4);
+                    faked = 1;
+                    if (!g_gate_holds && g_gate_logs < 30) g_gate_logs++, r2_log(W_LOG "stage gate: slot 0 stands on a stage %d floor (area %d), the human of slot %d does not yet: the change waits", target, cur, wait_for);
+                    g_gate_holds++;
+                } else if (!g_gate_timeouts || now - g_gate_since < BGL_GATE_MS + 500) {
+                    g_gate_timeouts++;
+                    if (g_gate_logs < 30) g_gate_logs++, r2_log(W_LOG "stage gate: waited %u ms for the human of slot %d, the change goes ahead", now - g_gate_since, wait_for);
+                }
+            } else {
+                if (g_gate_since) {
+                    g_gate_releases++;
+                    if (g_gate_logs < 30) g_gate_logs++, r2_log(W_LOG "stage gate: every human stands on a stage %d floor (waited %u ms): the change goes ahead", target, now - g_gate_since);
+                }
+                g_gate_since = 0;
+            }
+        } else if (target == cur) g_gate_since = 0;
+    }
+    o_epi_upd(self);
+    if (faked) wr(self + 0x30, &cur, 4);
+}
+
+static __attribute__((thiscall)) void h_btn_cand(unsigned self, unsigned button)
+{
+    unsigned p = 0;
+    int flipped = 0;
+    if (g_pup_zones && g_cs && w_session_running()) {
+        unsigned slot = rd32(self + 8);
+        p = slot < 8 ? player_obj((int)slot) : 0;
+        if (p && p != player_obj(g_my_slot) && rd32(p + 0x7920) == 2 && rd32(button + 0x20) == 3) {   /* button + 0x20 = the kind (case 3 of FUN_0040AF90: zone hit bits + callback = flag zones and AreaHit zones); door prompts and pickups are other kinds and keep their stock rules */
+            *(volatile unsigned *)(p + 0x7920) = 0;
+            flipped = 1;
+            if (!g_pup_flips && g_pup_logs < 5) g_pup_logs++, r2_log(W_LOG "trigger zones: the partner's puppet (slot %u) is in the button %08x's zone: shown as a local human for the check", slot, button);
+            g_pup_flips++;
+        }
+    }
+    o_btn_cand(self, button);
+    if (flipped) *(volatile unsigned *)(p + 0x7920) = 2;
+}
+
+static void scen_install(int *ok)
+{
+    static const unsigned char b_unload[] = {0x83, 0xEC, 0x08, 0x53, 0x55};   /* sub esp, 8; push ebx; push ebp */
+    void *t = w_tramp(0x466C30, b_unload, 5);
+    if (t) {
+        o_bgl_unload = (bgl_unload_t)t;
+        *ok += w_jmp(0x466C30, 5, (void *)h_bgl_unload);
+    }
+    static const unsigned char b_epi[] = {0x83, 0xEC, 0x08, 0x56, 0x8B, 0xF1};   /* sub esp, 8; push esi; mov esi, ecx */
+    t = w_tramp(0x462780, b_epi, 6);
+    if (t) {
+        o_epi_upd = (epi_upd_t)t;
+        *ok += w_jmp(0x462780, 6, (void *)h_epi_update);
+    }
+    static const unsigned char b_btn[] = {0x51, 0x57, 0x8B, 0xF9, 0x80, 0x7F, 0x04, 0x00};   /* push ecx; push edi; mov edi, ecx; cmp byte [edi+4], 0 */
+    t = w_tramp(0x40BFB0, b_btn, 8);
+    if (t) {
+        o_btn_cand = (btn_cand_t)t;
+        *ok += w_jmp(0x40BFB0, 8, (void *)h_btn_cand);
     }
 }

@@ -47,7 +47,7 @@ static int w_jmp(unsigned target, int n, void *hook)
 
 /* ---------------------------------------------------------------- state */
 enum { WK_ENEMIES = 1 };           /* WORLD batch kinds */
-enum { EV_W_SPAWN = 0x120, EV_W_HIT, EV_W_DEATH, EV_W_PICKUP, EV_W_ITEM_GONE, EV_W_PDMG, EV_W_FLAG, EV_W_SCENE, EV_W_GRANT, EV_W_DOOR, EV_W_BARRIER, EV_W_SNAP, EV_W_SF };   /* CP_EV_USER + n: world events (docs\world.md) */
+enum { EV_W_SPAWN = 0x120, EV_W_HIT, EV_W_DEATH, EV_W_PICKUP, EV_W_ITEM_GONE, EV_W_PDMG, EV_W_FLAG, EV_W_SCENE, EV_W_GRANT, EV_W_DOOR, EV_W_BARRIER, EV_W_SNAP, EV_W_SF, EV_W_BGL };   /* CP_EV_USER + n: world events (docs\world.md) */
 
 static unsigned g_w_put_tx;
 static int g_w_in_additem;            /* >0 while AddItem runs (its PutItem calls are part of the pickup, not separate grants) */
@@ -408,6 +408,7 @@ static int w_install(void)
     static const unsigned char b_killrep[] = {0x83, 0xEC, 0x10, 0x53, 0x56};   /* sub esp, 0x10; push ebx; push esi */
     if ((t = w_tramp(0x986230, b_killrep, 5))) o_killrep = (killrep_t)t, ok += w_jmp(0x986230, 5, (void *)h_killrep);
     story_install(&ok);
+    scen_install(&ok);
     for (int i = 0; i < W_NVT; i++) {   /* slot 234 of every enemy class vtable (checked against the value read from the image) */
         unsigned slot = w_vts[i].vt + 4 * 234, cur = 0;
         if (!r2_safe_read((void *)slot, &cur, 4) || cur != w_vts[i].orig) {
@@ -905,6 +906,8 @@ static void w_command(const char *rest, char *out, int size)
         scen_stages_command(arg, out, size);
     } else if (!strcmp(sub, "bgl")) {   /* net w bgl [req <stage> <block> [ep]]: the background loader that streams the next stage (scen.inc, 6j) */
         scen_bgl_command(arg, out, size);
+    } else if (!strcmp(sub, "zonetest")) {   /* net w zonetest [slot]: which enabled trigger zones the game's own shape test puts the humans of this PC in (scen.inc, 6j) */
+        scen_zonetest_command(arg, out, size);
     } else if (!strcmp(sub, "smtrace")) {   /* net w smtrace <a> <b> <c> [lines] | off: per-frame change log of one set model and both humans' actions (door.inc, 6f) */
         smtrace_command(arg, out, size);
     } else if (!strcmp(sub, "door")) {   /* net w door <a> <b> <c> [op <acttype>] [act <id>]: one set model's state / the FSM's door operation (scen.inc) */
@@ -1136,6 +1139,9 @@ static void w_on_event(const cp_event *e)
         break;
     case EV_W_SF:   /* a scenario flag was set on the other PC (scen.inc, `net w sf sync 1`) */
         scen_event(e);
+        break;
+    case EV_W_BGL:   /* the other PC's block loader list (scen.inc, 6j) */
+        bgl_event(e);
         break;
     default:
         story_on_event(e);

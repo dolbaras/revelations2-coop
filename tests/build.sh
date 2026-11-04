@@ -16,3 +16,4 @@ CF="-target $TARGET -O1 -g -Wall -Wno-unused-function -DWIN32"
 "$ZIG" cc $CF -I"$ENET/include" -o build/test_lobby.exe test_lobby.c ../native/lobby.c ../native/lobby_text.c ../native/coop_proto.c ../native/coop_net.c ../native/coop_steam.c ../native/coop_steam_real.c ../native/coop_session.c $ENETSRC -lws2_32 -lwinmm
 "$ZIG" cc $CF -o build/test_ach.exe test_ach.c
 "$ZIG" cc $CF -o build/test_glue.exe test_glue.c
+"$ZIG" cc $CF -o build/test_bgl.exe test_bgl.c
