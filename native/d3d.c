@@ -35,6 +35,14 @@ static volatile unsigned frames;
 
 unsigned d3d_frames(void) { return frames; }
 void d3d_request_shot(void) { InterlockedExchange(&shot_asked, 1); }
+/* `shot <n> <ms>` (stage 6f): n frames, one per `ms` milliseconds, taken inside the Present hook (a console round trip is about a second: too slow for a 0.7 s attack animation) */
+static volatile LONG burst_left;
+static volatile DWORD burst_ms, burst_next;
+void d3d_request_burst(int n, int ms)
+{
+    burst_ms = (DWORD)(ms < 30 ? 30 : ms), burst_next = GetTickCount();
+    InterlockedExchange(&burst_left, n < 0 ? 0 : n > 40 ? 40 : n);
+}
 
 static void save_frame(IDirect3DDevice9 *dev)
 {
@@ -93,12 +101,14 @@ done:
 static HRESULT WINAPI hook_Present(IDirect3DDevice9 *dev, const RECT *s, const RECT *d, HWND w, const RGNDATA *r)
 {
     unsigned n = ++frames;
+    menu_present(dev);   /* the lobby overlay (stage 8), above the screenshot code below so that shots show it */
     if (n == 1) {
         char st[160];
         r2_text_state(st, sizeof st);
         r2_log("first Present (the game renders): %s", st);
         r2_iat_check("first Present");
         lt_install();
+        menu_install();
         {
             char tv[8];
             if (r2_env("REV2_TRACE", tv, sizeof tv) && tv[0] == '1')
@@ -114,6 +124,11 @@ static HRESULT WINAPI hook_Present(IDirect3DDevice9 *dev, const RECT *s, const R
     f11_was = f11;
     if (shot_asked && InterlockedExchange(&shot_asked, 0))
         save_frame(dev);
+    if (burst_left > 0 && (int)(GetTickCount() - burst_next) >= 0) {   /* `shot <n> <ms>` */
+        InterlockedDecrement(&burst_left);
+        burst_next = GetTickCount() + burst_ms;
+        save_frame(dev);
+    }
     if (shot_next < shot_count && GetTickCount() - t0 >= (DWORD)shot_secs[shot_next] * 1000) {
         shot_next++;
         save_frame(dev);
@@ -127,6 +142,7 @@ static HRESULT WINAPI hook_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *p
         pp->Windowed = TRUE;
         pp->FullScreen_RefreshRateInHz = 0;
     }
+    menu_before_reset();
     HRESULT hr = real_Reset(dev, pp);
     r2_log("device Reset %ux%u windowed=%d -> hr=0x%08lx", pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0, pp ? pp->Windowed : -1,
            (unsigned long)hr);

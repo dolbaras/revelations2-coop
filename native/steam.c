@@ -3,6 +3,13 @@
  * calls the original with the original arguments and returns its result unchanged. Nothing is faked and nothing is stored by
  * the mod.
  *
+ * Test safety (stage 8b, docs\achievements.md): with the block switch on (REV2_ACHBLOCK=1, and the DEFAULT whenever the test console is
+ * enabled, REV2_CONSOLE set, which every lab script does) SetAchievement / ClearAchievement / SetStat / UpdateAvgRateStat / StoreStats /
+ * IndicateAchievementProgress / ResetAllStats are logged and NOT passed to Steam: the accounts of the testers never receive an unlock from a
+ * teleport or cheat run. The call returns success, so the game's own bookkeeping continues exactly as after a real unlock, and every blocked
+ * unlock is listed as "WOULD UNLOCK" (log and console `net w ach`). A player's normal start (no console) passes everything through; the manual
+ * switch to verify a real unlock in a console run is REV2_ACHBLOCK=0.
+ *
  *   - SteamAPI_Init / SteamAPI_RunCallbacks timing (console "steam")
  *   - SteamAPI_RegisterCallback / RegisterCallResult: which callbacks the game waits for, and every time one of them runs
  *     (the Run slots of the game's callback objects are wrapped; the slot that takes (param) and the one that takes
@@ -23,8 +30,12 @@
 #include <string.h>
 
 #include "r2.h"
+#include "coop_steam.h"
+#include "ach_logic.h"
 
 #define THISCALL __attribute__((thiscall))
+
+extern int coop_net_command(const char *arg, char *out, int size);   /* coop3.c / coop_game.inc: the console entry of the co-op glue */
 
 typedef int (__cdecl *SteamAPI_Init_t)(void);
 typedef void (__cdecl *SteamAPI_RunCallbacks_t)(void);
@@ -46,6 +57,13 @@ static volatile LONG rc_calls, rc_slow, rc_max_ms;
 static volatile LONG rc_total_ms;
 static DWORD t_start;
 static int log_stats;
+static int ach_block;                   /* see the header: SetAchievement and the other writers are not passed to Steam */
+static volatile LONG ach_blocked_n;     /* writer calls swallowed so far */
+static char ach_would[48][40];          /* block mode: names a real run would have unlocked (SetAchievement), unique, in order */
+static DWORD ach_would_ms[48];
+static int ach_would_n;
+static char ach_done[48][40];           /* real mode: unlocks that were passed to Steam and accepted */
+static int ach_done_n;
 
 static double now_ms(void)
 {
@@ -80,6 +98,7 @@ static int __cdecl hook_Init(void)
 
 static void __cdecl hook_RunCallbacks(void)
 {
+    cst_game_tick();   /* co-op Steam transport on the game thread: registers its callbacks, pumps its events, starts an invited join */
     double t = now_ms();
     real_RunCallbacks();
     LONG ms = (LONG)(now_ms() - t);
@@ -94,6 +113,33 @@ static void __cdecl hook_RunCallbacks(void)
 void steam_stats(char *out, int size)
 {
     snprintf(out, size, "steam: %ld RunCallbacks calls, %ld slow (>=100 ms), longest %ld ms, %ld ms in total", rc_calls, rc_slow, rc_max_ms, rc_total_ms);
+}
+
+/* console `net w ach`: block mode and the unlocks that would (block mode) or did (real mode) happen */
+static void ach_note(char list[][40], int *n, const char *name)
+{
+    if (!name) return;
+    for (int i = 0; i < *n; i++)
+        if (!strncmp(list[i], name, 39)) return;
+    if (*n >= 48) return;
+    snprintf(list[*n], 40, "%s", name);
+    if (list == ach_would) ach_would_ms[*n] = GetTickCount() - t_start;
+    (*n)++;
+}
+
+int steam_ach_blocking(void)
+{
+    return ach_block;
+}
+
+void steam_ach_status(char *out, int size)
+{
+    int o = snprintf(out, size, "steam achievements: %s (REV2_ACHBLOCK), %ld writer call(s) blocked\n", ach_block ? "BLOCKED, nothing reaches Steam" : "REAL, calls reach Steam", (long)ach_blocked_n);
+    for (int i = 0; i < ach_would_n && o < size - 80; i++)
+        o += snprintf(out + o, size - o, "  WOULD UNLOCK %s (+%lu ms)\n", ach_would[i], (unsigned long)ach_would_ms[i]);
+    for (int i = 0; i < ach_done_n && o < size - 80; i++)
+        o += snprintf(out + o, size - o, "  UNLOCKED %s\n", ach_done[i]);
+    if (!ach_would_n && !ach_done_n) snprintf(out + o, size - o, "  (no unlock so far)\n");
 }
 
 /* ---- callbacks the game registers, and when they run ---- */
@@ -140,6 +186,10 @@ static void THISCALL hook_run1(void *self, void *pv)
         r2_log("steam: callback %d runs (Run(param), handler vtable %s, +%lu ms)", id, who(cbv[i].vtbl, b, sizeof b), GetTickCount() - t_start);
     }
     net_on_callback(id, self, pv, cbv[i].size, 0, 0);
+    if (cst_swallow_game_callback(id, pv)) {   /* a callback about OUR lobby (coop_steam.c): the game's Raid handler never gets it */
+        r2_log("steam: callback %d about our lobby kept from the game's handler", id);
+        return;
+    }
     ((Run1_t)cbv[i].orig[slot])(self, pv);
 }
 
@@ -157,6 +207,10 @@ static void THISCALL hook_run3(void *self, void *pv, int fail, unsigned long lon
                GetTickCount() - t_start);
     }
     net_on_callback(id, self, pv, cbv[i].size, fail, call);
+    if (!call && cst_swallow_game_callback(id, pv)) {
+        r2_log("steam: callback %d about our lobby kept from the game's handler", id);
+        return;
+    }
     ((Run3_t)cbv[i].orig[slot])(self, pv, fail, call);
 }
 
@@ -179,6 +233,7 @@ static void wrap_callback(void *cb, int size)
            k1 == 1 ? "Run(param)" : k1 == 3 ? "Run(param,failure,call)" : "?");
     if (!((k0 == 1 && k1 == 3) || (k0 == 3 && k1 == 1)))
         return;
+    cst_note_callback_layout(k0);   /* our own callback objects (coop_steam_real.c) use the same slot order */
     DWORD old;
     if (!VirtualProtect(&vt[0], 2 * sizeof(void *), PAGE_READWRITE, &old))
         return;
@@ -270,6 +325,7 @@ GETSTAT(2)
     { \
         const void *ret = __builtin_return_address(0); \
         float f; memcpy(&f, &v, 4); \
+        if (ach_block) { InterlockedIncrement(&ach_blocked_n); r2_log("ach: SetStat[%d](\"%s\") BLOCKED (REV2_ACHBLOCK)", N, name ? name : "(null)"); return 1; } \
         int r = ((int (THISCALL *)(void *, const char *, unsigned))stat_orig[N])(self, name, v); \
         r2_log("ach: SetStat[%d](\"%s\", int=%d float=%g) -> %d (caller %s, +%lu ms)", N, name ? name : "(null)", (int)v, (double)f, r & 0xff, caller_str(ret, N), GetTickCount() - t_start); \
         return r; \
@@ -280,6 +336,7 @@ SETSTAT(4)
 static int THISCALL s_UpdateAvgRateStat(void *self, const char *name, float count, double length)
 {
     const void *ret = __builtin_return_address(0);
+    if (ach_block) { InterlockedIncrement(&ach_blocked_n); r2_log("ach: UpdateAvgRateStat(\"%s\") BLOCKED (REV2_ACHBLOCK)", name ? name : "(null)"); return 1; }
     int r = ((int (THISCALL *)(void *, const char *, float, double))stat_orig[5])(self, name, count, length);
     r2_log("ach: UpdateAvgRateStat(\"%s\", %g, %g) -> %d (caller %s)", name ? name : "(null)", (double)count, length, r & 0xff, caller_str(ret, 5));
     return r;
@@ -298,7 +355,14 @@ static int THISCALL s_GetAchievement(void *self, const char *name, unsigned char
 static int THISCALL s_SetAchievement(void *self, const char *name)
 {
     const void *ret = __builtin_return_address(0);
+    if (ach_block) {
+        InterlockedIncrement(&ach_blocked_n);
+        ach_note(ach_would, &ach_would_n, name);
+        r2_log("ach: SetAchievement(\"%s\") BLOCKED (REV2_ACHBLOCK): WOULD UNLOCK, not passed to Steam (caller %s, +%lu ms)", name ? name : "(null)", caller_str(ret, 7), GetTickCount() - t_start);
+        return 1;   /* success: the game's own bookkeeping goes on as after a real unlock */
+    }
     int r = ((int (THISCALL *)(void *, const char *))stat_orig[7])(self, name);
+    if (r & 0xff) ach_note(ach_done, &ach_done_n, name);
     r2_log("ach: SetAchievement(\"%s\") -> %d (caller %s, +%lu ms)", name ? name : "(null)", r & 0xff, caller_str(ret, 7), GetTickCount() - t_start);
     return r;
 }
@@ -306,6 +370,7 @@ static int THISCALL s_SetAchievement(void *self, const char *name)
 static int THISCALL s_ClearAchievement(void *self, const char *name)
 {
     const void *ret = __builtin_return_address(0);
+    if (ach_block) { InterlockedIncrement(&ach_blocked_n); r2_log("ach: ClearAchievement(\"%s\") BLOCKED (REV2_ACHBLOCK)", name ? name : "(null)"); return 1; }
     int r = ((int (THISCALL *)(void *, const char *))stat_orig[8])(self, name);
     r2_log("ach: ClearAchievement(\"%s\") -> %d (caller %s)", name ? name : "(null)", r & 0xff, caller_str(ret, 8));
     return r;
@@ -326,6 +391,7 @@ static int THISCALL s_GetAchievementAndUnlockTime(void *self, const char *name, 
 static int THISCALL s_StoreStats(void *self)
 {
     const void *ret = __builtin_return_address(0);
+    if (ach_block) { InterlockedIncrement(&ach_blocked_n); r2_log("ach: StoreStats() BLOCKED (REV2_ACHBLOCK) (caller %s)", caller_str(ret, 10)); return 1; }
     int r = ((int (THISCALL *)(void *))stat_orig[10])(self);
     r2_log("ach: StoreStats() -> %d (caller %s, +%lu ms)", r & 0xff, caller_str(ret, 10), GetTickCount() - t_start);
     return r;
@@ -334,6 +400,7 @@ static int THISCALL s_StoreStats(void *self)
 static int THISCALL s_IndicateAchievementProgress(void *self, const char *name, unsigned cur, unsigned max)
 {
     const void *ret = __builtin_return_address(0);
+    if (ach_block) { InterlockedIncrement(&ach_blocked_n); r2_log("ach: IndicateAchievementProgress(\"%s\") BLOCKED (REV2_ACHBLOCK)", name ? name : "(null)"); return 1; }
     int r = ((int (THISCALL *)(void *, const char *, unsigned, unsigned))stat_orig[13])(self, name, cur, max);
     r2_log("ach: IndicateAchievementProgress(\"%s\", %u, %u) -> %d (caller %s)", name ? name : "(null)", cur, max, r & 0xff, caller_str(ret, 13));
     return r;
@@ -350,6 +417,7 @@ static unsigned long long THISCALL s_RequestUserStats(void *self, unsigned lo, u
 static int THISCALL s_ResetAllStats(void *self, int ach)
 {
     const void *ret = __builtin_return_address(0);
+    if (ach_block) { InterlockedIncrement(&ach_blocked_n); r2_log("ach: ResetAllStats(achievements too=%d) BLOCKED (REV2_ACHBLOCK)", ach & 0xff); return 1; }
     int r = ((int (THISCALL *)(void *, int))stat_orig[21])(self, ach);
     r2_log("ach: ResetAllStats(achievements too=%d) -> %d (caller %s)", ach & 0xff, r & 0xff, caller_str(ret, 21));
     return r;
@@ -428,6 +496,7 @@ static void *__cdecl hook_CreateInterface(const char *ver)
 static void *__cdecl hook_ContextInit(void *data)
 {
     void *r = real_ContextInit(data);
+    if (r) cst_note_context(r);   /* the CSteamAPIContext of the game: the co-op transport uses the interfaces the game itself holds */
     static int n;
     if (++n <= 4) {
         unsigned d[8];
@@ -441,7 +510,17 @@ void steam_install(void)
 {
     char v[8];
     t_start = GetTickCount();
+    cst_set_runner(coop_net_command);
     log_stats = !(r2_env("REV2_NOACH", v, sizeof v) && v[0] == '1');
+    /* test safety: blocked when asked (REV2_ACHBLOCK=1), and by default whenever the test console is on (every lab script sets REV2_CONSOLE, a player never does);
+     * REV2_ACHBLOCK=0 is the explicit "let a console run reach Steam" (to verify a real unlock by hand). */
+    {
+        char b[8], c[8];
+        int has_b = r2_env("REV2_ACHBLOCK", b, sizeof b), has_c = r2_env("REV2_CONSOLE", c, sizeof c);
+        ach_block = ach_block_default(has_b, b[0], has_c);
+        if (ach_block) log_stats = 1;   /* the wrappers are what blocks: they must be installed whatever REV2_NOACH says */
+        r2_log("ach: writer calls %s (REV2_ACHBLOCK=%s, test console %s)", ach_block ? "BLOCKED" : "pass through to Steam", has_b ? b : "unset", has_c ? "on" : "off");
+    }
     real_Init = (SteamAPI_Init_t)r2_patch_iat("steam_api.dll", "SteamAPI_Init", (void *)hook_Init);
     real_RunCallbacks = (SteamAPI_RunCallbacks_t)r2_patch_iat("steam_api.dll", "SteamAPI_RunCallbacks", (void *)hook_RunCallbacks);
     real_RegisterCallback = (RegisterCallback_t)r2_patch_iat("steam_api.dll", "SteamAPI_RegisterCallback", (void *)hook_RegisterCallback);

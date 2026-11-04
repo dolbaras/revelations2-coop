@@ -39,6 +39,8 @@ static CRITICAL_SECTION task_lock;
 static HANDLE task_done;
 
 static void frame_callbacks(void);
+static void coop_game_frame(void);   /* coop_game.inc (stage 4) */
+static void bot_frame(void);         /* bot.inc (stage 6c test aid) */
 void s3_run(const char *cmd, char *out, int size);
 
 static void lt_hook(void)
@@ -269,7 +271,11 @@ static void view_guard(void)
 static void frame_callbacks(void)
 {
     view_guard();
+    console_shake_tick();
     puppet_frame();
+    coop_game_frame();
+    bot_frame();
+    menu_frame();
 }
 
 static void players_summary(char *out, int size)
@@ -475,3 +481,7 @@ void s3_run(const char *cmd, char *out, int size)
 /* ========================= puppet recording and replay =========================
  * State of one character (the "network packet"): see puppet_state_* below; filled in after the field survey. */
 #include "puppet.inc"
+#include "coop_game.inc"
+#include "world.inc"
+#include "ach.inc"
+#include "bot.inc"

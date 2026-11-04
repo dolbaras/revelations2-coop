@@ -1,0 +1,33 @@
+/*
+ * Co-op entry in the game's own menus (stage 8): glue between the game (menu objects, page tables, pause menu, start sequence), the lobby model
+ * (lobby.c) and the overlay (overlay.c). See docs/lobby.md.
+ *
+ *   menu_install()   once, from the first Present (the Steam stub has decrypted .text): patches the "Co-Op Play" row into the campaign page,
+ *                    hooks the menu object of the dormant session screen, the pause menu's "Leave" row; reads the settings file
+ *   menu_frame()     every pass of the game's loop (game thread, from coop3.c frame_callbacks): auto-leave back at the title, auto-open for an invitation
+ *   menu_present()   from the Present hook, before the frame is presented: draws the lobby overlay when it is open
+ *   menu_before_reset() from the Reset hook: releases the overlay's Direct3D resources
+ *   menu_command()   console `menu ...`
+ *   menu_on_note()   a session notification (coop_game.inc note_cb, any thread)
+ */
+#ifndef MENU_H
+#define MENU_H
+
+#include "coop_session.h"
+
+void menu_install(void);
+void menu_frame(void);
+void menu_present(void *d3d9_device);
+void menu_before_reset(void);
+void menu_command(const char *arg, char *out, int size);
+void menu_on_note(const cs_note *n);
+/* stage 6i: a one-line strip at the top of the screen (any thread). MB_WAIT = "Waiting for <who> to finish loading..." for `ms` milliseconds; MB_NONE clears it */
+enum { MB_NONE = 0, MB_WAIT = 1 };
+void menu_banner(int kind, const char *who, unsigned ms);
+
+/* supplied by coop_game.inc */
+int coop_net_command(const char *arg, char *out, int size);
+cs_t *coop_net_session(void);        /* creates the session object on first use */
+cs_t *coop_net_session_peek(void);   /* NULL until something created it */
+
+#endif

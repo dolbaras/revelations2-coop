@@ -71,9 +71,14 @@ int classes_chain(unsigned dti, char *out, int size)
         unsigned parent = 0, sf = 0;
         if (!dti_name(dti, n, sizeof n, &parent, &sf)) {
             o += snprintf(out + o, size - o, "%s?%08x", depth ? " : " : "", dti);
+            if (o >= size) o = size - 1;
             break;
         }
         o += snprintf(out + o, size - o, "%s%s(%x)", depth ? " : " : "", n, (sf & 0x7FFFFF) * 4);
+        if (o >= size - 1) {   /* snprintf returns the length it WOULD have written: with a small buffer the next call got a negative size (stage 6: a 100-byte buffer was overrun and killed the game) */
+            o = size - 1;
+            break;
+        }
         dti = parent;
     }
     return o;

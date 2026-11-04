@@ -104,6 +104,8 @@ static void all_threads(char *out, int size, int returns)
 }
 
 static void run(const char *cmd, char *out, int size);
+static unsigned shake_until, shake_t, shake_half = 150;
+static int shake_user, shake_dir;
 void console_exec(const char *cmd, char *out, int size) { run(cmd, out, size); }
 
 static int is_s3(const char *n)
@@ -137,7 +139,7 @@ static void run(const char *cmd, char *out, int size)
     } else if (!strcmp(name, "version")) {
         snprintf(out, size, "rev2-coop %s pid=%lu exe_ok=%d sha=%s", R2_VERSION, GetCurrentProcessId(), r2_exe_ok(), r2_exe_sha());
     } else if (!strcmp(name, "help")) {
-        snprintf(out, size, "ping version base stub frames window iat threads stacks readmem <a> [n] readstr <a> [n] dword <a> dump <a> <len> <file> classname <a> dtiname <a> objscan <file> [filter] pad/padtap/padhold key/keydown/keyup/wmkey mouse mbtn cursor dinput pads steam diag shot log <t> quit");
+        snprintf(out, size, "ping version base stub frames window iat threads stacks readmem <a> [n] readstr <a> [n] dword <a> dump <a> <len> <file> classname <a> dtiname <a> objscan <file> [filter] pad/padtap/padhold key/keydown/keyup/wmkey mouse mbtn cursor dinput pads steam diag shot log <t> quit menu ...");
     } else if (!strcmp(name, "base")) {
         BYTE *b = (BYTE *)GetModuleHandleA(NULL);
         IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(b + ((IMAGE_DOS_HEADER *)b)->e_lfanew);
@@ -208,6 +210,31 @@ static void run(const char *cmd, char *out, int size)
             testmode_pad_hold(slot, &g, ms);
             snprintf(out, size, "pad %d: buttons %04x for %d ms", slot, g.wButtons, ms);
         }
+    } else if (!strcmp(name, "rpad")) {
+        /* rpad <user 0-3> off | <hexbuttons> [lx ly rx ry lt rt]: pretend that THIS PC has a real pad (stage 5 test of the co-op pass-through: the glue maps it to the
+         * local human's game user; `pad`/`padhold` instead replace a game user outright). Stays until `rpad <user> off`. */
+        int user = -1;
+        char b[16] = "0";
+        int v[6] = {0, 0, 0, 0, 0, 0};
+        if (sscanf(arg, "%d %15s %d %d %d %d %d %d", &user, b, &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) < 2 || user < 0 || user > 3) {
+            snprintf(out, size, "usage: rpad <user 0-3> off|<hexbuttons> [lx ly rx ry lt rt]");
+        } else if (!strcmp(b, "off")) {
+            testmode_pad_pretend(user, 0, NULL);
+            snprintf(out, size, "rpad %d: off", user);
+        } else {
+            XINPUT_GAMEPAD g;
+            memset(&g, 0, sizeof g);
+            g.wButtons = (WORD)hex(b);
+            g.sThumbLX = (SHORT)v[0], g.sThumbLY = (SHORT)v[1], g.sThumbRX = (SHORT)v[2], g.sThumbRY = (SHORT)v[3];
+            g.bLeftTrigger = (BYTE)v[4], g.bRightTrigger = (BYTE)v[5];
+            testmode_pad_pretend(user, 1, &g);
+            snprintf(out, size, "rpad %d: buttons %04x stick %d,%d (a pretended real pad until 'rpad %d off')", user, g.wButtons, v[0], v[1], user);
+        }
+    } else if (!strcmp(name, "shake")) {   /* shake <user> <ms>: the pretended pad of that user shakes its left stick (+-30000 every 70 ms) for <ms>: the break-free of a grab (stage 6f); a console round trip to the N100 is too slow to do it by hand */
+        int user = 0, ms = 3000, half = 150;
+        sscanf(arg, "%d %d %d", &user, &ms, &half);
+        shake_user = user < 0 || user > 3 ? 0 : user, shake_until = GetTickCount() + (unsigned)(ms < 100 ? 100 : ms), shake_t = 0, shake_half = (unsigned)(half < 30 ? 30 : half > 1000 ? 1000 : half);
+        snprintf(out, size, "shake: the pretended pad %d shakes its left stick for %d ms (flip every %u ms)", shake_user, ms, shake_half);
     } else if (!strcmp(name, "key") || !strcmp(name, "keydown") || !strcmp(name, "keyup")) {
         /* key <name|0xDIK> [ms=150]: press and release by itself; keydown <name>: hold; keyup <name>: release */
         char k[32] = "";
@@ -270,7 +297,10 @@ static void run(const char *cmd, char *out, int size)
     } else if (!strcmp(name, "steam")) {
         steam_stats(out, size);
     } else if (!strcmp(name, "net")) {
-        net_stats(out, size);
+        extern int coop_net_command(const char *, char *, int);   /* coop3.c / coop_game.inc (stage 4): co-op session; bare `net` = capture counters */
+        if (!coop_net_command(arg, out, size)) net_stats(out, size);
+    } else if (!strcmp(name, "menu")) {   /* menu status|open|view|ev|text|start|set ...: the co-op lobby screen (stage 8, menu.c) */
+        menu_command(arg, out, size);
     } else if (!strcmp(name, "netmark")) {
         net_mark(arg);
         snprintf(out, size, net_enabled() ? "marked" : "net capture is off (REV2_NETCAP)");
@@ -372,8 +402,14 @@ static void run(const char *cmd, char *out, int size)
         else
             classes_scan(f, !strcmp(flt, "-") ? "" : flt, (unsigned)hex(lo), (unsigned)hex(hi), out, size);
     } else if (!strcmp(name, "shot")) {
-        d3d_request_shot();
-        snprintf(out, size, "shot requested (next presented frame)");
+        int bn = 0, bms = 150;
+        if (sscanf(arg, "%d %d", &bn, &bms) >= 1 && bn > 1) {   /* shot <n> [ms]: a burst taken inside the Present hook */
+            d3d_request_burst(bn, bms);
+            snprintf(out, size, "burst of %d shots, one per %d ms, requested", bn, bms);
+        } else {
+            d3d_request_shot();
+            snprintf(out, size, "shot requested (next presented frame)");
+        }
     } else if (!strcmp(name, "log")) {
         r2_log("console: %s", arg);
         snprintf(out, size, "logged");
@@ -427,4 +463,23 @@ void console_install(void)
 {
     if (r2_env("REV2_CONSOLE", port_text, sizeof port_text))
         CreateThread(NULL, 0, console_thread, NULL, 0, NULL);
+}
+
+/* called every game frame (coop3.c frame_callbacks) */
+void console_shake_tick(void)
+{
+    if (!shake_until) return;
+    unsigned now = GetTickCount();
+    if ((int)(now - shake_until) >= 0) {
+        shake_until = 0;
+        testmode_pad_pretend(shake_user, 0, NULL);
+        return;
+    }
+    if (now - shake_t >= shake_half) {
+        XINPUT_GAMEPAD g;
+        memset(&g, 0, sizeof g);
+        shake_t = now, shake_dir = !shake_dir;
+        g.sThumbLX = (SHORT)(shake_dir ? 30000 : -30000);
+        testmode_pad_pretend(shake_user, 1, &g);
+    }
 }

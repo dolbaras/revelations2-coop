@@ -269,7 +269,7 @@ void testmode_xinput_stats(char *out, int size)
 /* Synthetic pads (console "pad"): the test harness drives the game's pad slots itself. Virtual ViGEm pads did not reach the
  * game: with Steam running the game's XInput answers "not connected" for them (Steam Input owns the device and feeds only the
  * game that has the focus), so the hook answers for a slot the test has set. */
-static struct { volatile LONG active; XINPUT_GAMEPAD pad; DWORD packet; volatile DWORD until; } synth[4];
+static struct { volatile LONG active; volatile LONG base_active; XINPUT_GAMEPAD pad; DWORD packet; volatile DWORD until; } synth[4];
 /* xinput_seen per slot: [0] real success, [1] real not connected, [2] other */
 
 void testmode_pad_set(int slot, int active, const void *gamepad)
@@ -280,10 +280,12 @@ void testmode_pad_set(int slot, int active, const void *gamepad)
     if (gamepad)
         synth[slot].pad = *(const XINPUT_GAMEPAD *)gamepad;
     synth[slot].packet++;
+    synth[slot].base_active = active;
     InterlockedExchange(&synth[slot].active, active);
 }
 
-/* padhold: the state is set now and goes back to a neutral (still connected) pad after ms milliseconds, without a second command */
+/* padhold: the state is set now and goes back (after ms milliseconds, without a second command) to what the slot was before: a neutral synthetic pad
+ * (`pad N 0`), or no synthetic pad at all - then the keep-alive / the human's real pad of the co-op glue answers (stage 5) */
 void testmode_pad_hold(int slot, const void *gamepad, int ms)
 {
     if (slot < 0 || slot > 3)
@@ -292,6 +294,79 @@ void testmode_pad_hold(int slot, const void *gamepad, int ms)
     synth[slot].packet++;
     synth[slot].until = (GetTickCount() + (DWORD)ms) | 1;
     InterlockedExchange(&synth[slot].active, 1);
+}
+
+/* ---- the local human's real pad in co-op (stage 5) ----
+ * The game takes pads from XInput users 0..3 (pad slot k = k-th connected user, logical player 1 = pad slot 0, logical player 2 = pad slot 1). In co-op the glue
+ * keeps users 0 and 1 "connected" (a pad that vanishes ends the split screen within a second) and says which game user carries the local human: the real pad
+ * of this PC (the first connected user; `rpad` can pretend one for tests) is passed through as that game user, the other game user is a neutral pad. Real pads
+ * are never shown to the game under their own number while the mapping is on (a real pad 0 would otherwise become a third pad slot). */
+static volatile LONG keep_user[4];
+static volatile LONG human_user = -1;
+static struct { volatile LONG active; XINPUT_GAMEPAD pad; } rpad[4];   /* test: pretend real pads (console rpad) */
+static volatile DWORD pad_activity_tick;                               /* GetTickCount of the last non-neutral state of the human's real pad */
+static int real_user_cache = -1;
+static DWORD real_user_probe;
+
+void testmode_pad_keep(int user, int on)
+{
+    if (user >= 0 && user < 4)
+        InterlockedExchange(&keep_user[user], on);
+}
+
+void testmode_pad_human(int game_user)
+{
+    InterlockedExchange(&human_user, game_user >= 0 && game_user < 4 ? game_user : -1);
+    real_user_cache = -1;
+}
+
+void testmode_pad_pretend(int user, int active, const void *gamepad)
+{
+    if (user < 0 || user > 3)
+        return;
+    if (gamepad)
+        rpad[user].pad = *(const XINPUT_GAMEPAD *)gamepad;
+    InterlockedExchange(&rpad[user].active, active);
+}
+
+DWORD testmode_pad_activity(void) { return pad_activity_tick; }
+
+static int pad_is_active(const XINPUT_GAMEPAD *g)
+{
+    int d = 9000;   /* a stick dead zone wider than the game's: a resting stick must not claim the input mode */
+    return g->wButtons || g->bLeftTrigger > 40 || g->bRightTrigger > 40 || g->sThumbLX > d || g->sThumbLX < -d || g->sThumbLY > d || g->sThumbLY < -d || g->sThumbRX > d ||
+           g->sThumbRX < -d || g->sThumbRY > d || g->sThumbRY < -d;
+}
+
+/* The state of this PC's real pad (first connected XInput user); 0 = none. Pretended pads (console) come first. */
+static int real_pad_read(XINPUT_STATE *st, DWORD *real_user)
+{
+    for (int u = 0; u < 4; u++)
+        if (rpad[u].active) {
+            memset(st, 0, sizeof *st);
+            st->Gamepad = rpad[u].pad;
+            st->dwPacketNumber = GetTickCount();
+            *real_user = (DWORD)u;
+            return 1;
+        }
+    if (!real_XInputGetState || (background && !pads_allowed && !really_in_front()))
+        return 0;
+    DWORD now = GetTickCount();
+    if (real_user_cache >= 0 && real_XInputGetState((DWORD)real_user_cache, st) == ERROR_SUCCESS) {
+        *real_user = (DWORD)real_user_cache;
+        return 1;
+    }
+    if (real_user_cache >= 0 || (LONG)(now - real_user_probe) >= 1000) {   /* (re)probe once a second: scanning absent users costs time */
+        real_user_probe = now;
+        real_user_cache = -1;
+        for (int u = 0; u < 4; u++)
+            if (real_XInputGetState((DWORD)u, st) == ERROR_SUCCESS) {
+                real_user_cache = u;
+                *real_user = (DWORD)u;
+                return 1;
+            }
+    }
+    return 0;
 }
 
 static DWORD WINAPI hook_XInputGetState(DWORD i, XINPUT_STATE *st)
@@ -303,11 +378,31 @@ static DWORD WINAPI hook_XInputGetState(DWORD i, XINPUT_STATE *st)
             memset(&synth[i].pad, 0, sizeof synth[i].pad);
             synth[i].until = 0;
             synth[i].packet++;
+            InterlockedExchange(&synth[i].active, synth[i].base_active);
         }
-        st->dwPacketNumber = synth[i].packet;
-        st->Gamepad = synth[i].pad;
+        if (synth[i].active) {
+            st->dwPacketNumber = synth[i].packet;
+            st->Gamepad = synth[i].pad;
+            InterlockedIncrement(&xinput_ok);
+            return ERROR_SUCCESS;
+        }
+    }
+    if (i < 4 && keep_user[i] && st) {   /* co-op: this game user is always connected */
+        XINPUT_STATE rs;
+        DWORD ru;
+        memset(st, 0, sizeof *st);
+        if ((LONG)i == human_user && real_pad_read(&rs, &ru)) {
+            *st = rs;
+            if (pad_is_active(&st->Gamepad))
+                pad_activity_tick = GetTickCount() | 1;
+        } else
+            st->dwPacketNumber = 1;
         InterlockedIncrement(&xinput_ok);
         return ERROR_SUCCESS;
+    }
+    if (human_user >= 0 && st) {   /* mapping on: real pads only through the human's game user */
+        memset(st, 0, sizeof *st);
+        return ERROR_DEVICE_NOT_CONNECTED;
     }
     if (background && !pads_allowed && !really_in_front()) {
         if (InterlockedIncrement(&logged) == 1)
@@ -325,6 +420,23 @@ static DWORD WINAPI hook_XInputGetState(DWORD i, XINPUT_STATE *st)
     return r;
 }
 
+/* What the game's own pad scan would see on users 0..3 right now (console `pad`, pretended and real pads, the co-op keep-alive users), combined: the lobby
+ * overlay (menu.c) reads its pad input here. Returns 1 when any pad answers. */
+int testmode_pad_snapshot(unsigned short *buttons, short *lx, short *ly)
+{
+    int any = 0;
+    *buttons = 0, *lx = 0, *ly = 0;
+    for (DWORD u = 0; u < 4; u++) {
+        XINPUT_STATE st;
+        memset(&st, 0, sizeof st);
+        if (hook_XInputGetState(u, &st) != ERROR_SUCCESS) continue;
+        any = 1;
+        *buttons = (unsigned short)(*buttons | st.Gamepad.wButtons);
+        if (!*lx && !*ly) *lx = st.Gamepad.sThumbLX, *ly = st.Gamepad.sThumbLY;
+    }
+    return any;
+}
+
 /* XInputGetCapabilities (ordinal 4) / XInputSetState (3): the game's pad scan (sPad_AssignXInputPad) asks for the capabilities of a user it found
  * connected and gives up when that call fails, so a spoofed pad must answer this too (Type 1 gamepad, SubType 1 gamepad). */
 typedef DWORD (WINAPI *XInputGetCapabilities_t)(DWORD, DWORD, XINPUT_CAPABILITIES *);
@@ -334,7 +446,7 @@ static XInputSetState_t real_XInputSetState;
 
 static DWORD WINAPI hook_XInputGetCapabilities(DWORD i, DWORD flags, XINPUT_CAPABILITIES *c)
 {
-    if (i < 4 && synth[i].active && c) {
+    if (i < 4 && (synth[i].active || keep_user[i]) && c) {
         memset(c, 0, sizeof *c);
         c->Type = XINPUT_DEVTYPE_GAMEPAD;
         c->SubType = XINPUT_DEVSUBTYPE_GAMEPAD;
@@ -349,8 +461,12 @@ static DWORD WINAPI hook_XInputGetCapabilities(DWORD i, DWORD flags, XINPUT_CAPA
 
 static DWORD WINAPI hook_XInputSetState(DWORD i, XINPUT_VIBRATION *v)
 {
-    if (i < 4 && synth[i].active)
+    if (i < 4 && (LONG)i == human_user && keep_user[i] && real_XInputGetState && real_XInputSetState && real_user_cache >= 0)   /* rumble goes to the human's real pad */
+        return real_XInputSetState((DWORD)real_user_cache, v);
+    if (i < 4 && (synth[i].active || keep_user[i]))
         return ERROR_SUCCESS;
+    if (human_user >= 0)
+        return ERROR_DEVICE_NOT_CONNECTED;
     return real_XInputSetState ? real_XInputSetState(i, v) : ERROR_DEVICE_NOT_CONNECTED;
 }
 
@@ -585,6 +701,12 @@ void testmode_install(void)
         real_LoadLibraryW = (LoadLibraryW_t)r2_patch_iat("KERNEL32.dll", "LoadLibraryW", (void *)hook_LoadLibraryW);
         real_MessageBoxW = (MessageBoxW_t)r2_patch_iat("USER32.dll", "MessageBoxW", (void *)hook_MessageBoxW);
     }
+    if (!r2_pass())   /* (stage 5: always, also in a player's game - the co-op glue keeps pads connected and passes the human's real pad through) */
+    {
+        real_XInputGetState = (XInputGetState_t)r2_patch_iat("XINPUT1_3.dll", "#2", (void *)hook_XInputGetState);
+        real_XInputSetState = (XInputSetState_t)r2_patch_iat("XINPUT1_3.dll", "#3", (void *)hook_XInputSetState);
+        real_XInputGetCapabilities = (XInputGetCapabilities_t)r2_patch_iat("XINPUT1_3.dll", "#4", (void *)hook_XInputGetCapabilities);
+    }
     if (!(have_pos || have_size || background || winlog || adapter_mode[0]))
         return;
     real_CreateWindowExA = (CreateWindowExA_t)r2_patch_iat("USER32.dll", "CreateWindowExA", (void *)hook_CreateWindowExA);
@@ -601,12 +723,6 @@ void testmode_install(void)
     real_SetCursorPos = (SetCursorPos_t)r2_patch_iat("USER32.dll", "SetCursorPos", (void *)hook_SetCursorPos);
     if (background)
         real_GetForegroundWindow = (GetForegroundWindow_t)r2_patch_iat("USER32.dll", "GetForegroundWindow", (void *)hook_GetForegroundWindow);
-    if (!r2_pass())
-    {
-        real_XInputGetState = (XInputGetState_t)r2_patch_iat("XINPUT1_3.dll", "#2", (void *)hook_XInputGetState);
-        real_XInputSetState = (XInputSetState_t)r2_patch_iat("XINPUT1_3.dll", "#3", (void *)hook_XInputSetState);
-        real_XInputGetCapabilities = (XInputGetCapabilities_t)r2_patch_iat("XINPUT1_3.dll", "#4", (void *)hook_XInputGetCapabilities);
-    }
     r2_log("test mode: pos=%d,%d (%s) size=%dx%d (%s) background=%d adapter=%s", win_x, win_y, have_pos ? "on" : "off", win_w, win_h,
            have_size ? "on" : "off", background, adapter_mode[0] ? adapter_mode : "game's");
 }

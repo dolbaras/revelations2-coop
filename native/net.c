@@ -568,7 +568,7 @@ static int is_text(const char *p, char *out, int size)
 static void net_iface(void *p, const char *ver, int fam);
 static int ret_kind(int fam, int slot);
 static int nargs(int fam, int slot);
-static int p2p_channel;   /* SteamNetworking006+ has a channel argument; the game asks for 005 (no channel) */
+static int p2p_channel;   /* SteamNetworking005 already has the channel argument: the game passes 905 in its QoS loop and 0 in its data loop (stage 4 Steam notes) */
 static int fam_of_accessor(int slot)
 {
     switch (slot) {
@@ -696,7 +696,7 @@ static int ret_kind(int fam, int slot)
 static int nargs(int fam, int slot)
 {
     static const signed char mm[38] = {0, 4, 4, 4, 0, 3, 3, 2, 1, 1, 1, 2, 2, 2, 2, 2, 4, 2, 4, 3, 4, 2, 7, 3, 5, 4, 4, 7, 2, 6, 4, 3, 2, 3, 3, 3, 4, 4};
-    static const signed char net[22] = {5, 1, 4, 2, 2, 3, 3, 1, 4, 4, 4, 1, 1, 4, 1, 4, 1, 4, 4, 4, 1, 0};
+    static const signed char net[22] = {6, 2, 5, 2, 2, 3, 3, 1, 4, 4, 4, 1, 1, 4, 1, 4, 1, 4, 4, 4, 1, 0};
     static const signed char http[25] = {2, 3, 2, 3, 3, 2, 2, 1, 1, 2, 4, 2, 4, 5, 1, 2, 4, 0, 1, 4, 2, 2, 2, 2, 2};
     static const signed char fr[52] = {0, 1, 0, 1, 3, 2, 2, 2, 3, 3, 2, 2, 0, 1, 1, 1, 3, 3, 0, 2, 2, 2, 3, 2, 3, 4, 3, 1, 1, 3, 2, 3, 3, 3, 2, 2, 2, 3, 2, 2, 2, 3, 0, 2, 0, 4, 2, 4, 2, 5, 0, 3};
     static const signed char user[24] = {0, 0, 1, 6, 2, 1, 2, 0, 0, 1, 6, 6, 0, 3, 5, 2, 1, 2, 0, 2, 1, 4, 0, 0};
@@ -789,7 +789,7 @@ static void net_iface(void *p, const char *ver, int fam)
         else if (!strncmp(ver, "SteamUtils", 10)) fam = F_UTILS;
         else if (!strncmp(ver, "SteamMatchMakingServers", 23)) fam = F_MMSERVERS;
         else if (!strncmp(ver, "SteamMatchMaking", 16)) fam = F_MM;
-        else if (!strncmp(ver, "SteamNetworking", 15)) fam = F_NET;
+        else if (!strncmp(ver, "SteamNetworking", 15) && ver[15] >= '0' && ver[15] <= '9') fam = F_NET;   /* SteamNetworking005 only: SteamNetworkingMessages / Sockets / Utils are other interfaces */
         else if (!strncmp(ver, "STEAMHTTP_", 10)) fam = F_HTTP;
         else if (!strncmp(ver, "STEAMAPPS_", 10)) fam = F_APPS;
     }
@@ -799,7 +799,7 @@ static void net_iface(void *p, const char *ver, int fam)
     }
     txt("steam interface %s -> %p (%s)", ver, p, fam_name[fam]);
     if (fam == F_NET)
-        p2p_channel = strcmp(ver + strlen(ver) - 3, "006") >= 0;
+        p2p_channel = strcmp(ver + strlen(ver) - 3, "005") >= 0;
     wrap_vtable(*(void ***)p, fam, 0, 0);
 }
 

@@ -1,9 +1,16 @@
 # Resident Evil Revelations 2 co-op (work in progress)
 
 Network co-op for the story campaign of Resident Evil Revelations 2 (Steam build 3658995, `rerev2.exe`, 32-bit).
-Status: **stage 3, work in progress** (the proxy gets code into the running game, drives menus and the campaign from a test console, walks the engine's classes, starts a second human player on one PC without a physical second pad, shows either player full screen, swaps the character in a slot and replays a recorded path into a second character as a "network puppet"). There is **no network co-op yet**: the transport and the lobby (each player picks the character they play, as in RE5/RE6) come next. Nothing here modifies the game files
+Status: **developer build, not released, no installer yet.** Network co-op for the story campaign runs between two real game instances on two PCs in the author's test lab: each PC shows its own character full screen and the partner is a puppet moved from the network state. Nothing here modifies the game files
 and nothing touches the Steam stub: the DLL is loaded by the exe's own import table and only patches import slots
 and COM vtables in memory.
+
+## What works (shown on two PCs, test copies)
+
+- **Session and transport**: host / join (ENet over UDP with a direct IP; a Steam transport with a lobby for invites and Steam's relay is built and tested offline, see `docs/steam-transport.md`), a small lobby where each player picks the character they play (as in RE5/RE6), a level-load barrier (up to 300 s, with a "waiting for <name>" strip on the faster PC), 20 Hz character state, the local human plays with keyboard / mouse or a real pad, partner death and retry are coupled.
+- **World sync** (stage 6, on by default in a session): the host's story creates the enemies, the other PC gets replicas; a kill is credited only to the human whose slot made it; scenario flags are mirrored; the story's co-op door opens on both PCs from either player's press; enemy grabs of a human are replayed on the partner's puppet and released with it; a human lost in the void or held by a vanished enemy is detected from the game's own game-over state.
+- **Achievements for every player** (stage 8b): the game's own stat counters are gated per player, so a record belongs to the player who earned it and shared records go to both. In every test the real Steam unlocks are blocked (`WOULD UNLOCK` is only logged); the end of Episode 1 gave identical records on both PCs.
+- **Episode 1**: both halves were taken to the end-of-episode screens on two PCs. In those runs the route was shortened with test-console moves and the end of the half was triggered with the story's own order from the console; walking to the in-game trigger, separated sections, bosses, the bonus episodes (The Struggle, Little Miss), Episodes 2-4, Survival / Invisible and the in-lobby achievement indicator are **not done yet**.
 
 ## Layout
 

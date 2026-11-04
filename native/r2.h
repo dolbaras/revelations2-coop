@@ -31,6 +31,11 @@ HWND testmode_window(void);
 void testmode_xinput_stats(char *out, int size);
 void testmode_pad_set(int slot, int active, const void *xinput_gamepad);   /* synthetic pad for a slot (console "pad") */
 void testmode_pad_hold(int slot, const void *xinput_gamepad, int ms);       /* ... released by itself after ms */
+void testmode_pad_keep(int user, int on);                                    /* co-op (stage 5): this game user is always a connected pad (neutral unless it is the human's) */
+void testmode_pad_human(int game_user);                                      /* game user that carries this PC's real pad (-1 off) */
+void testmode_pad_pretend(int user, int active, const void *xinput_gamepad); /* test: pretend a real pad (console rpad) */
+int testmode_pad_snapshot(unsigned short *buttons, short *lx, short *ly);   /* stage 8: what the game's pad scan would see on users 0..3 (lobby overlay input) */
+DWORD testmode_pad_activity(void);                                           /* tick of the last non-neutral state of the human's real pad */
 void testmode_dinput_stats(char *out, int size);
 
 /* inject.c: synthetic keyboard / mouse for test runs */
@@ -52,11 +57,15 @@ void inject_vk_from_dik(int dik, int *vk);
 /* d3d.c: Direct3D 9 creation/device/Present hooks, screenshots (F11, console "shot", REV2_SHOTS) */
 void d3d_install(void);
 void d3d_request_shot(void);
+void d3d_request_burst(int n, int ms);
+void console_shake_tick(void);
 unsigned d3d_frames(void);
 
 /* steam.c: timing of the game's SteamAPI_Init / SteamAPI_RunCallbacks calls */
 void steam_install(void);
 void steam_stats(char *out, int size);
+int steam_ach_blocking(void);                       /* stage 8b: 1 = SetAchievement and the other writers are logged and NOT passed to Steam (REV2_ACHBLOCK, default with the test console) */
+void steam_ach_status(char *out, int size);         /* console `net w ach`: block mode and the (would-be) unlock list */
 
 /* diag.c: thread creation, long waits, window messages (start-up diagnostics, log only) */
 void diag_install(void);
@@ -90,6 +99,13 @@ void lt_post(const char *cmd, char *out, int size);
 int lt_on_game_thread(void);
 void s3_run(const char *cmd, char *out, int size);
 void console_exec(const char *cmd, char *out, int size);
+
+/* menu.c (stage 8): the "Co-Op" entry in the game's menus, lobby overlay, pause menu "Leave"; see menu.h */
+void menu_install(void);                 /* once, after the first Present */
+void menu_frame(void);                   /* every pass of the game loop, game thread */
+void menu_present(void *d3d9_device);    /* Present hook: draws the lobby overlay while it is open */
+void menu_before_reset(void);            /* Reset hook: releases the overlay's resources */
+void menu_command(const char *arg, char *out, int size);   /* console `menu ...` */
 
 /* console.c: UDP test console on 127.0.0.1:REV2_CONSOLE */
 void console_install(void);

@@ -1,3 +1,6 @@
 native/build/
 __pycache__/
 dist/
+tests/build/
+native/build-steam/
+native/build-menu/
