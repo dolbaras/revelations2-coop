@@ -5,6 +5,10 @@
  * onto the next stage's floor, the list became the next stage's blocks, the block under the OTHER human (still in the old stage) was unloaded and he fell to his death.
  * The mirror: every PC sends its own list (without what it merged for the partner) and, just before the game's unload step (`FUN_00466C30`, once a frame), puts the partner's triples into the free slots of the
  * current list and asks the game to load them. A triple that only the partner needs is "merged-only"; it is not sent back (no echo) and it is removed again when the partner's list drops it.
+ * A retry (checkpoint reload) found on hardware (6k): the engine empties the loader's list when the level is torn down; the partner's list received BEFORE the death was still held and was merged into the
+ * emptied list in that frame and asked for from the loader, blocks (100,2) / (100,3) of an area that was being rebuilt: the set models of those blocks had no action table and the host died in uSmChain_vf9.
+ * The rule: when the engine's own need is EMPTY (no valid entry that is not merged-only) there is nothing to serve; the merged-only entries are dropped, nothing is merged or asked, and the mirror waits for
+ * the next zone hit of the local human. A far-apart human always has a non-empty own list (he stands on a loaded block that a zone hit gave), so the mirror's purpose is not touched.
  *   bgl_merge(): one call per frame, inputs: the current list as read, the previous frame's copy, the state; outputs: the list to write back, the local list to send, the triples to ask the loader for. */
 #ifndef BGL_LOGIC_H
 #define BGL_LOGIC_H
@@ -18,7 +22,7 @@ typedef struct {
     int remote_n;
     bgl_t mo[BGL_SLOTS];       /* triples this PC merged for the partner in the previous call (not its own need) */
     int mo_n;
-    unsigned merged, overflow, removed;   /* counters: slots filled / triples that found no free slot / stale merged-only entries dropped */
+    unsigned merged, overflow, removed, idle;   /* counters: slots filled / triples that found no free slot / stale merged-only entries dropped / calls on which the engine's own list was empty (level load, retry: nothing merged) */
 } bgl_state_t;
 
 static inline int bgl_valid(const bgl_t *t) { return t->stage >= 0 || t->block >= 0; }   /* the engine's free slot is (-1, -1, -1) */
@@ -63,6 +67,15 @@ static inline int bgl_merge(bgl_state_t *m, const bgl_t cur[BGL_SLOTS], const bg
         local[n++] = cur[i];
     }
     *local_n = n;
+    /* 2b. no own need at all: the engine's loader was reset (level load, retry) or no zone has been hit yet: nothing to serve, forget what was merged (the engine unloads it with its own step) */
+    if (n == 0) {
+        for (int i = 0; i < BGL_SLOTS; i++)
+            if (bgl_valid(&cur2[i])) bgl_clear_slot(&cur2[i]), m->removed++;   /* everything left in the list is merged-only: it was not in the local need */
+        m->mo_n = 0;
+        *ask_n = 0;
+        m->idle++;
+        return !bgl_list_equal(cur, cur2);
+    }
     /* 3. merge the partner's triples into the free slots */
     int mo_n = 0, an = 0;
     bgl_t mo_new[BGL_SLOTS];

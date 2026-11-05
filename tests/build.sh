@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build the offline tests and the headless bot (native 64-bit Windows, workspace Zig) into build/.
-#   sh tests/build.sh          builds test_proto.exe test_session.exe test_steam.exe test_lobby.exe test_ach.exe test_glue.exe coop_bot.exe
+#   sh tests/build.sh          builds test_proto.exe test_session.exe test_steam.exe test_lobby.exe test_ach.exe test_glue.exe coop_bot.exe  (also test_bgl.exe, test_radio.exe, test_pad.exe)
 set -e
 cd "$(dirname "$0")"
 ZIG="${ZIG:-../../../../tools/zig/zig-x86_64-windows-0.16.0/zig.exe}"
@@ -17,3 +17,5 @@ CF="-target $TARGET -O1 -g -Wall -Wno-unused-function -DWIN32"
 "$ZIG" cc $CF -o build/test_ach.exe test_ach.c
 "$ZIG" cc $CF -o build/test_glue.exe test_glue.c
 "$ZIG" cc $CF -o build/test_bgl.exe test_bgl.c
+"$ZIG" cc $CF -o build/test_radio.exe test_radio.c
+"$ZIG" cc $CF -o build/test_pad.exe test_pad.c

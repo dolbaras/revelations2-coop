@@ -902,6 +902,10 @@ static void w_command(const char *rest, char *out, int size)
         snprintf(out, size, "hold pose action %d (applied %u times)", g_hold_act, g_hold_applied);
     } else if (!strcmp(sub, "sf")) {   /* net w sf [get n | set n v | watch 0|1 | watch log N]: scenario flags of the story FSM (scen.inc) */
         scen_command(arg, out, size);
+    } else if (!strcmp(sub, "radio")) {   /* net w radio [0|1]: the end-of-half trigger (scen.inc, 6m) */
+        char t[48];
+        snprintf(t, sizeof t, "radio %s", arg);
+        scen_command(t, out, size);
     } else if (!strcmp(sub, "stages")) {   /* net w stages [all]: the story's stage transition table of the current episode (scen.inc, 6h) */
         scen_stages_command(arg, out, size);
     } else if (!strcmp(sub, "bgl")) {   /* net w bgl [req <stage> <block> [ep]]: the background loader that streams the next stage (scen.inc, 6j) */

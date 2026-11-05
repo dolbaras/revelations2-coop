@@ -74,7 +74,7 @@ static void room(lobby_view *v)
     common(v, "Co-Op Play");
     snprintf(v->subtitle, sizeof v->subtitle, "Your address (give it to your friend): 192.168.1.5:28410");
     row(v, "Claire", "(you)", LV_NORMAL);
-    row(v, "Moira", "BeBeBe", LV_GREY);
+    row(v, "Moira", "Boris6", LV_GREY);
     row(v, "Barry", "", LV_NORMAL);
     row(v, "Natalia", "", LV_GREY);
     row(v, "Episode", "<  1  >", LV_NORMAL);
@@ -83,9 +83,9 @@ static void room(lobby_view *v)
     row(v, "Leave", "", LV_NORMAL);
     v->sel = 0;
     v->nplayers = 2;
-    snprintf(v->players[0].name, sizeof v->players[0].name, "YoungOn"), snprintf(v->players[0].chr, sizeof v->players[0].chr, "Claire");
+    snprintf(v->players[0].name, sizeof v->players[0].name, "Alisa77"), snprintf(v->players[0].chr, sizeof v->players[0].chr, "Claire");
     v->players[0].host = 1, v->players[0].me = 1, v->players[0].ping = -1;
-    snprintf(v->players[1].name, sizeof v->players[1].name, "BeBeBe"), snprintf(v->players[1].chr, sizeof v->players[1].chr, "Moira");
+    snprintf(v->players[1].name, sizeof v->players[1].name, "Boris6"), snprintf(v->players[1].chr, sizeof v->players[1].chr, "Moira");
     v->players[1].ready = 0, v->players[1].ping = 12;
     snprintf(v->status, sizeof v->status, "The game can start when your partner is ready.");
     snprintf(v->note, sizeof v->note, "%s", lobby_own_text(LT_SAVE_WARN, 0));

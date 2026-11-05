@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "r2.h"
+#include "pad_logic.h"
 
 static int pads_allowed;
 static int have_pos, win_x, win_y, have_size, win_w, win_h, background, winlog;
@@ -30,12 +31,38 @@ static WNDPROC game_wndproc;
 
 int testmode_background(void) { return background; }
 int testmode_force_windowed(void) { return background || have_pos || have_size; }
+/* The game's window. A test start records it when the window is created (the hooks below are installed only with a test option); a player's start never does, so the window of this process is
+ * found when it is first needed (6n: the lobby's keyboard / mouse and the focus gate of real pads need it; without it a player's lobby would see "no window in front"). */
+static HWND found_window;
+static BOOL CALLBACK find_window_cb(HWND hw, LPARAM lp)
+{
+    DWORD pid = 0;
+    RECT rc;
+    GetWindowThreadProcessId(hw, &pid);
+    if (pid != GetCurrentProcessId() || !IsWindowVisible(hw) || GetWindow(hw, GW_OWNER) || !GetClientRect(hw, &rc) || rc.right < 320 || rc.bottom < 200)
+        return TRUE;
+    *(HWND *)lp = hw;
+    return FALSE;
+}
 HWND testmode_window(void) { return game_window; }
+HWND testmode_find_window(void)
+{
+    if (game_window) return game_window;
+    if (!found_window || !IsWindow(found_window)) {
+        HWND hw = NULL;
+        found_window = NULL;
+        EnumWindows(find_window_cb, (LPARAM)&hw);
+        found_window = hw;
+        if (hw) r2_log("window: found the game window %p of this process (no test hook recorded one: a player's start)", (void *)hw);
+    }
+    return found_window;
+}
 void testmode_window_size(int *w, int *h) { *w = have_size ? win_w : 0, *h = have_size ? win_h : 0; }
 
 static int really_in_front(void)
 {
-    return game_window && GetForegroundWindow() == game_window;
+    HWND w = testmode_find_window();
+    return w && GetForegroundWindow() == w;
 }
 
 typedef HWND (WINAPI *CreateWindowExA_t)(DWORD, LPCSTR, LPCSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID);
@@ -62,6 +89,8 @@ static GetKeyboardState_t real_GetKeyboardState;
 static ClipCursor_t real_ClipCursor;
 static SetCursorPos_t real_SetCursorPos;
 static XInputGetState_t real_XInputGetState;
+static FARPROC priv_caps_fn, priv_set_fn;       /* XInputGetCapabilities / XInputSetState of the private copy (the game's pad scan asks for the capabilities too) */
+static XInputGetState_t priv_XInputGetState;   /* REV2_PADS=1 (test instances only): XInputGetState of a private copy of the system's xinput1_4.dll (priv_xinput_init) */
 
 /* The outer rectangle for the wanted client rectangle at win_x, win_y. */
 static void outer_rect(HWND w, int *x, int *y, int *cw, int *ch)
@@ -264,6 +293,14 @@ void testmode_xinput_stats(char *out, int size)
                      real_XInputGetState ? "in place" : "NOT in place", xinput_calls, xinput_ok);
     for (int i = 0; i < 4; i++)
         o += snprintf(out + o, size - o, " %d=%ld/%ld/%ld", i, xinput_seen[i][0], xinput_seen[i][1], xinput_seen[i][2]);
+    /* what the system's XInput answers right now, through the game's normal import and (REV2_PADS=1) through the private copy: return code / packet number / buttons */
+    o += snprintf(out + o, size - o, "; probe (rc/packet/buttons) normal|private:");
+    for (DWORD u = 0; u < 4 && o < size - 60; u++) {
+        XINPUT_STATE a, b;
+        memset(&a, 0, sizeof a), memset(&b, 0, sizeof b);
+        DWORD ra = real_XInputGetState ? real_XInputGetState(u, &a) : 0xFFFF, rb = priv_XInputGetState ? priv_XInputGetState(u, &b) : 0xFFFF;
+        o += snprintf(out + o, size - o, " %lu=%lu/%lu/%04x|%lu/%lu/%04x", (unsigned long)u, (unsigned long)ra, (unsigned long)a.dwPacketNumber, a.Gamepad.wButtons, (unsigned long)rb, (unsigned long)b.dwPacketNumber, b.Gamepad.wButtons);
+    }
 }
 
 /* Synthetic pads (console "pad"): the test harness drives the game's pad slots itself. Virtual ViGEm pads did not reach the
@@ -305,8 +342,13 @@ static volatile LONG keep_user[4];
 static volatile LONG human_user = -1;
 static struct { volatile LONG active; XINPUT_GAMEPAD pad; } rpad[4];   /* test: pretend real pads (console rpad) */
 static volatile DWORD pad_activity_tick;                               /* GetTickCount of the last non-neutral state of the human's real pad */
-static int real_user_cache = -1;
-static DWORD real_user_probe;
+static volatile LONG real_user_cache = -1;   /* the XInput user chosen as the human's pad (pad_logic.h); read by several threads (R2-4) */
+static pad_act_t pad_scan_act[4];            /* per user: baseline of the activity detector */
+static pad_pick_t pad_scan_pick;
+static int pad_scan_conn[4];
+static DWORD pad_scan_tick, pad_absent_tick[4];
+static volatile LONG pad_scan_lock;          /* one thread rescans at a time, the others use the choice made */
+static pad_act_t pad_human_act;              /* the chosen pad as the game polls it (activity tick for the input mode) */
 
 void testmode_pad_keep(int user, int on)
 {
@@ -317,7 +359,8 @@ void testmode_pad_keep(int user, int on)
 void testmode_pad_human(int game_user)
 {
     InterlockedExchange(&human_user, game_user >= 0 && game_user < 4 ? game_user : -1);
-    real_user_cache = -1;
+    InterlockedExchange(&real_user_cache, -1);
+    pad_pick_init(&pad_scan_pick);
 }
 
 void testmode_pad_pretend(int user, int active, const void *gamepad)
@@ -331,11 +374,29 @@ void testmode_pad_pretend(int user, int active, const void *gamepad)
 
 DWORD testmode_pad_activity(void) { return pad_activity_tick; }
 
-static int pad_is_active(const XINPUT_GAMEPAD *g)
+/* The Steam overlay (gameoverlayrenderer.dll, loaded into the game by the Steam stub) hooks XInput for Steam Input and may answer "connected, packet 0, all zero" to every poll while the
+ * game window is not the focused one, which is the normal state of a background test instance (found in Revelations 1, 2026-11-04, ViGEm pads). A private copy of the system DLL under
+ * another name is a module the overlay does not know. Test instances only (REV2_PADS=1): a player's game is not changed. */
+static void priv_xinput_init(void)
 {
-    int d = 9000;   /* a stick dead zone wider than the game's: a resting stick must not claim the input mode */
-    return g->wButtons || g->bLeftTrigger > 40 || g->bRightTrigger > 40 || g->sThumbLX > d || g->sThumbLX < -d || g->sThumbLY > d || g->sThumbLY < -d || g->sThumbRX > d ||
-           g->sThumbRX < -d || g->sThumbRY > d || g->sThumbRY < -d;
+    char sys[MAX_PATH], tmp[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
+    if (!GetSystemDirectoryA(sys, sizeof sys) || !GetTempPathA(sizeof tmp, tmp))
+        return;
+    snprintf(src, sizeof src, "%s\\xinput1_4.dll", sys);
+    snprintf(dst, sizeof dst, "%sRev2CoopXInputPriv.dll", tmp);
+    if (!CopyFileA(src, dst, FALSE) && GetFileAttributesA(dst) == INVALID_FILE_ATTRIBUTES) {
+        r2_log("xinput: private copy %s -> %s failed (%lu)", src, dst, GetLastError());
+        return;
+    }
+    HMODULE m = LoadLibraryA(dst);
+    if (m)
+        priv_XInputGetState = (XInputGetState_t)GetProcAddress(m, "XInputGetState"), priv_caps_fn = GetProcAddress(m, "XInputGetCapabilities"), priv_set_fn = GetProcAddress(m, "XInputSetState");
+    r2_log("xinput: private copy %s loaded %p, XInputGetState %p (REV2_PADS=1: the Steam overlay's XInput hook is bypassed)", dst, (void *)m, (void *)priv_XInputGetState);
+}
+
+static DWORD poll_real(DWORD user, XINPUT_STATE *st)
+{
+    return pads_allowed && priv_XInputGetState ? priv_XInputGetState(user, st) : real_XInputGetState(user, st);
 }
 
 /* The state of this PC's real pad (first connected XInput user); 0 = none. Pretended pads (console) come first. */
@@ -349,24 +410,55 @@ static int real_pad_read(XINPUT_STATE *st, DWORD *real_user)
             *real_user = (DWORD)u;
             return 1;
         }
-    if (!real_XInputGetState || (background && !pads_allowed && !really_in_front()))
+    /* a real pad belongs to the window that has the focus (a player who works in another window with a pad must not steer the game; the lobby overlay reads through here too); a test instance
+     * that must read pads in the background says REV2_PADS=1 (R2-3) */
+    if (!real_XInputGetState || (!pads_allowed && !really_in_front()))
         return 0;
     DWORD now = GetTickCount();
-    if (real_user_cache >= 0 && real_XInputGetState((DWORD)real_user_cache, st) == ERROR_SUCCESS) {
-        *real_user = (DWORD)real_user_cache;
-        return 1;
-    }
-    if (real_user_cache >= 0 || (LONG)(now - real_user_probe) >= 1000) {   /* (re)probe once a second: scanning absent users costs time */
-        real_user_probe = now;
-        real_user_cache = -1;
-        for (int u = 0; u < 4; u++)
-            if (real_XInputGetState((DWORD)u, st) == ERROR_SUCCESS) {
-                real_user_cache = u;
-                *real_user = (DWORD)u;
-                return 1;
+    if ((LONG)(now - pad_scan_tick) >= 200 && InterlockedCompareExchange(&pad_scan_lock, 1, 0) == 0) {   /* rescan five times a second, never from two threads at once (R2-4) */
+        int ev[4] = {0, 0, 0, 0};
+        pad_scan_tick = now;
+        for (int u = 0; u < 4; u++) {
+            XINPUT_STATE s;
+            if (!pad_scan_conn[u] && pad_absent_tick[u] && (LONG)(now - pad_absent_tick[u]) < 1000)   /* absent users: once a second, scanning them costs time */
+                continue;
+            if (poll_real((DWORD)u, &s) == ERROR_SUCCESS) {
+                pad_scan_conn[u] = 1;
+                ev[u] = pad_act_update(&pad_scan_act[u], s.Gamepad.wButtons, s.Gamepad.bLeftTrigger, s.Gamepad.bRightTrigger, s.Gamepad.sThumbLX, s.Gamepad.sThumbLY, s.Gamepad.sThumbRX, s.Gamepad.sThumbRY);
+            } else {
+                pad_scan_conn[u] = 0;
+                pad_absent_tick[u] = now | 1;
+                pad_scan_act[u].have = 0;
             }
+        }
+        int c = pad_pick_update(&pad_scan_pick, now, pad_scan_conn, ev);
+        if (c != (int)real_user_cache)
+            r2_log("xinput: the human's pad is XInput user %d (was %d)", c, (int)real_user_cache);
+        InterlockedExchange(&real_user_cache, c);
+        InterlockedExchange(&pad_scan_lock, 0);
     }
-    return 0;
+    LONG c = real_user_cache;
+    if (c < 0 || poll_real((DWORD)c, st) != ERROR_SUCCESS)
+        return 0;
+    *real_user = (DWORD)c;
+    return 1;
+}
+
+/* XInputEnable (ordinal 5 of XINPUT1_3): the game turns XInput off when its window is not the active application and XInput then answers every poll with zeros. A test instance that must
+ * read pads in the background (REV2_PADS=1) keeps it on. */
+typedef void (WINAPI *XInputEnable_t)(BOOL);
+static XInputEnable_t real_XInputEnable;
+static volatile LONG n_xenable_off;
+
+static void WINAPI hook_XInputEnable(BOOL enable)
+{
+    if (!enable && pads_allowed) {
+        if (InterlockedIncrement(&n_xenable_off) <= 3)
+            r2_log("xinput: the game asked XInputEnable(FALSE); kept on (REV2_PADS=1)");
+        enable = TRUE;
+    }
+    if (real_XInputEnable)
+        real_XInputEnable(enable);
 }
 
 static DWORD WINAPI hook_XInputGetState(DWORD i, XINPUT_STATE *st)
@@ -393,8 +485,8 @@ static DWORD WINAPI hook_XInputGetState(DWORD i, XINPUT_STATE *st)
         memset(st, 0, sizeof *st);
         if ((LONG)i == human_user && real_pad_read(&rs, &ru)) {
             *st = rs;
-            if (pad_is_active(&st->Gamepad))
-                pad_activity_tick = GetTickCount() | 1;
+            if (pad_act_update(&pad_human_act, st->Gamepad.wButtons, st->Gamepad.bLeftTrigger, st->Gamepad.bRightTrigger, st->Gamepad.sThumbLX, st->Gamepad.sThumbLY, st->Gamepad.sThumbRX, st->Gamepad.sThumbRY))
+                pad_activity_tick = GetTickCount() | 1;   /* an EVENT of the human's pad, not its level (R2-2) */
         } else
             st->dwPacketNumber = 1;
         InterlockedIncrement(&xinput_ok);
@@ -409,7 +501,7 @@ static DWORD WINAPI hook_XInputGetState(DWORD i, XINPUT_STATE *st)
             r2_log("xinput: pads hidden while the window is not in front (REV2_BACKGROUND)");
         return ERROR_DEVICE_NOT_CONNECTED;
     }
-    DWORD r = real_XInputGetState(i, st);
+    DWORD r = poll_real(i, st);
     if (i < 4)
         InterlockedIncrement(&xinput_seen[i][r == ERROR_SUCCESS ? 0 : r == ERROR_DEVICE_NOT_CONNECTED ? 1 : 2]);
     if (r == ERROR_SUCCESS)
@@ -456,17 +548,21 @@ static DWORD WINAPI hook_XInputGetCapabilities(DWORD i, DWORD flags, XINPUT_CAPA
         c->Gamepad.sThumbLX = c->Gamepad.sThumbLY = c->Gamepad.sThumbRX = c->Gamepad.sThumbRY = (SHORT)-64;
         return ERROR_SUCCESS;
     }
+    if (pads_allowed && priv_caps_fn)
+        return ((XInputGetCapabilities_t)priv_caps_fn)(i, flags, c);
     return real_XInputGetCapabilities ? real_XInputGetCapabilities(i, flags, c) : ERROR_DEVICE_NOT_CONNECTED;
 }
 
 static DWORD WINAPI hook_XInputSetState(DWORD i, XINPUT_VIBRATION *v)
 {
     if (i < 4 && (LONG)i == human_user && keep_user[i] && real_XInputGetState && real_XInputSetState && real_user_cache >= 0)   /* rumble goes to the human's real pad */
-        return real_XInputSetState((DWORD)real_user_cache, v);
+        return (pads_allowed && priv_set_fn) ? ((XInputSetState_t)priv_set_fn)((DWORD)real_user_cache, v) : real_XInputSetState((DWORD)real_user_cache, v);
     if (i < 4 && (synth[i].active || keep_user[i]))
         return ERROR_SUCCESS;
     if (human_user >= 0)
         return ERROR_DEVICE_NOT_CONNECTED;
+    if (pads_allowed && priv_set_fn)
+        return ((XInputSetState_t)priv_set_fn)(i, v);
     return real_XInputSetState ? real_XInputSetState(i, v) : ERROR_DEVICE_NOT_CONNECTED;
 }
 
@@ -706,6 +802,12 @@ void testmode_install(void)
         real_XInputGetState = (XInputGetState_t)r2_patch_iat("XINPUT1_3.dll", "#2", (void *)hook_XInputGetState);
         real_XInputSetState = (XInputSetState_t)r2_patch_iat("XINPUT1_3.dll", "#3", (void *)hook_XInputSetState);
         real_XInputGetCapabilities = (XInputGetCapabilities_t)r2_patch_iat("XINPUT1_3.dll", "#4", (void *)hook_XInputGetCapabilities);
+        real_XInputEnable = (XInputEnable_t)r2_patch_iat("XINPUT1_3.dll", "#5", (void *)hook_XInputEnable);
+        if (pads_allowed) {
+            if (real_XInputEnable)
+                real_XInputEnable(TRUE);
+            priv_xinput_init();
+        }
     }
     if (!(have_pos || have_size || background || winlog || adapter_mode[0]))
         return;

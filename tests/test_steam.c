@@ -154,7 +154,7 @@ static void test_host_and_join(void)
     printf("-- host: lobby data with our tag only, presence; client joins by lobby id; session over the backend\n");
     world();
     mock_set_faults(0, 0, 0, 20, 0, 3);
-    Node *h = mk("YoungOn"), *c = mk("BeBeBe");
+    Node *h = mk("Alisa77"), *c = mk("Boris6");
     mock_befriend(h->u, c->u);
     char err[200];
     CHECK(host(h, CST_LOBBY_FRIENDS, 2, err, sizeof err));
@@ -165,7 +165,7 @@ static void test_host_and_join(void)
     char idtxt[32];
     snprintf(idtxt, sizeof idtxt, "%llu", ULL(mock_id(h->u)));
     CHECK(!strcmp(mock_lobby_get(L, CST_KEY_HOST), idtxt));
-    CHECK(!strcmp(mock_lobby_get(L, CST_KEY_NAME), "YoungOn") && !strcmp(mock_lobby_get(L, CST_KEY_MAX), "2"));
+    CHECK(!strcmp(mock_lobby_get(L, CST_KEY_NAME), "Alisa77") && !strcmp(mock_lobby_get(L, CST_KEY_MAX), "2"));
     /* never one of the game's own (Raid) keys: its searches and filters cannot see this lobby, and ours cannot be mistaken for theirs */
     CHECK(!mock_lobby_has_key_like(L, "Slot") && !mock_lobby_has_key_like(L, "SearchKey") && !mock_lobby_has_key_like(L, "Owner") && !mock_lobby_has_key_like(L, "Binary") &&
           !mock_lobby_has_key_like(L, "IsBehind") && !mock_lobby_has_key_like(L, "Name"));
@@ -203,7 +203,7 @@ static void test_join_by_host_id(void)
 {
     printf("-- join by the host's SteamID: a friend in the game with a lobby; a public lobby found by search\n");
     world();
-    Node *h = mk("YoungOn"), *c = mk("BeBeBe"), *p = mk("Stranger");
+    Node *h = mk("Alisa77"), *c = mk("Boris6"), *p = mk("Stranger");
     mock_befriend(h->u, c->u);
     char err[200], t[40];
     CHECK(host(h, CST_LOBBY_FRIENDS, 2, err, sizeof err));
@@ -281,7 +281,7 @@ static void test_foreign_and_full(void)
     CHECK(host(h, CST_LOBBY_PUBLIC, 2, err, sizeof err));
     uint64_t L = mock_owned_lobby(h->u);
     CHECK(command(c, "steamlobbies", out, sizeof out));
-    CHECK(strstr(out, "lobbies with our tag") && strstr(out, ": 1") && strstr(out, "YoungOn") == NULL);
+    CHECK(strstr(out, "lobbies with our tag") && strstr(out, ": 1") && strstr(out, "Alisa77") == NULL);
     char want[40];
     snprintf(want, sizeof want, "lobby %llu", ULL(L));
     CHECK(strstr(out, want) != NULL);
@@ -545,7 +545,7 @@ static void test_commands(void)
 {
     printf("-- console commands: steam, steamhost, steamjoin, steamlobbies, steaminvite, steamallow\n");
     world();
-    Node *h = mk("YoungOn"), *c = mk("BeBeBe"), *z = mk("Zed");
+    Node *h = mk("Alisa77"), *c = mk("Boris6"), *z = mk("Zed");
     mock_befriend(h->u, c->u), mock_befriend(h->u, z->u);
     char out[900], t[120];
     CHECK(command(h, "steam", out, sizeof out) && strstr(out, "ready (mock)") && strstr(out, "no lobby"));
@@ -555,7 +555,7 @@ static void test_commands(void)
     CHECK(command(h, "steam", out, sizeof out) && strstr(out, "(1 member(s))"));
     CHECK(command(h, "steaminvite", out, sizeof out) && strstr(out, "dialog opened"));
     CHECK(command(h, "steaminvite nobody", out, sizeof out) && strstr(out, "no friend"));
-    CHECK(command(h, "steaminvite bebe", out, sizeof out) && strstr(out, "sent"));
+    CHECK(command(h, "steaminvite boris", out, sizeof out) && strstr(out, "sent"));
     snprintf(t, sizeof t, "steamjoin %llu", ULL(mock_id(h->u)));
     CHECK(command(c, t, out, sizeof out) && strstr(out, "joining"));
     step(3000);

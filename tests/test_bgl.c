@@ -157,11 +157,68 @@ int main(void)
     {
         pc_t a;
         pc_init(&a);
+        bgl_t own[1] = {{-1, 100, 0}};
+        pc_frame(&a, own, 1);
         a.m.remote[0] = (bgl_t){1, 101, 0}, a.m.remote[1] = (bgl_t){1, 101, 0}, a.m.remote[2] = (bgl_t){-1, -1, -1}, a.m.remote_n = 3;
         pc_frame(&a, NULL, 0);
-        CHECK(a.m.mo_n == 1 && a.m.merged == 1 && a.local_n == 0);
+        CHECK(a.m.mo_n == 1 && a.m.merged == 1 && a.local_n == 1);
         unsigned char b[40];
-        CHECK(bgl_pack(a.local, a.local_n, b) == 1 && b[0] == 0);
+        CHECK(bgl_pack(a.local, a.local_n, b) == 7 && b[0] == 1);
+        pc_t e;   /* an engine list with nothing in it never sends anything and merges nothing (6k) */
+        pc_init(&e);
+        e.m.remote[0] = (bgl_t){1, 101, 0}, e.m.remote_n = 1;
+        pc_frame(&e, NULL, 0);
+        CHECK(e.m.mo_n == 0 && e.m.merged == 0 && e.local_n == 0 && e.n_asked == 0);
+        CHECK(bgl_pack(e.local, e.local_n, b) == 1 && b[0] == 0);
+    }
+    /* 6. the retry (6k): the engine tears the level down and empties the loader's list while the partner's list received before the death is still held. Hardware: the old logic merged that stale list
+     * into the emptied list and asked for its blocks while the level was being rebuilt (AccessViolation in a worker thread, 5 of 5 retries). Now nothing is merged, the merged-only entries are dropped, and the
+     * mirror works again once the local human hits a zone of the rebuilt level and the partner's fresh list arrived. */
+    {
+        pc_t a;
+        pc_init(&a);
+        bgl_t own[2] = {{-1, 100, 0}, {1, 100, 1}};
+        pc_frame(&a, own, 2);
+        a.m.remote[0] = (bgl_t){1, 100, 2}, a.m.remote[1] = (bgl_t){1, 100, 3}, a.m.remote_n = 2;   /* blocks only the partner needs */
+        for (int f = 0; f < 3; f++) pc_frame(&a, NULL, 0);
+        CHECK(a.m.mo_n == 2 && a.n_asked >= 2 && bgl_find(a.cur, BGL_SLOTS, &(bgl_t){0, 100, 3}) >= 0);
+        unsigned asked_before = (unsigned)a.n_asked, removed_before = a.m.removed;
+        bgl_t none[1];
+        for (int f = 0; f < 5; f++) pc_frame(&a, f == 0 ? none : NULL, 0);   /* the reset frame, then the frames of the load: the partner's list is stale and still held */
+        CHECK(a.m.remote_n == 2);
+        CHECK(a.m.mo_n == 0 && a.local_n == 0 && (unsigned)a.n_asked == asked_before);   /* nothing asked for the stale blocks */
+        for (int i = 0; i < BGL_SLOTS; i++) CHECK(!bgl_valid(&a.cur[i]));   /* nothing was written into the loader's list */
+        CHECK(a.m.idle == 5 && a.m.removed == removed_before);   /* the engine's reset already took the written entries; the mirror's own record is dropped */
+        /* the stale list goes (the glue drops it when the load begins), the level is rebuilt: the local human hits the checkpoint's zone, the partner's fresh list arrives */
+        a.m.remote_n = 0;
+        bgl_t cp[2] = {{-1, 100, 0}, {1, 100, 1}};
+        pc_frame(&a, cp, 2);
+        CHECK(a.local_n == 2 && a.m.mo_n == 0 && (unsigned)a.n_asked == asked_before);
+        a.m.remote[0] = (bgl_t){1, 100, 1}, a.m.remote[1] = (bgl_t){1, 100, 2}, a.m.remote_n = 2;
+        pc_frame(&a, NULL, 0);
+        CHECK(a.m.mo_n == 1 && bgl_find(a.cur, BGL_SLOTS, &(bgl_t){0, 100, 2}) >= 0 && a.local_n == 2);   /* the mirror works again */
+        /* a retry that empties the list when only merged-only entries are left in it (the engine never rebuilt it) is the same */
+        a.local_n = 0;
+        for (int f = 0; f < 2; f++) pc_frame(&a, f == 0 ? none : NULL, 0);
+        CHECK(a.m.mo_n == 0 && a.local_n == 0 && !bgl_valid(&a.cur[0]) && !bgl_valid(&a.cur[1]) && !bgl_valid(&a.cur[2]));
+    }
+    /* 7. the mirror's purpose stays (6j): the humans are far apart (A in the old stage's block, the partner in stage 101): the lists are exchanged and the merged-only entries exist as long as A's own list is
+     * non-empty, and a retry then drops them too */
+    {
+        pc_t a, b;
+        pc_init(&a), pc_init(&b);
+        bgl_t la[1] = {{-1, 100, 4}}, lb[2] = {{-1, 101, 0}, {1, 101, 1}};
+        for (int f = 0; f < 4; f++) pc_frame(&a, la, 1), pc_frame(&b, lb, 2), send_list(&a, &b), send_list(&b, &a);
+        CHECK(a.m.mo_n == 2 && b.m.mo_n == 1 && a.local_n == 1 && b.local_n == 2);
+        CHECK(bgl_find(a.cur, BGL_SLOTS, &(bgl_t){0, 101, 1}) >= 0 && bgl_find(b.cur, BGL_SLOTS, &(bgl_t){0, 100, 4}) >= 0);
+        CHECK(a.n_unloaded == 0 && b.n_unloaded == 0);
+        bgl_t none[1];
+        pc_frame(&a, none, 0), pc_frame(&b, none, 0);   /* the retry: both loaders reset */
+        CHECK(a.m.mo_n == 0 && b.m.mo_n == 0 && a.local_n == 0 && b.local_n == 0);
+        send_list(&a, &b), send_list(&b, &a);
+        unsigned ma = a.m.merged, mb = b.m.merged;
+        for (int f = 0; f < 3; f++) pc_frame(&a, NULL, 0), pc_frame(&b, NULL, 0);
+        CHECK(a.m.mo_n == 0 && b.m.mo_n == 0 && a.m.merged == ma && b.m.merged == mb);   /* nothing merged from the empty lists */
     }
     printf("test_bgl: %d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

@@ -2,7 +2,7 @@
 #define R2_H
 #include <windows.h>
 
-#define R2_VERSION "0.0.1-stage1"
+#define R2_VERSION "0.1.0"
 
 /* The Steam build 3658995 exe (SHA-256 of rerev2.exe on disk). Any other exe: the proxy only forwards DirectInput8Create. */
 #define R2_EXE_SHA256 "55ac7d2bd80704c6a8a1fa7bd2371726adbaa01ae0fda056198fb042404367f9"
@@ -28,6 +28,7 @@ int testmode_adapter_pick(void *d3d, HWND focus, unsigned asked);
 int testmode_force_windowed(void);          /* 1 = test instance: never exclusive full screen */
 void testmode_window_size(int *w, int *h);  /* wanted client size, 0 when not set */
 HWND testmode_window(void);
+HWND testmode_find_window(void);   /* 6n: testmode_window() or, in a player's start (no test hook recorded one), the visible top-level window of this process */
 void testmode_xinput_stats(char *out, int size);
 void testmode_pad_set(int slot, int active, const void *xinput_gamepad);   /* synthetic pad for a slot (console "pad") */
 void testmode_pad_hold(int slot, const void *xinput_gamepad, int ms);       /* ... released by itself after ms */

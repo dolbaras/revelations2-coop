@@ -36,6 +36,7 @@ static int w_demo_running(void);
 static int scen_get(int idx);   /* scen.inc */
 static void scen_tick(void);   /* stage 6e (scen.inc): scenario flag watch / sync, runs every frame, session or not */
 static int w_install(void);
+static void w_puppet_catchup(int remote_area);   /* 6m (scen.inc): the partner's puppet at a stage change that the other PC began */
 static void session_defaults(void);   /* 6i (world.inc): what the lab switched on by hand is the default of a real session */
 static int g_defaults_off;            /* REV2_WORLD_DEFAULTS=0 / `net w defaults 0`: a lab run keeps its own switches */
 static void ach_frame(void);        /* stage 8b (ach.inc): hooks of the achievement gate, installed once a session is active */
@@ -699,6 +700,7 @@ static void handle_notes(void)
             r2_log(NETLOG_PREFIX "load begin by player %d (epoch %d, area %d)", n.pid, n.a, n.b);
             if (n.pid != cs_pid(g_cs) && g_state == G_RUN && game_in_episode()) {
                 /* somebody else loads while this PC's game is not loading: it is "loaded" at once and waits for the barrier */
+                w_puppet_catchup(n.b);
                 cs_load_begin(g_cs, 0);
                 cs_load_done(g_cs);
                 glue_set_state(G_WAITGO);

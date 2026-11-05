@@ -155,7 +155,7 @@ static unsigned char TC us_BLoggedOn(void *self) { (void)self; return 1; }
 static uint64_t *TC us_GetSteamID(void *self, uint64_t *ret) { (void)self; *ret = ME; return ret; }
 
 /* ---- ISteamFriends015 ---- */
-static const char *TC fr_GetPersonaName(void *self) { (void)self; return "YoungOn"; }
+static const char *TC fr_GetPersonaName(void *self) { (void)self; return "Alisa77"; }
 static int TC fr_GetFriendCount(void *self, int flags)
 {
     (void)self;
@@ -173,7 +173,7 @@ static int TC fr_GetFriendRelationship(void *self, uint64_t id) { (void)self; re
 static const char *TC fr_GetFriendPersonaName(void *self, uint64_t id)
 {
     (void)self;
-    return id == FRIEND ? "BeBeBe" : id == ME ? "YoungOn" : id == STRANGER ? "Stranger" : "";
+    return id == FRIEND ? "Boris6" : id == ME ? "Alisa77" : id == STRANGER ? "Stranger" : "";
 }
 static unsigned char TC fr_GetFriendGamePlayed(void *self, uint64_t id, void *info)
 {

@@ -16,6 +16,7 @@ static int g_bgl_mirror = 1;
 static unsigned g_bgl_tx, g_bgl_rx, g_bgl_calls, g_bgl_self_ok, g_bgl_writes, g_bgl_sent_t, g_bgl_scan_t, g_bgl_logs;
 static bgl_t g_bgl_local[BGL_SLOTS], g_bgl_sent[BGL_SLOTS];
 static int g_bgl_local_n, g_bgl_sent_n = -1, g_bgl_was_running;
+static int g_bgl_idle_seen;   /* the empty-list phase was logged */
 typedef void(__attribute__((thiscall)) *bgl_unload_t)(unsigned self);
 static bgl_unload_t o_bgl_unload;
 /* stage change gate: the story stage changes when slot 0 stands on a floor of another stage and the old stage's blocks go away with the change; the human who is still on the old floor falls (s6j1/s6j2).
@@ -33,6 +34,13 @@ typedef void(__attribute__((thiscall)) *btn_cand_t)(unsigned self, unsigned butt
 static btn_cand_t o_btn_cand;
 static int g_pup_zones;   /* default OFF (6j): proven by hand, the first automatic version disturbed the co-op door (see notes); the scenario-zone-only version is not proven live. `net w bgl pupzones 1` */
 static unsigned g_pup_flips, g_pup_logs;
+
+/* end-of-half trigger (6m, radio_logic.h): the host sets the radio zone's flag when every human stands in its footprint. `net w radio [0|1]`. */
+#include "radio_logic.h"
+static int g_radio_on = 1;
+static radio_state_t g_radio;
+static int g_radio_init;
+static unsigned g_radio_t, g_radio_logs, g_radio_set_fail;
 
 static void bgl_read(unsigned bg, unsigned off, bgl_t *l)
 {
@@ -110,6 +118,91 @@ static void scen_celldoor_tick(unsigned now, unsigned area)
     r2_log(W_LOG "cell door (100,160,130) %08x: locked and closed %u ms after SF[1] (the stock state): unlocked and put into the waiting action (the human opens it with the interact key)", so, now - g_celldoor_since);
 }
 
+/* 6m, the stage 101 hop that killed both humans on a fresh start (6k, 6l): the other PC begins a stage change and announces it (event "load begin", with the new area); this PC's own stage gate (above) gives up at that
+ * moment because the session leaves the running state, and the engine changes the stage at once. The partner's puppet is shown with the interpolation delay (about 100 ms behind the samples received): when the
+ * partner's last move was a jump onto the new stage's floor (a teleport; a quick walk across the border), the puppet is still on the OLD stage's floor, the old stage's blocks go away with the change and the puppet falls
+ * (the engine's game-over state 11 on this PC with hp 1000, the coupling then kills the other human too). The puppet is put where the partner's NEWEST sample says before the change goes ahead (the partner's own gate
+ * has seen him on the new floor); without a sample next to the local human. `net w bgl catchup 0|1`, default on. */
+static int g_pup_catchup = 1;
+static unsigned g_pupc_seen, g_pupc_moved, g_pupc_logs;
+static void w_puppet_catchup(int remote_area)
+{
+    unsigned lp = player_obj(g_my_slot), p = player_obj(g_rem_slot);
+    if (!lp || !p || lp == p || !g_cs) return;
+    int here = (int)story_area_id();
+    unsigned lf = rd32(lp + 0x3F54), pf = rd32(p + 0x3F54);
+    cp_state o;
+    memset(&o, 0, sizeof o);
+    int r = g_rem_pid >= 0 ? cs_remote_sample(g_cs, g_rem_pid, cs_now(g_cs) + 5000, &o) : CS_SAMPLE_NONE;   /* a time far ahead: the newest sample, not the delayed one */
+    g_pupc_seen++;
+    int change = remote_area > 0 && remote_area != here;
+    int move = g_pup_catchup && g_w_on && change && (int)pf != remote_area;
+    if (g_pupc_logs < 20) {
+        g_pupc_logs++;
+        r2_log(W_LOG "remote load begin (area %d, here %d): my human floor stage %d at (%.0f,%.0f,%.0f), the partner's puppet floor stage %d at (%.0f,%.0f,%.0f) hp %d, newest sample %s at (%.0f,%.0f,%.0f), stage gate holding %d%s",
+               remote_area, here, (int)lf, rdf(lp + 0x40), rdf(lp + 0x44), rdf(lp + 0x48), (int)pf, rdf(p + 0x40), rdf(p + 0x44), rdf(p + 0x48), (int)rd32(p + 0x1A08),
+               r == CS_SAMPLE_NONE ? "none" : "yes", o.pos[0], o.pos[1], o.pos[2], g_gate_since != 0, move ? ": the puppet is moved there before the stage changes" : "");
+    }
+    if (!move) return;
+    float x = o.pos[0], y = o.pos[1], z = o.pos[2], yaw = o.yaw;
+    if (r == CS_SAMPLE_NONE) x = rdf(lp + 0x40) + 60.0f, y = rdf(lp + 0x44), z = rdf(lp + 0x48), yaw = player_yaw(lp);
+    wr(p + 0x39A0, &x, 4), wr(p + 0x39A4, &y, 4), wr(p + 0x39A8, &z, 4), wr(p + 0x39C4, &yaw, 4);
+    unsigned a1[1] = {p};
+    do_call(3, 0x710FD0, a1, 1);   /* the game's own remote-player teleport (apply_remote): target fields -> body */
+    wr(p + 0x39A0, &x, 4), wr(p + 0x39A4, &y, 4), wr(p + 0x39A8, &z, 4);
+    g_pup_have = 0;
+    g_pupc_moved++;
+}
+
+/* The humans as the host sees them: its own (slot type 0) and the partner's puppet (type 2, exact coordinates from the samples); the stock AI partner (type 1) is not a human of the session. */
+static int radio_humans(radio_human_t *h)
+{
+    int n = 0;
+    for (int slot = 0; slot < 8 && n < 8; slot++) {
+        unsigned p = player_obj(slot);
+        if (!p) continue;
+        unsigned type = rd32(p + 0x7920) & 0xFF;
+        h[n].present = 1, h[n].alive = (int)rd32(p + 0x1A08) > 0, h[n].ai = type == 1;
+        h[n].x = rdf(p + 0x40), h[n].y = rdf(p + 0x44), h[n].z = rdf(p + 0x48);
+        n++;
+    }
+    return n;
+}
+
+static void radio_tick(unsigned now, unsigned area)
+{
+    if (!g_radio_init) radio_init(&g_radio), g_radio_init = 1;
+    if (now - g_radio_t < 100) return;   /* 10 Hz */
+    g_radio_t = now;
+    radio_in_t in;
+    radio_human_t h[8];
+    const radio_zone_t *z = radio_zone_for((int)area);
+    memset(&in, 0, sizeof in);
+    in.enabled = g_radio_on && g_sf_sync > 0 && w_session_running();   /* off in Raid and in single player (no session of ours), off without the flag sync (the client could not follow) */
+    in.is_host = g_cs && cs_is_host(g_cs);
+    in.stage = (int)area;
+    in.flag_value = z && in.enabled ? scen_get(z->flag) : -1;
+    in.epoch = g_cs ? cs_epoch(g_cs) : 0;
+    in.now = now;
+    in.n = z && in.enabled ? radio_humans(h) : 0;
+    in.h = h;
+    int flag = radio_step(&g_radio, &in);
+    if (flag < 0) return;
+    if (!scen_set(flag, 1)) {
+        g_radio_set_fail++;
+        return;
+    }
+    {   /* the flag scan below absorbs a change made inside the quiet window after a level load (it re-takes its baseline there): tell the client directly, like the scan would (hardware 6m: SF[11] stayed 0 on the N100) */
+        unsigned char b[7];
+        int ar = (int)area;
+        memcpy(b, &ar, 4), b[4] = (unsigned char)(flag & 0xFF), b[5] = (unsigned char)(flag >> 8), b[6] = 1;
+        w_ev_send(EV_W_SF, b, 7);
+        g_sf_tx++;
+        if (g_sf_init && flag < SF_N) g_sf_last[flag] = 1;
+    }
+    if (g_radio_logs++ < 20) r2_log(W_LOG "radio trigger: every human stands inside the zone of %s (%d humans, %u ms): the host set SF[%d] (now %d), the flag sync mirrors it", z->name, in.n, RADIO_DWELL_MS, flag, scen_get(flag));
+}
+
 static void scen_tick(void)
 {
     if (!story_block()) return;
@@ -119,6 +212,7 @@ static void scen_tick(void)
     unsigned now = GetTickCount();
     smtrace_tick();   /* door.inc: per-frame change log of one set model (net w smtrace) */
     scen_celldoor_tick(now, area);
+    radio_tick(now, area);
     if (!g_sf_watch && !g_sf_sync) return;
     if (now - g_sf_scan_t < 100) return;
     g_sf_scan_t = now;
@@ -197,6 +291,18 @@ static void scen_command(const char *arg, char *out, int size)
         while (*p == ' ') p++;
         if (*p) g_celldoor = atoi(p);
         snprintf(out, size, "cell door helper %d (0 off, 1 while a session runs, 2 always), applied %u times", g_celldoor, g_celldoor_n);
+        return;
+    }
+    if (!strcmp(w, "radio")) {   /* net w radio [0|1]: the end-of-half trigger (6m): the host sets the radio zone's flag when every human stands in it */
+        const char *p = arg + 5;
+        while (*p == ' ') p++;
+        if (*p == '0' || *p == '1') g_radio_on = *p - '0';
+        const radio_zone_t *z = radio_zone_for((int)story_area_id());
+        radio_human_t h[8];
+        int n = radio_humans(h), inz = 0;
+        for (int i = 0; z && i < n; i++) inz += !h[i].ai && radio_inside(z, h[i].x, h[i].y, h[i].z);
+        snprintf(out, size, "radio trigger %s (needs: host, session running, flag sync on): zone here: %s; humans %d, inside the footprint %d; latched stage %d, dwell %s; fired %u, re-armed %u, checks %u, set failures %u",
+                 g_radio_on ? "ON" : "off", z ? z->name : "none in this stage", n, inz, g_radio.latched_stage, g_radio.inside ? "running" : "-", g_radio.fired, g_radio.rearmed, g_radio.checks, g_radio_set_fail);
         return;
     }
     if (!strcmp(w, "sync")) {
@@ -369,7 +475,8 @@ static void scen_stages_command(const char *arg, char *out, int size)
  * every frame) sees that player SLOT 0 stands on a floor of another stage (+0x3F54 != the area's id): it creates area aS%04d, whose start (sBioArea_vf10) sets the id.
  *   net w bgl              the lists, the zone registrations, the queue and, for every human slot, the floor ids and the world position
  *   net w bgl req <stage> <block> [episode]   the game's own load order for one block (FUN_00468310), as the zone code gives it
- *   net w bgl hit <stage> <block> [...]       the tail of the zone code: blocks added to the current list, unload / stage start / block loads run */
+ *   net w bgl hit <stage> <block> [...]       the tail of the zone code: blocks added to the current list, unload / stage start / block loads run;
+ *   net w bgl set <stage> <block> [...]       the same with the named blocks REPLACING the list (6n, lab) */
 static void scen_bgl_command(const char *arg, char *out, int size)
 {
     unsigned bg = rd32(0x1558204), sb = story_block();
@@ -383,8 +490,8 @@ static void scen_bgl_command(const char *arg, char *out, int size)
         if (arg[6] == ' ' && (arg[7] == '0' || arg[7] == '1')) g_bgl_mirror = arg[7] - '0';
         char rs[160], ms[160], ls[160];
         bgl_fmt(g_bgl.remote, g_bgl.remote_n, rs, sizeof rs), bgl_fmt(g_bgl.mo, g_bgl.mo_n, ms, sizeof ms), bgl_fmt(g_bgl_local, g_bgl_local_n, ls, sizeof ls);
-        snprintf(out, size, "loader mirror %s (hook %s, unload step called %u times, %u with the loader as this): my own list %s, the partner's %s, merged-only %s; merged %u, no room %u, dropped %u, slot writes %u; lists sent %u, received %u",
-                 g_bgl_mirror ? "ON" : "off", o_bgl_unload ? "installed" : "NOT installed", g_bgl_calls, g_bgl_self_ok, ls, rs, ms, g_bgl.merged, g_bgl.overflow, g_bgl.removed, g_bgl_writes, g_bgl_tx, g_bgl_rx);
+        snprintf(out, size, "loader mirror %s (hook %s, unload step called %u times, %u with the loader as this): my own list %s, the partner's %s, merged-only %s; merged %u, no room %u, dropped %u, idle calls (the engine's own list empty: level load, retry) %u, slot writes %u; lists sent %u, received %u",
+                 g_bgl_mirror ? "ON" : "off", o_bgl_unload ? "installed" : "NOT installed", g_bgl_calls, g_bgl_self_ok, ls, rs, ms, g_bgl.merged, g_bgl.overflow, g_bgl.removed, g_bgl.idle, g_bgl_writes, g_bgl_tx, g_bgl_rx);
         return;
     }
     if (!strncmp(arg, "pupzones", 8)) {   /* net w bgl pupzones [0|1]: a partner's puppet fires trigger zones on this PC too (6j) */
@@ -392,15 +499,21 @@ static void scen_bgl_command(const char *arg, char *out, int size)
         snprintf(out, size, "puppets in trigger zones %s (hook %s): %u checks shown the puppet as a local human", g_pup_zones ? "ON" : "off", o_btn_cand ? "installed" : "NOT installed", g_pup_flips);
         return;
     }
+    if (!strncmp(arg, "catchup", 7)) {   /* net w bgl catchup [0|1]: the puppet is put at the partner's newest position when the other PC begins a stage change (6m) */
+        if (arg[7] == ' ' && (arg[8] == '0' || arg[8] == '1')) g_pup_catchup = arg[8] - '0';
+        snprintf(out, size, "puppet catch-up at a remote stage change %s: %u remote load begins seen, %u puppets moved", g_pup_catchup ? "ON" : "off", g_pupc_seen, g_pupc_moved);
+        return;
+    }
     if (!strncmp(arg, "gate", 4)) {   /* net w bgl gate [0|1]: the story stage change waits until every human stands on the new stage's floor (6j) */
         if (arg[4] == ' ' && (arg[5] == '0' || arg[5] == '1')) g_stage_gate = arg[5] - '0';
         snprintf(out, size, "stage gate %s (hook %s): holds %u frames, released %u, timeouts %u (limit %u ms)", g_stage_gate ? "ON" : "off", o_epi_upd ? "installed" : "NOT installed", g_gate_holds, g_gate_releases, g_gate_timeouts, BGL_GATE_MS);
         return;
     }
-    if (!strncmp(arg, "hit", 3)) {   /* net w bgl hit <stage> <block> [<stage> <block> ...]: what the zone code does after a zone hit, with the named blocks added to the current list (up to five in all) */
+    if (!strncmp(arg, "hit", 3) || !strncmp(arg, "set", 3)) {   /* net w bgl hit <stage> <block> [...]: what the zone code does after a zone hit, with the named blocks added to the current list (up to five in all); net w bgl set <stage> <block> [...] (6n): the same, but the named blocks REPLACE the list (what the zone code does when the human is in another place) */
         int t[5][2], n = 0, k = 0;
+        const int is_set = arg[0] == 's';
         unsigned ep = rd32(sb + 0x140378);
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 5 && !is_set; i++) {
             int s = (int)rd32(bg + 0x4B84 + 12 * (unsigned)i + 4), b = (int)rd32(bg + 0x4B84 + 12 * (unsigned)i + 8);
             if (s >= 0 && b >= 0) t[n][0] = s, t[n][1] = b, n++;
         }
@@ -417,6 +530,10 @@ static void scen_bgl_command(const char *arg, char *out, int size)
             }
             t[n][0] = s2, t[n][1] = b2, n++;
             k++;
+        }
+        if (n == 0) {
+            snprintf(out, size, "usage: net w bgl set <stage> <block> [<stage> <block> ...]  (replaces the list, up to five blocks)");
+            return;
         }
         unsigned neg = 0xFFFFFFFFu;
         for (int i = 0; i < 15; i++) wr(bg + 0x4B48 + 4 * (unsigned)i, (const void *)&(unsigned){rd32(bg + 0x4B84 + 4 * (unsigned)i)}, 4);   /* previous := current */
@@ -553,6 +670,11 @@ static __attribute__((thiscall)) void h_bgl_unload(unsigned self)
                         wr(self + 0x4B84 + 12 * i, &cur2[i], 12);
                         g_bgl_writes++;
                     }
+            if (!ln && !g_bgl_idle_seen) {   /* the engine's own list is empty (level load, retry): nothing is merged (6k); logged once per empty phase */
+                g_bgl_idle_seen = 1;
+                if (g_bgl_logs < 60) g_bgl_logs++, r2_log(W_LOG "bgl: the loader's own list is empty (level load / retry): nothing merged, the partner's list (%d entries) is not served until a zone is hit", g_bgl.remote_n);
+            }
+            if (ln) g_bgl_idle_seen = 0;
             memcpy(g_bgl_local, local, sizeof local);
             g_bgl_local_n = ln;
             for (int i = 0; i < ask_n; i++) {
@@ -588,6 +710,7 @@ static void bgl_tick(unsigned now)
     if (!running) {
         if (g_bgl_was_running) {   /* the session ended: forget the partner's list (the merged-only entries leave with the engine's next zone hit) */
             g_bgl.remote_n = 0, g_bgl.mo_n = 0, g_bgl_sent_n = -1;
+            g_bgl_local_n = 0;   /* 6k: the list read before the load is stale: never send it as the first list of the next running phase */
             g_bgl_was_running = 0;
         }
         return;

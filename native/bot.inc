@@ -20,6 +20,8 @@ static struct {
     int key_dik, key_vk;
     unsigned buttons;   /* extra pad buttons held while walking (sprint etc.) */
     int stat_wp_done, stat_stuck, stat_keys;
+    int stat_panels, panel_wait;   /* 6n: modal panels (tutorial / message windows lock the character until B / Esc closes them) */
+    unsigned t_panel, b_until, t_idle;
     unsigned fire_until, fire_start;   /* net bot fire <ms>: LT held (aim), RT tapped every 450 ms */
 } g_bot = {.slot = 0, .radius = 70.0f, .key_dik = 0, .shot_ms = 0};
 
@@ -43,6 +45,7 @@ static void bot_pad(float phi, int mag, unsigned buttons)
     bot_gamepad_t g;
     memset(&g, 0, sizeof g);
     g.wButtons = (WORD)buttons;
+    if ((int)(GetTickCount() - g_bot.b_until) < 0) g.wButtons |= 0x2000;   /* B: closes a modal panel */
     g.sThumbLX = (SHORT)(sinf(phi) * (float)mag);
     g.sThumbLY = (SHORT)(cosf(phi) * (float)mag);
     unsigned now = GetTickCount();
@@ -59,6 +62,18 @@ static void bot_stop(const char *why)
     g_bot.on = 0;
     if (g_cs && cs_active(g_cs)) testmode_pad_pretend(0, 0, NULL);
     else testmode_pad_set(g_bot.slot, 0, NULL);
+}
+
+/* A modal panel (tutorial, message window) locks the character: the stick does nothing, the action stays idle (2) and the position does not change at all, where a wall would show the walking action
+ * and sliding. B on the pad and Escape on the keyboard close it (6n: found in stage 151, "Natalia's instincts"); at most one press every 2.5 s, logged once per panel. */
+static void bot_close_panel(unsigned now)
+{
+    if ((int)(now - g_bot.t_panel) < 2500) return;
+    if (!g_bot.panel_wait) r2_log("bot: blocked by a modal panel (the stick moves nothing, the action stays idle): closing it with B / Esc");
+    g_bot.t_panel = now, g_bot.panel_wait = 1;
+    g_bot.b_until = now + 400;
+    int dik = 0, vk = 0;
+    if (inject_key_lookup("esc", &dik, &vk)) inject_key(dik, 150);
 }
 
 static void bot_press_interact(void)
@@ -127,6 +142,10 @@ static void bot_frame(void)
         float ex = x - g_bot.cx, ez = z - g_bot.cz, d = sqrtf(ex * ex + ez * ez);
         g_bot.t_wig = 0;
         if (d < 25.0f) {   /* blocked or still in a cutscene: try again, interact in case it is a door */
+            if (d < 1.0f && (int)rd32(p + 0x1A54) == 2) {   /* not even a step and the action idle: a modal panel, not a wall */
+                bot_close_panel(now);
+                return;
+            }
             if (++g_bot.fails % 3 == 0) bot_press_interact();
             if (g_bot.fails > 12) bot_stop("calibration failed: no displacement");
             return;
@@ -149,6 +168,14 @@ static void bot_frame(void)
         return;
     }
     /* servo: update the camera estimate from the displacement of the last interval, then steer */
+    if (moved < 1.0f && (int)rd32(p + 0x1A54) == 2) {   /* pushing the stick and not moving at all with the action idle for 1.2 s: a modal panel */
+        if (!g_bot.t_idle) g_bot.t_idle = now;
+        if ((int)(now - g_bot.t_idle) > 1200) bot_close_panel(now);
+    } else g_bot.t_idle = 0;
+    if (moved > 12.0f && g_bot.panel_wait) {
+        g_bot.panel_wait = 0, g_bot.stat_panels++;
+        r2_log("bot: modal panel closed, walking again (%d panels so far)", g_bot.stat_panels);
+    }
     if (moved > 12.0f && dt > 0) {
         float h = atan2f(mz, mx), cam = h - g_bot.s * g_bot.phi;
         g_bot.cam = bot_norm(g_bot.cam + 0.7f * bot_norm(cam - g_bot.cam));
@@ -198,7 +225,7 @@ static void bot_command(const char *rest, char *out, int size)
         g_bot.n = n / 2;
         for (int i = 0; i < g_bot.n; i++) g_bot.wx[i] = v[2 * i], g_bot.wz[i] = v[2 * i + 1];
         g_bot.idx = 0, g_bot.on = 1, g_bot.calib = g_bot.have_cam ? 2 : 0, g_bot.t_wp = GetTickCount(), g_bot.t_meas = 0, g_bot.t_wig = 0, g_bot.t_stuck = 0, g_bot.fails = 0;
-        g_bot.stat_wp_done = g_bot.stat_stuck = g_bot.stat_keys = 0;
+        g_bot.stat_wp_done = g_bot.stat_stuck = g_bot.stat_keys = 0, g_bot.stat_panels = g_bot.panel_wait = 0, g_bot.t_idle = 0;
         unsigned p = player_obj(g_bot.slot);
         if (p) g_bot.mx = rdf(p + 0x40), g_bot.mz = rdf(p + 0x48);
         g_bot.phi = 0;
@@ -233,7 +260,7 @@ static void bot_command(const char *rest, char *out, int size)
         else snprintf(out, size, "unknown key %s", k);
     } else {
         unsigned p = player_obj(g_bot.slot);
-        snprintf(out, size, "bot %s, slot %d, waypoint %d/%d, camera %.0f deg (known %d, handedness %.0f), radius %.0f, pos (%.0f,%.0f), done %d, stuck events %d, interact presses %d", g_bot.on ? "ON" : "off", g_bot.slot, g_bot.idx + 1, g_bot.n,
-                 g_bot.cam * 57.2958f, g_bot.have_cam, g_bot.s, g_bot.radius, p ? rdf(p + 0x40) : 0.0f, p ? rdf(p + 0x48) : 0.0f, g_bot.stat_wp_done, g_bot.stat_stuck, g_bot.stat_keys);
+        snprintf(out, size, "bot %s, slot %d, waypoint %d/%d, camera %.0f deg (known %d, handedness %.0f), radius %.0f, pos (%.0f,%.0f), done %d, stuck events %d, interact presses %d, modal panels closed %d", g_bot.on ? "ON" : "off", g_bot.slot, g_bot.idx + 1, g_bot.n,
+                 g_bot.cam * 57.2958f, g_bot.have_cam, g_bot.s, g_bot.radius, p ? rdf(p + 0x40) : 0.0f, p ? rdf(p + 0x48) : 0.0f, g_bot.stat_wp_done, g_bot.stat_stuck, g_bot.stat_keys, g_bot.stat_panels);
     }
 }

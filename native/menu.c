@@ -439,7 +439,7 @@ static unsigned m_last_move;
 
 static int in_foreground(void)
 {
-    HWND w = testmode_window();
+    HWND w = testmode_find_window();
     return w && GetForegroundWindow() == w;
 }
 
@@ -534,7 +534,7 @@ static int poll_input(lobby_event *ev, int max, int text_mode)
     p_prev = pb;
     /* mouse (only while the game window is in front: the real cursor and the left button) */
     if (fg) {
-        HWND w = testmode_window();
+        HWND w = testmode_find_window();
         POINT pt;
         RECT rc;
         if (GetCursorPos(&pt) && ScreenToClient(w, &pt) && GetClientRect(w, &rc)) {

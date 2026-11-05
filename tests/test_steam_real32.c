@@ -88,7 +88,7 @@ static void host_flow(int via)
     CHECK(cn_host(cn, "steam", 0, 3, 0, err, sizeof err));
     uint64_t L = F->lobby_owned_by_me();
     CHECK(L != 0 && F->lobby_type(L) == 1 && F->lobby_max(L) == 4);
-    CHECK(!strcmp(F->lobby_data(L, "r2c"), "R2COOP1") && !strcmp(F->lobby_data(L, "r2c_name"), "YoungOn") && !strcmp(F->lobby_data(L, "r2c_max"), "4"));
+    CHECK(!strcmp(F->lobby_data(L, "r2c"), "R2COOP1") && !strcmp(F->lobby_data(L, "r2c_name"), "Alisa77") && !strcmp(F->lobby_data(L, "r2c_max"), "4"));
     char want[64];
     snprintf(want, sizeof want, "%llu", ULL(F->me()));
     CHECK(!strcmp(F->lobby_data(L, "r2c_host"), want));
@@ -292,12 +292,12 @@ static void callbacks_and_commands(void)
     uint64_t L2 = F->lobby_owned_by_me();
     CHECK(L2 && F->lobby_max(L2) == 2);
     CHECK(cs_command(s, "steaminvite", out, sizeof out) && strstr(out, "dialog opened") && F->dialogs() == 1);
-    CHECK(cs_command(s, "steaminvite BeBe", out, sizeof out) && strstr(out, "sent") && F->invites() == 1);
+    CHECK(cs_command(s, "steaminvite Boris", out, sizeof out) && strstr(out, "sent") && F->invites() == 1);
     uint64_t pub = F->make_lobby(fr, 2, 2, "R2COOP1");
     F->set_friend_in_game(pub);
     char want[40];
     snprintf(want, sizeof want, "lobby %llu", ULL(pub));
-    CHECK(cs_command(s, "steamlobbies", out, sizeof out) && strstr(out, "public lobbies with our tag") && strstr(out, want) && strstr(out, "friend") && strstr(out, "BeBeBe") && strstr(out, "(ours)"));
+    CHECK(cs_command(s, "steamlobbies", out, sizeof out) && strstr(out, "public lobbies with our tag") && strstr(out, want) && strstr(out, "friend") && strstr(out, "Boris6") && strstr(out, "(ours)"));
     cs_free(s);
     (void)err;
 }

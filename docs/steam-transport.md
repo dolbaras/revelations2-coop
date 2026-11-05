@@ -2,7 +2,7 @@
 
 Status: **built and shown on a real Steam session between the two test PCs** (2026-11-03): `native/coop_steam.c` backend + commands, `native/coop_steam_real.c` real platform, hooks in `steam.c`.
 Offline tests: a mock Steam universe (`tests/test_steam.c`, 158 checks) and a fake game-side Steam with the game's real C++ calling conventions (`tests/test_steam_real32.c`, 97 checks, two layout variants).
-Hardware: N100 (account BeBeBe) hosts, main PC (YoungOn) joins; lobby, join by SteamID, invite, "Join game" request, both pipes, the state stream of the campaign and the load barrier all work (section "Hardware results").
+Hardware: N100 (account Boris6) hosts, main PC (Alisa77) joins; lobby, join by SteamID, invite, "Join game" request, both pipes, the state stream of the campaign and the load barrier all work (section "Hardware results").
 Not yet shown: a click in the real friends list / overlay (a `steam://joinlobby/...` URL stood in), PCs on different networks (both test PCs share a LAN), `InitRelayNetworkAccess` / `GetRelayNetworkStatus` (they killed the game once and are off by default).
 The direct-IP backend (`enet`) is unchanged and remains the fallback.
 
@@ -112,7 +112,7 @@ process already hosts or joined something. When the game is not running, Steam s
 | `tests/test_steam.c` + `steam_mock.c` | backend logic: tag / keys, presence, join by id / host id (friend game info, public search), policy, full / private / foreign / Raid-like lobbies, session requests that must be accepted, bye / owner leave / killed process / left the lobby / broken link / silent link, re-join, the whole session over the backend under 15 % loss and 25 % loss + dup + reorder, join requests and auto-join, the callback filter, all commands | that Steam behaves like the mock |
 | `tests/test_steam_real32.c` + `steam_fake32.c` | `coop_steam_real.c` against fake interfaces with the game's calling conventions (this ecx, callee pops, hidden CSteamID result, 64-bit call handles in edx:eax), slot numbers, struct offsets (sender identity at +12 or +16, release function after 3 x 8 + 4 bytes), call results, callback objects in both vtable orders, both pipes, our channel only, bye / lobby leave / presence clear | that the Steam client agrees with the SDK layouts the code assumes (the hardware session below showed it does for everything used except the two relay-network calls) |
 
-## Hardware results (2026-11-03, N100 host BeBeBe `76561198052584162`, main PC client YoungOn `76561199060262468`, same LAN, game at the title screen / in Episode 1)
+## Hardware results (2026-11-03, N100 host Boris6 `76561198000000162`, main PC client Alisa77 `76561199000000001`, same LAN, game at the title screen / in Episode 1)
 
 | Question | Result |
 |---|---|

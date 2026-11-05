@@ -71,11 +71,11 @@ static int env_async_start(void *u, const char *line)
     if (nd->job_ready) return 0;
     if (!strcmp(line, "steamlobbies")) {
         snprintf(nd->job_out, sizeof nd->job_out,
-                 "public lobbies with our tag (r2c=R2COOP1): 1\n  lobby 1099511627777  host 76561198052584162 \"Alice\"  1/2  lobby\n"
-                 "friends in Revelations 2:\n  friend 76561198052584163 \"Bob\" is in the game, lobby 1099511627780 (ours)\n"
-                 "  friend 76561198052584164 \"Carl\" is in the game (no lobby)");
+                 "public lobbies with our tag (r2c=R2COOP1): 1\n  lobby 1099511627777  host 76561198000000162 \"Alice\"  1/2  lobby\n"
+                 "friends in Revelations 2:\n  friend 76561198000000163 \"Bob\" is in the game, lobby 1099511627780 (ours)\n"
+                 "  friend 76561198000000164 \"Carl\" is in the game (no lobby)");
     } else if (!strcmp(line, "steam")) {
-        snprintf(nd->job_out, sizeof nd->job_out, "steam: ready (mock), you are 76561198052584162 \"Persona\", pipe msg, listening no, accepts friends\nno lobby");
+        snprintf(nd->job_out, sizeof nd->job_out, "steam: ready (mock), you are 76561198000000162 \"Persona\", pipe msg, listening no, accepts friends\nno lobby");
     } else if (!strncmp(line, "steamhost", 9) || !strncmp(line, "steamjoin", 9)) {
         snprintf(nd->job_out, sizeof nd->job_out, "%s failed: steam not ready: no hub", line);
     } else
