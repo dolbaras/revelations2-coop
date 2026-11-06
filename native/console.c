@@ -410,6 +410,14 @@ static void run(const char *cmd, char *out, int size)
             d3d_request_shot();
             snprintf(out, size, "shot requested (next presented frame)");
         }
+    } else if (!strcmp(name, "devreset")) {   /* devreset <n>: the next Present resets with n lost answers (the wait in d3d.c hook_Reset) */
+        int dn = atoi(arg);
+        if (dn < 1 || dn > 50)
+            snprintf(out, size, "usage: devreset <1-50>");
+        else {
+            d3d_devreset_request(dn);
+            snprintf(out, size, "devreset %d requested: the next presented frame resets the device with %d lost answers", dn, dn);
+        }
     } else if (!strcmp(name, "log")) {
         r2_log("console: %s", arg);
         snprintf(out, size, "logged");

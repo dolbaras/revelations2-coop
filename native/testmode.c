@@ -22,10 +22,12 @@
 
 #include "r2.h"
 #include "pad_logic.h"
+#include "testbox_logic.h"
 
 static int pads_allowed;
 static int have_pos, win_x, win_y, have_size, win_w, win_h, background, winlog;
 static char adapter_mode[16];
+static int test_instance;   /* a lab test instance (console, background, window placement or adapter variable set): it never shows a message box, a dialog or an error box */
 static HWND game_window;
 static WNDPROC game_wndproc;
 
@@ -590,6 +592,10 @@ static DialogBoxParamW_t real_DialogBoxParamW;
 static int WINAPI hook_MessageBoxA(HWND w, LPCSTR text, LPCSTR cap, UINT type)
 {
     r2_log("MessageBoxA \"%s\": %s", cap ? cap : "", text ? text : "");
+    if (test_instance) {
+        r2_log("MessageBoxA not shown (test instance), answered %d", testbox_answer(type));
+        return testbox_answer(type);
+    }
     int r = real_MessageBoxA(w, text, cap, type);
     r2_log("MessageBoxA answered %d", r);
     return r;
@@ -601,6 +607,10 @@ static int WINAPI hook_MessageBoxW(HWND w, LPCWSTR text, LPCWSTR cap, UINT type)
     WideCharToMultiByte(CP_UTF8, 0, text ? text : L"", -1, t, sizeof t, NULL, NULL);
     WideCharToMultiByte(CP_UTF8, 0, cap ? cap : L"", -1, c, sizeof c, NULL, NULL);
     r2_log("MessageBoxW \"%s\": %s", c, t);
+    if (test_instance) {
+        r2_log("MessageBoxW not shown (test instance), answered %d", testbox_answer(type));
+        return testbox_answer(type);
+    }
     int r = real_MessageBoxW(w, text, cap, type);
     r2_log("MessageBoxW answered %d", r);
     return r;
@@ -609,6 +619,10 @@ static int WINAPI hook_MessageBoxW(HWND w, LPCWSTR text, LPCWSTR cap, UINT type)
 static INT_PTR WINAPI hook_DialogBoxParamA(HINSTANCE inst, LPCSTR tmpl, HWND parent, DLGPROC proc, LPARAM lp)
 {
     r2_log("DialogBoxParamA template %s (%u)", IS_INTRESOURCE(tmpl) ? "(id)" : tmpl, IS_INTRESOURCE(tmpl) ? (unsigned)(UINT_PTR)tmpl : 0);
+    if (test_instance) {
+        r2_log("DialogBoxParamA not shown (test instance), answered IDOK");
+        return 1;
+    }
     INT_PTR r = real_DialogBoxParamA(inst, tmpl, parent, proc, lp);
     r2_log("DialogBoxParamA returned %ld", (long)r);
     return r;
@@ -617,6 +631,10 @@ static INT_PTR WINAPI hook_DialogBoxParamA(HINSTANCE inst, LPCSTR tmpl, HWND par
 static INT_PTR WINAPI hook_DialogBoxParamW(HINSTANCE inst, LPCWSTR tmpl, HWND parent, DLGPROC proc, LPARAM lp)
 {
     r2_log("DialogBoxParamW template id %u", IS_INTRESOURCE(tmpl) ? (unsigned)(UINT_PTR)tmpl : 0);
+    if (test_instance) {
+        r2_log("DialogBoxParamW not shown (test instance), answered IDOK");
+        return 1;
+    }
     INT_PTR r = real_DialogBoxParamW(inst, tmpl, parent, proc, lp);
     r2_log("DialogBoxParamW returned %ld", (long)r);
     return r;
@@ -759,10 +777,23 @@ static HMODULE WINAPI hook_LoadLibraryW(LPCWSTR n)
 }
 
 /* ---- adapter choice ---- */
+/* a test instance with an explicit adapter choice never falls back to the game's own adapter (it could be the discrete GPU of the owner's game) */
+int testmode_adapter_strict(void) { return adapter_mode[0] != 0; }
+
 int testmode_adapter_pick(void *d3dv, HWND focus, unsigned asked)
 {
     IDirect3D9 *d3d = (IDirect3D9 *)d3dv;
     UINT n = d3d->lpVtbl->GetAdapterCount(d3d);
+    if (strcmp(adapter_mode, "intel") == 0) {   /* the integrated GPU by its vendor id (0x8086), whatever the enumeration order; none found = this instance must not run on another GPU: exit */
+        for (UINT i = 0; i < n; i++) {
+            D3DADAPTER_IDENTIFIER9 id;
+            memset(&id, 0, sizeof id);
+            if (SUCCEEDED(d3d->lpVtbl->GetAdapterIdentifier(d3d, i, 0, &id)) && id.VendorId == 0x8086)
+                return (int)i;
+        }
+        r2_log("adapter: REV2_ADAPTER=intel but no Intel adapter among %u: exiting rather than using another GPU", n);
+        ExitProcess(3);
+    }
     if (adapter_mode[0] >= '0' && adapter_mode[0] <= '9') {
         UINT want = (UINT)atoi(adapter_mode);
         return want < n ? (int)want : (int)asked;
@@ -788,6 +819,9 @@ void testmode_install(void)
     pads_allowed = r2_env("REV2_PADS", v, sizeof v) && v[0] == '1';   /* virtual test pads reach the game while it is in the background */
     winlog = r2_env("REV2_WINLOG", v, sizeof v) && v[0] == '1';
     r2_env("REV2_ADAPTER", adapter_mode, sizeof adapter_mode);
+    test_instance = have_pos || background || adapter_mode[0] || r2_env("REV2_CONSOLE", v, sizeof v);
+    if (test_instance)   /* no Windows error box (fault, critical error, missing file) from a test instance either */
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     if (!r2_pass()) {
         real_MessageBoxA = (MessageBoxA_t)r2_patch_iat("USER32.dll", "MessageBoxA", (void *)hook_MessageBoxA);
         real_DialogBoxParamA = (DialogBoxParamA_t)r2_patch_iat("USER32.dll", "DialogBoxParamA", (void *)hook_DialogBoxParamA);

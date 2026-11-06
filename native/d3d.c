@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "r2.h"
+#include "devreset.h"
 
 typedef IDirect3D9 *(WINAPI *Direct3DCreate9_t)(UINT);
 typedef HRESULT (WINAPI *CreateDevice_t)(IDirect3D9 *, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS *, IDirect3DDevice9 **);
@@ -26,6 +27,20 @@ static Direct3DCreate9_t real_Direct3DCreate9;
 static CreateDevice_t real_CreateDevice;
 static Present_t real_Present;
 static Reset_t real_Reset;
+
+/* test hook (console `devreset <n>`, test instances only): the next n Reset calls answer DEVICELOST without the device
+   being lost, so the wait in hook_Reset can be run for real. Requested here, run by hook_Present on the render thread. */
+static LONG devreset_inject, devreset_test_pending;
+static D3DPRESENT_PARAMETERS dr_pp;   /* the last parameters of CreateDevice / Reset, for the test Reset */
+static HRESULT do_reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp)
+{
+    if (devreset_inject > 0) {
+        devreset_inject--;
+        return (HRESULT)DEVRESET_LOST;
+    }
+    return real_Reset(dev, pp);
+}
+void d3d_devreset_request(int n) { InterlockedExchange(&devreset_test_pending, n); }
 
 static char shot_dir[MAX_PATH];
 static int shot_secs[32], shot_count, shot_next, shot_serial;
@@ -98,9 +113,19 @@ done:
     IDirect3DSurface9_Release(bb);
 }
 
+static HRESULT WINAPI hook_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp);
+
 static HRESULT WINAPI hook_Present(IDirect3DDevice9 *dev, const RECT *s, const RECT *d, HWND w, const RGNDATA *r)
 {
     unsigned n = ++frames;
+    LONG tn = InterlockedExchange(&devreset_test_pending, 0);
+    if (tn > 0) {   /* `devreset <n>` (test): a Reset on this (render) thread with n injected lost answers */
+        D3DPRESENT_PARAMETERS tp = dr_pp;
+        devreset_inject = tn;
+        HRESULT th = hook_Reset(dev, &tp);
+        r2_log("devreset test: %ld injected lost answers, Reset returned 0x%08lx, %ld injections left", (long)tn, (unsigned long)th, (long)devreset_inject);
+        devreset_inject = 0;
+    }
     menu_present(dev);   /* the lobby overlay (stage 8), above the screenshot code below so that shots show it */
     if (n == 1) {
         char st[160];
@@ -136,6 +161,22 @@ static HRESULT WINAPI hook_Present(IDirect3DDevice9 *dev, const RECT *s, const R
     return real_Present(dev, s, d, w, r);
 }
 
+/* device-lost recovery (devreset.h): the game itself shows a fatal error box at the first lost Reset, so the wait is here */
+#define DEVRESET_BUDGET_MS 20000u
+#define DEVRESET_POLL_MS   100u
+struct devreset_ctx {
+    IDirect3DDevice9 *dev;
+    D3DPRESENT_PARAMETERS *pp;
+};
+static long devreset_coop(void *c) { return (long)IDirect3DDevice9_TestCooperativeLevel(((struct devreset_ctx *)c)->dev); }
+static long devreset_reset(void *c)
+{
+    struct devreset_ctx *x = c;
+    return (long)do_reset(x->dev, x->pp);
+}
+static void devreset_sleep(void *c, unsigned ms) { (void)c; Sleep(ms); }
+static unsigned devreset_now(void *c) { (void)c; return (unsigned)GetTickCount(); }
+
 static HRESULT WINAPI hook_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp)
 {
     if (testmode_force_windowed() && pp && !pp->Windowed) {
@@ -143,9 +184,21 @@ static HRESULT WINAPI hook_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *p
         pp->FullScreen_RefreshRateInHz = 0;
     }
     menu_before_reset();
-    HRESULT hr = real_Reset(dev, pp);
+    if (pp)
+        dr_pp = *pp;
+    HRESULT hr = do_reset(dev, pp);
     r2_log("device Reset %ux%u windowed=%d -> hr=0x%08lx", pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0, pp ? pp->Windowed : -1,
            (unsigned long)hr);
+    if (devreset_is_lost((long)hr)) {
+        struct devreset_ctx x = {dev, pp};
+        unsigned tries = 0;
+        r2_log("device lost on Reset (hr=0x%08lx): waiting up to %u s for TestCooperativeLevel, then Reset again", (unsigned long)hr,
+               DEVRESET_BUDGET_MS / 1000u);
+        hr = (HRESULT)devreset_wait((long)hr, devreset_coop, devreset_reset, devreset_sleep, devreset_now, &x,
+                                    DEVRESET_BUDGET_MS, DEVRESET_POLL_MS, &tries);
+        r2_log("device Reset after the wait: %u more Reset call(s) -> hr=0x%08lx%s", tries, (unsigned long)hr,
+               devreset_is_lost((long)hr) ? " (still lost: the game will show its error)" : " (no longer lost: returned to the game)");
+    }
     return hr;
 }
 
@@ -161,15 +214,17 @@ static HRESULT WINAPI hook_CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYP
     D3DADAPTER_IDENTIFIER9 id;
     memset(&id, 0, sizeof id);
     IDirect3D9_GetAdapterIdentifier(d3d, use, 0, &id);
-    r2_log("CreateDevice asked adapter %u, using %u (%s) %ux%u fmt=%d windowed=%d (was %s) buffers=%u msaa=%d flags=0x%lx", adapter, use,
-           id.Description, pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0, pp ? pp->BackBufferFormat : 0, pp ? pp->Windowed : -1,
+    r2_log("CreateDevice asked adapter %u, using %u (%s, vendor 0x%04lx) %ux%u fmt=%d windowed=%d (was %s) buffers=%u msaa=%d flags=0x%lx", adapter, use,
+           id.Description, id.VendorId, pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0, pp ? pp->BackBufferFormat : 0, pp ? pp->Windowed : -1,
            was_full ? "full screen" : "windowed", pp ? pp->BackBufferCount : 0, pp ? pp->MultiSampleType : 0, flags);
     HRESULT hr = real_CreateDevice(d3d, use, type, focus, flags, pp, out);
     r2_log("CreateDevice -> hr=0x%08lx", (unsigned long)hr);
-    if (FAILED(hr) && use != adapter)
+    if (FAILED(hr) && use != adapter && !testmode_adapter_strict())
         hr = real_CreateDevice(d3d, adapter, type, focus, flags, pp, out);
     if (SUCCEEDED(hr) && out && *out) {
         void *p;
+        if (pp)
+            dr_pp = *pp;
         t0 = GetTickCount();
         if ((p = r2_patch_vtable(*out, 16, (void *)hook_Reset)))
             real_Reset = (Reset_t)p;

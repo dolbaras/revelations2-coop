@@ -26,6 +26,7 @@ enum lobby_text {
     LT_YOUR_ADDR, LT_STEAM_HINT, LT_STEAM_NA, LT_NEED_READY, LT_NOT_READY, LT_SEARCHING, LT_CHARACTER, LT_STARTING, LT_YOU, LT_HOST_TAG,
     LT_PARTNER_READY, LT_LEAVE_HINT, LT_SAVE_WARN,
     LT_WAIT_LOAD,   /* stage 6i: banner "Waiting for %s to finish loading..." (one %s = the player's name) */
+    LT_LEG_OK,      /* legend word of the confirm key at the bottom of the lobby (the back key uses the stock "Back") */
     LT_COUNT
 };
 /* stock string location (message table index of Msg_GetString, message id); table -1 = own string only */
@@ -101,6 +102,7 @@ typedef struct {
     int busy;                /* show a spinner */
     char note[260];          /* small grey note under the status line (the save slot warning) */
     char col_name[32], col_char[32], col_ping[16], t_ready[32], t_not_ready[32], t_host[24];   /* table captions */
+    char leg_ok[32], leg_back[32];   /* key legend words (confirm / back) */
 } lobby_view;
 
 /* ---- requests of the model to the application ---- */

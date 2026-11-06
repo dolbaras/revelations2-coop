@@ -18,4 +18,12 @@ CF="-target $TARGET -O1 -g -Wall -Wno-unused-function -DWIN32"
 "$ZIG" cc $CF -o build/test_glue.exe test_glue.c
 "$ZIG" cc $CF -o build/test_bgl.exe test_bgl.c
 "$ZIG" cc $CF -o build/test_radio.exe test_radio.c
+"$ZIG" cc $CF -o build/test_testbox.exe test_testbox.c
+"$ZIG" cc $CF -o build/test_devreset.exe test_devreset.c
 "$ZIG" cc $CF -o build/test_pad.exe test_pad.c
+"$ZIG" cc $CF -o build/test_gametex.exe test_gametex.c ../native/gametex.c
+ARC=""
+for d in "${GAME_DIR:-}" ../../game ../../work/game; do
+    [ -n "$d" ] && [ -f "$d/nativePCNext/arc/DX9NEXT/Msg_eng.arc" ] && ARC="$d/nativePCNext/arc/DX9NEXT/Msg_eng.arc" && break
+done
+if [ -n "$ARC" ]; then ./build/test_gametex.exe "$ARC" rev2; else echo "(no game folder found: only the inflate checks run; set GAME_DIR=<game folder>)"; ./build/test_gametex.exe; fi

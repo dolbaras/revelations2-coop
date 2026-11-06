@@ -234,8 +234,11 @@ static void gate_set(int on)
     }
 }
 
+static int g_lang_override = -1;   /* test console `menu lang <0-11>`: the lobby's own texts and its font class in that language (lobby_lang_names order); the game's own strings stay in the loaded language */
 static int game_lang(void)
 {
+    static const int game_id_of[12] = {1, 2, 5, 4, 3, 10, 11, 9, 0, 6, 8, 7};   /* inverse of lobby_lang_from_game */
+    if (g_lang_override >= 0 && g_lang_override < 12) return game_id_of[g_lang_override];
     unsigned s = rd32(A_SGUI);
     return s ? (int)rd32(s + 0x28) : 1;
 }
@@ -302,11 +305,18 @@ static const char *env_text(void *u, int id)
     if (g_tcache[id].lang != glang + 1 || (g_tcache[id].state == 2 && now - g_tcache[id].tick > 4000)) g_tcache[id].state = 0;
     if (g_tcache[id].state == 0) {
         const char *s = game_text(lobby_stock_ids[id].table, lobby_stock_ids[id].id);
+        if (s && lang >= 8) {   /* Japanese / Korean / Chinese: some stock entries are English in the game's own table (Difficulty, Start Game ...): our word when we have one */
+            const char *own = lobby_own_text(id, lang);
+            int ascii = 1;
+            for (const char *c = s; *c; c++)
+                if ((unsigned char)*c >= 0x80) ascii = 0;
+            if (ascii && strcmp(own, lobby_own_text(id, 0))) s = own;
+        }
         g_tcache[id].lang = glang + 1, g_tcache[id].tick = now;
         if (s) g_tcache[id].state = 1, snprintf(g_tcache[id].text, sizeof g_tcache[id].text, "%s", s);
         else g_tcache[id].state = 2;
     }
-    return g_tcache[id].state == 1 ? g_tcache[id].text : lobby_own_text(id, 0);   /* (a table that is not loaded: English) */
+    return g_tcache[id].state == 1 ? g_tcache[id].text : lobby_own_text(id, lang);   /* (a table that is not loaded or an "Invalid Message" gap: our word in that language, English where we have none) */
 }
 
 /* ------------------------------------------------------------------ session environment of the lobby */
@@ -1097,12 +1107,15 @@ void menu_command(const char *arg, char *out, int size)
         int any = testmode_pad_snapshot(&b, &lx, &ly);
         snprintf(out, (size_t)size, "pad snapshot: %s buttons %04x stick %d,%d; foreground %d; up %d down %d enter %d esc %d", any ? "pad" : "no pad", b, lx, ly, in_foreground(), inject_vk_down(VK_UP),
                  inject_vk_down(VK_DOWN), inject_vk_down(VK_RETURN), inject_vk_down(VK_ESCAPE));
+    } else if (!strcmp(w, "lang")) {   /* menu lang <0-11|off>: test only, see g_lang_override */
+        g_lang_override = !strcmp(rest, "off") || !rest[0] ? -1 : atoi(rest);
+        snprintf(out, (size_t)size, "lobby language %s (%d)", g_lang_override < 0 ? "= the game's" : lobby_lang_names[g_lang_override % 12], g_lang_override);
     } else if (!strcmp(w, "text0")) {   /* menu text0 <table> <id>: a string of the game in the current language */
         int t = 0, id = 0;
         sscanf(rest, "%d %d", &t, &id);
         const char *s = game_text(t, id);
         snprintf(out, (size_t)size, "language %d: %s", game_lang(), s ? s : "(none)");
     } else {
-        snprintf(out, (size_t)size, "menu: status | open | close | view | ev <k> | text <s> | start <ep> <part> <diff> | set k=v | gate 0|1 | hidecm 0|1 | enabled 0|1 | autoopen 0|1 | ov <mode> | pad | text0 <table> <id>");
+        snprintf(out, (size_t)size, "menu: status | open | close | view | ev <k> | text <s> | start <ep> <part> <diff> | set k=v | gate 0|1 | hidecm 0|1 | enabled 0|1 | autoopen 0|1 | ov <mode> | pad | text0 <table> <id> | lang <0-11|off>");
     }
 }

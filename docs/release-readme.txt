@@ -1,4 +1,4 @@
-Resident Evil Revelations 2 Co-op  -  PRE-RELEASE 1 (version 0.1.0)
+Resident Evil Revelations 2 Co-op  -  PRE-RELEASE 2 (version 0.1.1)
 ===================================================================
 
 THIS IS A PRE-RELEASE FOR TESTING, NOT A FINISHED MOD. It was tested only by its author, on two PCs, mostly with shortened routes. Please play it, expect
@@ -6,6 +6,10 @@ problems, and tell us what went wrong (see "Report a problem" below). The shortc
 
 Network co-op for the story campaign of Resident Evil Revelations 2 (PC, Steam build 3658995): two players on two PCs, each PC with its own copy of the
 game and of this mod. This first version is for EPISODE 1 only.
+
+What changed since pre-release 1 (0.1.0)
+- The lobby is drawn with the game's own fonts, title and menu pictures, read from your installed game when it runs (nothing of the game is shipped). Japanese text still uses a fallback font, not the game's own.
+- A lost graphics device no longer ends the game at once: the mod waits up to 20 seconds for the device to come back and resets it again. This was checked live only with simulated losses; if the log shows "device lost on Reset", please send the log (see "Report a problem").
 
 What it does
 - The campaign's second character (Claire and Moira in the first half of an episode, Barry and Natalia in the second half) is played by a second human over

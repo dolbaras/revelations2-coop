@@ -606,6 +606,8 @@ void lobby_view_get(lobby_t *l, lobby_view *v)
         if (f.phase != CP_PHASE_LOBBY) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_STARTING));
     }
     snprintf(v->hint, sizeof v->hint, "%s", tx(l, l->screen == LS_JOIN_IP ? LT_HINT_IP : LT_HINT));
+    snprintf(v->leg_ok, sizeof v->leg_ok, "%s", tx(l, LT_LEG_OK));
+    snprintf(v->leg_back, sizeof v->leg_back, "%s", tx(l, LT_BACK));
 }
 
 /* ------------------------------------------------------------------ input */

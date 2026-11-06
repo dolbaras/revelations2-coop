@@ -2,7 +2,7 @@
 #define R2_H
 #include <windows.h>
 
-#define R2_VERSION "0.1.0"
+#define R2_VERSION "0.1.1"
 
 /* The Steam build 3658995 exe (SHA-256 of rerev2.exe on disk). Any other exe: the proxy only forwards DirectInput8Create. */
 #define R2_EXE_SHA256 "55ac7d2bd80704c6a8a1fa7bd2371726adbaa01ae0fda056198fb042404367f9"
@@ -25,6 +25,7 @@ void testmode_install(void);
 void testmode_wrap_dinput(void *dinput);
 int testmode_background(void);
 int testmode_adapter_pick(void *d3d, HWND focus, unsigned asked);
+int testmode_adapter_strict(void);
 int testmode_force_windowed(void);          /* 1 = test instance: never exclusive full screen */
 void testmode_window_size(int *w, int *h);  /* wanted client size, 0 when not set */
 HWND testmode_window(void);
@@ -59,6 +60,7 @@ void inject_vk_from_dik(int dik, int *vk);
 void d3d_install(void);
 void d3d_request_shot(void);
 void d3d_request_burst(int n, int ms);
+void d3d_devreset_request(int n);   /* test: the next Present makes n Reset calls answer DEVICELOST (console `devreset <n>`) */
 void console_shake_tick(void);
 unsigned d3d_frames(void);
 

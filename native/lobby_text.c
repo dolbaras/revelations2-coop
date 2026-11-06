@@ -22,7 +22,7 @@ const lobby_stock lobby_stock_ids[LT_COUNT] = {
     [LT_REFRESH] = {-1, 0}, [LT_NAME] = {-1, 0}, [LT_PING] = {-1, 0}, [LT_HINT] = {-1, 0}, [LT_HINT_IP] = {-1, 0}, [LT_YOUR_ADDR] = {-1, 0},
     [LT_STEAM_HINT] = {-1, 0}, [LT_STEAM_NA] = {-1, 0}, [LT_NEED_READY] = {-1, 0}, [LT_NOT_READY] = {-1, 0}, [LT_SEARCHING] = {-1, 0},
     [LT_CHARACTER] = {-1, 0}, [LT_STARTING] = {-1, 0}, [LT_YOU] = {-1, 0}, [LT_HOST_TAG] = {-1, 0}, [LT_PARTNER_READY] = {-1, 0}, [LT_LEAVE_HINT] = {-1, 0}, [LT_SAVE_WARN] = {-1, 0},
-    [LT_WAIT_LOAD] = {-1, 0},
+    [LT_WAIT_LOAD] = {-1, 0}, [LT_LEG_OK] = {-1, 0},
 };
 
 const char *const lobby_lang_names[12] = {"English", "French", "Italian", "German", "Spanish", "Russian", "Polish", "Portuguese (Brazil)", "Japanese", "Korean",
@@ -48,11 +48,12 @@ int lobby_lang_from_game(int g)
 }
 
 static const char *const T[LT_COUNT][12] = {
-    /* ---- stock strings: English fallback only ---- */
+    /* ---- stock strings: English fallback, plus our own words where the game's own table holds English in a CJK language (menu.c env_text uses them instead of an all-ASCII stock string there) ---- */
     [LT_COOP] = {"Co-Op Play"}, [LT_HOST] = {"Find a Partner"}, [LT_JOIN] = {"Join a Partner"}, [LT_FRIEND] = {"Friend"}, [LT_LINK] = {"System Link"},
-    [LT_BACK] = {"Back"}, [LT_READY] = {"Ready"}, [LT_START] = {"Start Game"}, [LT_DIFFICULTY] = {"Difficulty"}, [LT_EPISODE] = {"Episode"},
+    [LT_BACK] = {"Back"}, [LT_READY] = {"Ready"}, [LT_START] = {"Start Game", NL, NL, NL, NL, NL, NL, NL, "ゲーム開始"},
+    [LT_DIFFICULTY] = {"Difficulty", NL, NL, NL, NL, NL, NL, NL, "難易度", NL, "难度", "難度"}, [LT_EPISODE] = {"Episode", NL, NL, NL, NL, NL, NL, NL, "エピソード"},
     [LT_CLAIRE] = {"Claire"}, [LT_MOIRA] = {"Moira"}, [LT_BARRY] = {"Barry"}, [LT_NATALIA] = {"Natalia"}, [LT_PLAYER] = {"Player"}, [LT_PARTNER] = {"Partner"},
-    [LT_YES] = {"Yes"}, [LT_NO] = {"No"}, [LT_QUIT_SESSION] = {"Quit session?"}, [LT_LEAVE] = {"Leave"},
+    [LT_YES] = {"Yes"}, [LT_NO] = {"No"}, [LT_QUIT_SESSION] = {"Quit session?"}, [LT_LEAVE] = {"Leave", NL, NL, NL, NL, NL, NL, NL, "退出"},
     [LT_SAME_SEL] = {"You cannot make the same selection as your partner."}, [LT_FAIL_JOIN] = {"Failed to join session."},
     [LT_FAIL_CREATE] = {"Failed to create a session."}, [LT_CONN_LOST] = {"Connection to the other player has been terminated."},
     [LT_CASUAL] = {"Casual"}, [LT_NORMAL] = {"Normal"}, [LT_HARD] = {"Hard"}, [LT_VERY_HARD] = {"Very Hard"}, [LT_INVITE] = {"Invite Friends"},
@@ -76,7 +77,7 @@ static const char *const T[LT_COUNT][12] = {
                        "현재 호스트 중인 친구가 없습니다.", "目前没有好友在主持游戏。", "目前沒有好友在主持遊戲。"},
     [LT_REFRESH] = {"Refresh", "Actualiser", "Aggiorna", "Aktualisieren", "Actualizar", "Обновить", "Odśwież", "Atualizar", "更新", "새로 고침", "刷新", "重新整理"},
     [LT_NAME] = {"Name", "Nom", "Nome", "Name", "Nombre", "Имя", "Nazwa", "Nome", "名前", "이름", "名称", "名稱"},
-    [LT_PING] = {"Ping"},
+    [LT_PING] = {"Ping", "Ping", "Ping", "Ping", "Ping", "Пинг", "Ping", "Ping", "ピング", "핑", "延迟", "延遲"},
     [LT_HINT] = {"Up/Down: choose   Left/Right: change   Enter: confirm   Esc: back", "Haut/Bas : choisir   Gauche/Droite : modifier   Entrée : valider   Échap : retour",
                  "Su/Giù: scegli   Sinistra/Destra: cambia   Invio: conferma   Esc: indietro", "Hoch/Runter: wählen   Links/Rechts: ändern   Eingabe: bestätigen   Esc: zurück",
                  "Arriba/Abajo: elegir   Izq./Der.: cambiar   Intro: confirmar   Esc: atrás", "Вверх/вниз: выбор   Влево/вправо: изменить   Ввод: подтвердить   Esc: назад",
@@ -134,6 +135,7 @@ static const char *const T[LT_COUNT][12] = {
                       "Warte darauf, dass %s fertig geladen hat...", "Esperando a que %s termine de cargar...", "Ожидание: %s ещё загружает уровень...",
                       "Czekam, aż %s skończy wczytywanie...", "Aguardando %s terminar de carregar...", "%sの読み込み完了を待っています...",
                       "%s님의 로딩이 끝나기를 기다리는 중...", "正在等待%s完成加载...", "正在等待%s完成載入..."},
+    [LT_LEG_OK] = {"Confirm", "Valider", "Conferma", "Bestätigen", "Confirmar", "Подтвердить", "Zatwierdź", "Confirmar", "決定", "확인", "确认", "確認"},
 };
 
 const char *lobby_own_text(int text, int lang)
