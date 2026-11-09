@@ -13,6 +13,14 @@
 #include "overlay.h"
 #include "r2.h"
 
+/* the ping of a player in the view's language ("%s ms" / "%s мс" ...: LT_MS) */
+static void ping_text(const lobby_view *v, int ms, char *out, size_t size)
+{
+    char n[16];
+    snprintf(n, sizeof n, "%d", ms);
+    lobby_format(v->t_ms[0] ? v->t_ms : "%s ms", n, NULL, out, size);
+}
+
 typedef HRESULT(WINAPI *CreateFontW_t)(LPDIRECT3DDEVICE9, INT, UINT, UINT, UINT, BOOL, DWORD, DWORD, DWORD, DWORD, LPCWSTR, LPD3DXFONT *);
 typedef HRESULT(WINAPI *CreateSprite_t)(LPDIRECT3DDEVICE9, LPD3DXSPRITE *);
 
@@ -310,7 +318,7 @@ static void draw_players(const lobby_view *v, float x, float y, float w)
         text(p->chr, x + 330, y + 2, 190, 36, 30, 0, COL_TEXT, DT_LEFT);
         if (p->host) text(v->t_host, x + 330, y + 36, 190, 26, 20, 0, COL_INFO, DT_LEFT);
         else text(p->ready ? v->t_ready : v->t_not_ready, x + 330, y + 36, 190, 26, 20, 0, p->ready ? 0xFF86E394 : 0xFFB8C2CC, DT_LEFT);
-        if (p->ping >= 0) snprintf(pg, sizeof pg, "%d ms", p->ping);
+        if (p->ping >= 0) ping_text(v, p->ping, pg, sizeof pg);
         else snprintf(pg, sizeof pg, "%s", p->me ? "" : "-");
         text(pg, x + w - 150, y, 126, 64, 26, 0, COL_INFO, DT_RIGHT);
         y += 64;
@@ -320,7 +328,10 @@ static void draw_players(const lobby_view *v, float x, float y, float w)
 static void spinner_text(char *out, size_t n, const char *base, unsigned tick, int busy)
 {
     static const char *const dots[] = {"", ".", "..", "..."};
-    snprintf(out, n, "%s%s", base, busy ? dots[(tick / 350) % 4] : "");
+    size_t len = strlen(base);
+    if (busy && len >= 3 && !strcmp(base + len - 3, "..."))
+        len -= 3;   /* 0.2.0: "Connecting to <address>..." ends with dots itself: the animated ones take their place (live run 5 showed six) */
+    snprintf(out, n, "%.*s%s", (int)len, base, busy ? dots[(tick / 350) % 4] : "");
 }
 
 static void draw_full(const ov_scene *sc)
@@ -345,6 +356,20 @@ static void draw_full(const ov_scene *sc)
     }
     draw_rows(v, 160, y, 800, 60, 70, 34);
     if (v->nplayers) draw_players(v, 1040, 250, 720);
+    if (v->info[0]) {   /* (D3DX backend: one line per part, cut at the edge) */
+        char line[480];
+        const char *p = v->info;
+        float iy = 250 + 62 + 64 * (float)(v->nplayers ? v->nplayers : 1) + 30;
+        while (p && *p) {
+            const char *e = strchr(p, 10);
+            size_t n = e ? (size_t)(e - p) : strlen(p);
+            if (n >= sizeof line) n = sizeof line - 1;
+            memcpy(line, p, n), line[n] = 0;
+            text(line, 1040, iy, 720, 40, 20, 0, COL_INFO, DT_LEFT);
+            iy += 44;
+            p = e ? e + 1 : NULL;
+        }
+    }
     char st[300];
     spinner_text(st, sizeof st, v->status, sc->tick_ms, v->busy);
     if (v->status[0] || v->busy) text(st, 160, 880, 1600, 60, 32, 0, status_color(v->status_kind), DT_LEFT);
@@ -518,12 +543,20 @@ static struct {
     float decomid;
 } RT;
 
+/* every distinct face is freed once, whatever shares it: class 1 (Japanese) holds the pointer of class 0 (sys_eng). Rev1 freed such a shared face twice
+ * (its e55ea25: heap corruption 0xC0000374 at the first device Reset with the lobby material loaded); tests/overlay_preview.c --reset-cycle runs this path */
 static void rt_free(void)
 {
+    gt_font *f[5 * 2 + 1];
+    int n = 0;
     for (int c = 0; c < 5; c++)
-        for (int r = 0; r < 2; r++)
-            if (RT.font[c][r] && !(c == 1 && r == 0) && !(r == 1)) gt_font_free(RT.font[c][r]);   /* [1][*] shares [0][*]; role 1 shares role 0 */
-    gt_font_free(RT.deco);
+        for (int r = 0; r < 2; r++) f[n++] = RT.font[c][r];
+    f[n++] = RT.deco;
+    for (int i = 0; i < n; i++) {
+        int shared = 0;
+        for (int j = 0; j < i; j++) shared |= f[j] == f[i];
+        if (f[i] && !shared) gt_font_free(f[i]);
+    }
     gt_img_free(&RT.pad), gt_img_free(&RT.frame);
     memset(&RT, 0, sizeof RT);
 }
@@ -1144,10 +1177,26 @@ static void s_players(const lobby_view *v, float x, float y, float w)
         stext(p->chr, x + 340, y + 4, 200, 40, 30, 1, S_TEXT, SA_LEFT, 0.0f, 0);
         if (p->host) stext(v->t_host, x + 340, y + 42, 200, 28, 20, 1, S_INFO, SA_LEFT, 0.04f, 0);
         else stext(p->ready ? v->t_ready : v->t_not_ready, x + 340, y + 42, 220, 28, 20, 1, p->ready ? 0xA6E08C : S_INFO, SA_LEFT, 0.0f, 0);
-        if (p->ping >= 0) snprintf(pg, sizeof pg, "%d ms", p->ping);
+        if (p->ping >= 0) ping_text(v, p->ping, pg, sizeof pg);
         else snprintf(pg, sizeof pg, "%s", p->me ? "" : "-");
         stext(pg, x + w - 170, y, 142, 76, 26, 1, S_INFO, SA_RIGHT, 0.0f, 0);
         y += 76;
+    }
+}
+
+/* 0.2.0: the room's info block (Episode 1 only, the port hint): its lines (separated by a line feed) one under the other, each wrapped in its own box */
+static void s_info(const char *info, float x, float y, float w, float h_each)
+{
+    char line[480];
+    const char *p = info;
+    while (p && *p) {
+        const char *e = strchr(p, 10);
+        size_t n = e ? (size_t)(e - p) : strlen(p);
+        if (n >= sizeof line) n = sizeof line - 1;
+        memcpy(line, p, n), line[n] = 0;
+        stext(line, x, y, w, h_each, 22, 1, 0xB0B8C0, SA_LEFT, 0.0f, SF_WRAP);
+        y += h_each + 10;
+        p = e ? e + 1 : NULL;
     }
 }
 
@@ -1178,6 +1227,7 @@ static void draw_styled(const ov_scene *sc)
     }
     s_rows(v, 170, y, 860, 840);
     if (v->nplayers) s_players(v, 1160, 250, 660);
+    if (v->info[0]) s_info(v->info, 1170, 250 + 74 + 76 * (float)(v->nplayers ? v->nplayers : 1) + 14 + 30, 640, 100);
     char st[300];
     spinner_text(st, sizeof st, v->status, sc->tick_ms, v->busy);
     if (v->status[0] || v->busy) stext(st, 170, 860, 1580, 52, 32, 1, s_status_rgb(v->status_kind), SA_LEFT, 0.01f, 0);
@@ -1474,6 +1524,33 @@ void overlay_banner(void *vdev, const char *utf8, int lang)
         IDirect3DDevice9_StretchRect(dev, B.def, NULL, bb, &dst, D3DTEXF_NONE);
     }
     IDirect3DSurface9_Release(bb);
+}
+
+/* 0.2.0 (tests): the width in pixels of a strip's text in the strip's own font for a back buffer of bb_h lines, and the room the strip leaves it (bb_w wide) */
+int overlay_banner_measure(const char *utf8, int lang, int bb_w, int bb_h, int *room)
+{
+    int bh = (int)(bb_h * 0.055f + 0.5f);
+    if (bh < 36) bh = 36;
+    int stripe = bh / 12 > 3 ? bh / 12 : 3;
+    if (room) *room = bb_w - (stripe + bh / 3) - bh / 3;
+    wchar_t ws[400];
+    int n = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, ws, 399);
+    if (n <= 1) return 0;
+    HDC sdc = GetDC(NULL), dc = CreateCompatibleDC(sdc);
+    ReleaseDC(NULL, sdc);
+    if (!G.dc) G.dc = dc;   /* (gdi_font needs no DC; the measure does) */
+    HFONT f = gdi_font(bh * 5 / 10, 0, face_class(lang));
+    int w = -1;
+    if (f && dc) {
+        HGDIOBJ old = SelectObject(dc, f);
+        RECT rc = {0, 0, 0, 0};
+        DrawTextW(dc, ws, n - 1, &rc, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        w = (int)rc.right;
+        SelectObject(dc, old);
+    }
+    if (G.dc == dc) G.dc = NULL;
+    if (dc) DeleteDC(dc);
+    return w;
 }
 
 int overlay_available(void) { return load_d3dx(); }

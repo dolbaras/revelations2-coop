@@ -25,6 +25,16 @@
 #define BARRIER_TIMEOUT_MS 300000
 #define WAIT_NOTE_FIRST_MS 20000    /* a machine that has finished loading tells its player after this long that it waits for the other one */
 #define WAIT_NOTE_EVERY_MS 30000
+/* Silence of a partner whose link is up (the transport keeps it: ENet on its own thread, Steam pings). The game runs its logic only while its window is active
+ * (stage2a.md section 1: byte app+0x2551), so a player in Alt-Tab, a stalled PC (the owner's main PC: ~90 s, stage6.md 413 / 478) or a game that hangs sends
+ * nothing: CS_N_SILENT tells the other player after 8 s and every 10 s, the session gives up on it after 10 minutes (a defined end of every wait, also of the
+ * barrier of a client whose host never comes back). A real crash ends the link through the transport much sooner (ENet 10-30 s, Steam 3-30 s). */
+#define SILENT_FIRST_MS 8000
+#define SILENT_EVERY_MS 10000
+#define SILENT_LIMIT_MS 600000
+/* a known player who connects again while its old link still looks alive (the transport has not noticed the crash yet) takes its seat back when the old link
+ * has been silent this long; a live game sends a heartbeat every 500 ms */
+#define GHOST_SILENT_MS 3000
 #define DEFAULT_INTERP_MS 100
 #define EXTRAP_MAX_MS 250
 #define STALE_MS 1000
@@ -50,8 +60,11 @@ typedef struct {
     int have_hb;
     float srtt;
     int have_rtt;
-    uint32_t n_rx, n_dup, n_old, n_stale, n_gap;
+    uint32_t n_rx, n_dup, n_old, n_stale, n_gap, n_exp;   /* n_gap: lost on the way; n_exp: arrived but expired here while the game loop was away (steamgap) */
     rstate rs;
+    uint32_t heard;        /* session clock of the last message of any kind from this player (the host watches its clients, a client its host) */
+    uint32_t silent_next;  /* when the next CS_N_SILENT is due */
+    int silent_on;         /* a silence note was given and the player has not been heard since */
 } pl_t;
 
 struct cs_t {
@@ -81,18 +94,26 @@ struct cs_t {
     int interp_delay;
     int threaded;
     uint32_t rx_now;   /* arrival time (network thread) of the message being handled */
+    int host_left;     /* client: the host said LEAVE (its disconnect follows) */
+    int host_reason;   /* client: the reason of that LEAVE (enum cp_leave_reason) */
+    int hello_sent;    /* client: HELLO is out, the host's answer is awaited (cs_join_stage) */
+    int name_auto;     /* the configured name was empty: "Player 1" when hosting, "Player 2" when joining */
+    char removed[4][CP_NAME_MAX + 1];   /* host: names removed from this session (refused with REFUSE(REMOVED) until it ends) */
+    uint32_t last_poll;   /* (steamgap) session clock of the previous cs_poll of this session (0 = none yet) */
+    uint32_t exp_seen;    /* cn_stats.expired at that poll */
 };
 
 static uint32_t now_of(cs_t *s) { return s->cfg.clock ? s->cfg.clock(s->cfg.clock_user) : cn_now_ms(); }
 uint32_t cs_now(cs_t *s) { return now_of(s); }
 
-static void note(cs_t *s, int what, int pid, int a, int b, const char *text, const cp_event *ev)
+static void note_ex(cs_t *s, int what, int pid, int a, int b, const char *text, const cp_event *ev, const char *peer_mod)
 {
     if (!s->cfg.on_note) return;
     cs_note n;
-    n.what = what, n.pid = pid, n.a = a, n.b = b, n.text = text, n.ev = ev;
+    n.what = what, n.pid = pid, n.a = a, n.b = b, n.text = text, n.ev = ev, n.peer_mod = peer_mod;
     s->cfg.on_note(s->cfg.user, &n);
 }
+static void note(cs_t *s, int what, int pid, int a, int b, const char *text, const cp_event *ev) { note_ex(s, what, pid, a, b, text, ev, NULL); }
 
 static void copy_name(char *dst, const char *src)
 {
@@ -215,6 +236,29 @@ static void reset_session(cs_t *s)
     memset(&s->session, 0, sizeof s->session);
     s->pid = -1, s->phase = CP_PHASE_NONE, s->epoch = 0, s->me_load_epoch = 0, s->joining = 0, s->role = CN_ROLE_NONE;
     s->lobby_rev = 0, s->state_seq = 0, s->event_seq = 0, s->last_hb = 0, s->last_state = 0;
+    s->host_left = 0, s->host_reason = 0, s->hello_sent = 0;
+    memset(s->removed, 0, sizeof s->removed);
+    s->last_poll = 0, s->exp_seen = 0;
+}
+
+/* the name this PC uses for a new session: the configured one, or the default of its role when none was configured (never the Windows user or computer name) */
+static void role_name(cs_t *s, int host)
+{
+    if (s->name_auto) snprintf(s->name, sizeof s->name, "%s", host ? "Player 1" : "Player 2");
+}
+
+/* a message of any kind came from pid at time t: it is alive (and the player is told when it was silent before) */
+static void heard(cs_t *s, int pid, uint32_t t)
+{
+    if (pid < 0 || pid >= CP_MAX_PLAYERS || pid == s->pid || !s->pl[pid].used) return;
+    pl_t *p = &s->pl[pid];
+    if (p->silent_on) {
+        uint32_t quiet = t - p->heard;
+        p->silent_on = 0;
+        cn_log("session: player %d (%s) is heard again after %u s of silence", pid, p->name, quiet / 1000u);
+        note(s, CS_N_SILENT, pid, 0, (int)(quiet / 1000u), p->name, NULL);
+    }
+    p->heard = t;
 }
 
 /* ---------------------------------------------------------------- state ring and interpolation */
@@ -231,11 +275,20 @@ static int rs_push(cs_t *s, pl_t *p, const cp_state *st, uint32_t now)
 {
     rstate *r = &p->rs;
     if (st->epoch != s->epoch) { p->n_stale++, s->st.rx_stale_epoch++; return 0; }   /* another level instance: not part of this sequence */
+    int pid = (int)(p - s->pl);
     if (r->have_seq) {
         if (st->seq == r->last_seq) { p->n_dup++, s->st.rx_dup++; return 0; }
         if (!cp_seq16_newer(st->seq, r->last_seq)) { p->n_old++, s->st.rx_old++; return 0; }
-        uint16_t gap = (uint16_t)(st->seq - r->last_seq - 1);
-        p->n_gap += gap, s->st.rx_gap += gap;
+        uint32_t jump = (uint16_t)(st->seq - r->last_seq - 1);
+        /* (steamgap) the part of the jump that arrived and expired in the inbox while this game's loop was away is not loss on the way. The transport counts the
+         * dropped states per player and epoch; taking at most the jump keeps the totals exact (a drop of a later state waits for the later jump). */
+        uint32_t ex = cn_take_expired_states(s->net, pid, st->epoch, jump);
+        p->n_gap += jump - ex, s->st.rx_gap += jump - ex;
+        p->n_exp += ex, s->st.rx_expired += ex;
+    } else {
+        /* the first state of this epoch: states of the epoch that expired before it were never part of a jump */
+        uint32_t ex = cn_take_expired_states(s->net, pid, st->epoch, 0xFFFFFFFFu);
+        p->n_exp += ex, s->st.rx_expired += ex;
     }
     r->have_seq = 1, r->last_seq = st->seq;
     if (!r->have_off) r->off_ref = now - st->t_ms, r->off_rel = 0, r->have_off = 1;
@@ -330,7 +383,8 @@ cs_t *cs_new(const cs_config *cfg)
     if (!s) return NULL;
     InitializeCriticalSection(&s->lock);
     s->cfg = *cfg;
-    copy_name(s->name, cfg->name);
+    s->name_auto = !cfg->name || !cfg->name[0];
+    copy_name(s->name, s->name_auto ? "Player 1" : cfg->name);
     snprintf(s->mod, sizeof s->mod, "%s", cfg->mod_version ? cfg->mod_version : "");
     s->cfg.name = s->name, s->cfg.mod_version = s->mod;
     s->interp_delay = cfg->interp_delay_ms > 0 ? cfg->interp_delay_ms : DEFAULT_INTERP_MS;
@@ -364,6 +418,7 @@ int cs_host(cs_t *s, const char *transport, int port, int threaded, char *err, s
     EnterCriticalSection(&s->lock);
     cs_leave(s, 0);
     reset_session(s);
+    role_name(s, 1);
     s->threaded = threaded;
     int ok = cn_host(s->net, transport, port, CP_MAX_PLAYERS - 1, threaded, err, esz);
     if (ok) {
@@ -384,6 +439,7 @@ int cs_join(cs_t *s, const char *transport, const char *target, int threaded, ch
     EnterCriticalSection(&s->lock);
     cs_leave(s, 0);
     reset_session(s);
+    role_name(s, 0);
     s->threaded = threaded;
     int ok = cn_join(s->net, transport, target, threaded, err, esz);
     if (ok) {
@@ -411,20 +467,23 @@ void cs_leave(cs_t *s, int reason)
 
 /* ---------------------------------------------------------------- host side */
 static void check_barrier(cs_t *s);
-static void player_gone(cs_t *s, int pid, int lost)
+/* why (CS_GONE_*): 0 left or the transport dropped it, 1 given up after SILENT_LIMIT_MS, 2 its old link is replaced by a new connection of the same player,
+ * 3 removed by this host (cs_kick), 4 it left at the end of its episode */
+static void player_gone(cs_t *s, int pid, int lost, int why)
 {
     pl_t *p = &s->pl[pid];
     if (!p->used || !p->connected) return;
     char name[CP_NAME_MAX + 1];
     memcpy(name, p->name, sizeof name);
-    p->connected = 0, p->loaded = 0;
-    cn_log("session: player %d (%s) %s", pid, name, lost ? "lost" : "left");
+    p->connected = 0, p->loaded = 0, p->silent_on = 0;
+    cn_log("session: player %d (%s) %s", pid, name, why == CS_GONE_SILENT ? "given up after the silence limit" : why == CS_GONE_REPLACED ? "replaced by its new connection" :
+           why == CS_GONE_REMOVED ? "removed by the host" : why == CS_GONE_EP_END ? "left at the end of its episode" : lost ? "lost" : "left");
     if (s->phase == CP_PHASE_LOBBY) {   /* before the start nobody keeps a seat */
         memset(p, 0, sizeof *p);
     } else {
         rs_clear(&p->rs);
     }
-    note(s, CS_N_PEER_LEAVE, pid, lost, 0, name, NULL);
+    note(s, CS_N_PEER_LEAVE, pid, lost, why, name, NULL);
     if (s->role == CN_ROLE_HOST) {
         s->lobby_rev++;
         send_lobby(s, -1);
@@ -461,15 +520,27 @@ static void check_barrier(cs_t *s)
     if (s->role == CN_ROLE_HOST && s->phase == CP_PHASE_LOADING && barrier_complete(s)) open_barrier(s, "all loaded");
 }
 
-static void refuse(cs_t *s, int peer, int code)
+/* REFUSE (code, text, and the host's mod version: the 0.2.0 tail); text NULL = the standard text of the code */
+static void refuse_text(cs_t *s, int peer, int code, const char *text)
 {
     cp_msg m;
     memset(&m, 0, sizeof m);
     m.type = CP_REFUSE, m.u.refuse.code = (uint8_t)code;
-    snprintf(m.u.refuse.text, sizeof m.u.refuse.text, "%s", cp_refuse_text((unsigned)code));
+    snprintf(m.u.refuse.text, sizeof m.u.refuse.text, "%s", text ? text : cp_refuse_text((unsigned)code));
+    snprintf(m.u.refuse.mod, sizeof m.u.refuse.mod, "%s", s->mod);
     send_msg(s, peer, CP_CH_CONTROL, 1, &m);
     cn_disconnect_peer(s->net, peer, 1);
     cn_log("session: refused peer %d: %s", peer, m.u.refuse.text);
+}
+static void refuse(cs_t *s, int peer, int code) { refuse_text(s, peer, code, NULL); }
+
+/* the same co-op package on both PCs: the release version of the mod (R2_VERSION) must be equal; bots (the lab's headless partner) and an empty version (a raw
+ * test sender) are not checked. The text is English: an older client (0.1.x) shows it as it is; a newer one shows its own text in its language (by the code). */
+static int mod_mismatch(const char *a, const char *b) { return a[0] && b[0] && strcmp(a, b) != 0; }
+static void mod_mismatch_text(char *out, size_t size, const char *host_mod, const char *client_mod)
+{
+    if (host_mod[0]) snprintf(out, size, "co-op mod %s on the host, %s here: both need the same version (the Co-op shortcut updates it)", host_mod, client_mod);
+    else snprintf(out, size, "the host has an older co-op mod, %s here: both need the same version (the Co-op shortcut updates it)", client_mod);
 }
 
 static void host_hello(cs_t *s, int peer, const cp_hello *h)
@@ -479,6 +550,35 @@ static void host_hello(cs_t *s, int peer, const cp_hello *h)
     if (lo > hi) { refuse(s, peer, CP_REF_VERSION); return; }
     static const uint8_t zero[8];
     if (memcmp(h->exe_tag, zero, 8) && memcmp(s->cfg.exe_tag, zero, 8) && memcmp(h->exe_tag, s->cfg.exe_tag, 8)) { refuse(s, peer, CP_REF_BUILD); return; }
+    if (!(h->flags & CP_PF_BOT) && !s->cfg.is_bot && mod_mismatch(h->mod, s->mod)) {
+        char t[CP_TEXT_MAX + 1];
+        mod_mismatch_text(t, sizeof t, s->mod, h->mod);
+        refuse_text(s, peer, CP_REF_MODVER, t);
+        return;
+    }
+    for (int i = 0; i < 4; i++)   /* removed from this session in the room (cs_kick): not again until the session ends */
+        if (s->removed[i][0] && !strncmp(s->removed[i], h->name, CP_NAME_MAX)) {
+            refuse(s, peer, CP_REF_REMOVED);
+            return;
+        }
+    if (s->phase != CP_PHASE_LOBBY && s->cfg.no_rejoin) {   /* 0.2.0 product rule: no join after the start, no seat take-over (a stranger never touches a running game) */
+        refuse_text(s, peer, CP_REF_STARTED, "the game already started: joining a running game is not possible in this version");
+        return;
+    }
+    {   /* re-entry while the transport has not yet noticed that the old link is dead (a crash, then a quick restart): the old link gives the seat back */
+        uint32_t now = now_of(s);
+        for (int i = 1; i < CP_MAX_PLAYERS; i++) {
+            pl_t *g = &s->pl[i];
+            if (g->used && g->connected && g->hello_done && g->peer != peer && !strncmp(g->name, h->name, CP_NAME_MAX) && (int32_t)(now - g->heard) >= GHOST_SILENT_MS) {
+                int old = g->peer;
+                cn_log("session: player %d (%s) connects again while its old link still looks alive (silent %u ms): the old link is dropped", i, g->name,
+                       (unsigned)(now - g->heard));
+                player_gone(s, i, 1, 2);
+                cn_disconnect_peer(s->net, old, 0);
+                break;
+            }
+        }
+    }
     int pid = -1;
     if (s->phase != CP_PHASE_LOBBY) {   /* after the start only a known player (same name, not connected) may come back */
         for (int i = 1; i < CP_MAX_PLAYERS; i++)
@@ -501,15 +601,18 @@ static void host_hello(cs_t *s, int peer, const cp_hello *h)
     p->flags = (uint8_t)((h->flags & CP_PF_BOT) | CP_PF_CONNECTED);
     p->character = rejoin ? keep_char : (uint8_t)free_character(s, pid, h->want_char);
     p->ready = rejoin ? 1 : 0, p->loaded = 0;
+    p->heard = now_of(s), p->silent_on = 0;
     rs_clear(&p->rs);
     s->lobby_rev++;
     cp_msg m;
     memset(&m, 0, sizeof m);
     m.type = CP_WELCOME;
     m.u.welcome.version = (uint16_t)hi, m.u.welcome.pid = (uint8_t)pid, m.u.welcome.host_ms = now_of(s);
+    m.u.welcome.flags = (uint8_t)(s->cfg.is_bot ? CP_PF_BOT : 0);
     m.u.welcome.phase = (uint8_t)s->phase, m.u.welcome.epoch = s->epoch;
     m.u.welcome.session = s->session;
     build_lobby(s, &m.u.welcome.lobby);
+    snprintf(m.u.welcome.mod, sizeof m.u.welcome.mod, "%s", s->mod);
     send_msg(s, peer, CP_CH_CONTROL, 1, &m);
     send_lobby(s, pid);
     cn_log("session: player %d (%s) %s as %s", pid, p->name, rejoin ? "came back" : "joined", cp_char_name(p->character));
@@ -628,8 +731,9 @@ static void common_message(cs_t *s, int from_pid, const cp_msg *m, const uint8_t
         break;
     }
     case CP_LEAVE:
-        if (s->role == CN_ROLE_HOST) player_gone(s, from_pid, 0);
-        break;   /* client: the transport disconnect of the host follows */
+        if (s->role == CN_ROLE_HOST) player_gone(s, from_pid, 0, m->u.leave.reason == CP_LEAVE_EP_END ? CS_GONE_EP_END : CS_GONE_LEFT);
+        else s->host_left = 1, s->host_reason = m->u.leave.reason;   /* client: the transport disconnect of the host follows; the player is told that (and why) the host left */
+        break;
     default:
         break;
     }
@@ -690,6 +794,35 @@ static void client_message(cs_t *s, const cp_msg *m, const uint8_t *raw, size_t 
     case CP_WELCOME:
         if (!s->joining) return;
         s->joining = 0;
+        if (!s->cfg.is_bot && !(m->u.welcome.flags & CP_PF_BOT) && s->mod[0] && strcmp(m->u.welcome.mod, s->mod)) {
+            /* the host runs another co-op package (an older host sends no version: it never checks ours): leave at once, before anything starts */
+            char t[CP_TEXT_MAX + 1], hm[CP_MOD_MAX + 1];
+            snprintf(hm, sizeof hm, "%s", m->u.welcome.mod);
+            mod_mismatch_text(t, sizeof t, hm, s->mod);
+            cn_log("session: %s: leaving the host", t);
+            cp_msg lv;
+            memset(&lv, 0, sizeof lv);
+            lv.type = CP_LEAVE;
+            send_msg(s, 0, CP_CH_CONTROL, 1, &lv);
+            cn_stop(s->net);
+            reset_session(s);
+            note_ex(s, CS_N_REFUSED, -1, CP_REF_MODVER, 0, t, NULL, hm);
+            return;
+        }
+        if (s->cfg.no_rejoin && (m->u.welcome.phase == CP_PHASE_LOADING || m->u.welcome.phase == CP_PHASE_PLAYING)) {
+            /* a host that still seats a returning player (a lab build): this PC would start the story from the beginning while the host is inside it, so it leaves */
+            char hm[CP_MOD_MAX + 1];
+            snprintf(hm, sizeof hm, "%s", m->u.welcome.mod);
+            cn_log("session: welcomed into a running game (phase %u): joining a running game is not possible in this version, leaving the host", m->u.welcome.phase);
+            cp_msg lv;
+            memset(&lv, 0, sizeof lv);
+            lv.type = CP_LEAVE;
+            send_msg(s, 0, CP_CH_CONTROL, 1, &lv);
+            cn_stop(s->net);
+            reset_session(s);
+            note_ex(s, CS_N_REFUSED, -1, CP_REF_STARTED, 0, "the game already started: joining a running game is not possible in this version", NULL, hm);
+            return;
+        }
         s->pid = m->u.welcome.pid;
         s->session = m->u.welcome.session;
         apply_lobby(s, &m->u.welcome.lobby);
@@ -698,6 +831,7 @@ static void client_message(cs_t *s, const cp_msg *m, const uint8_t *raw, size_t 
         s->epoch = m->u.welcome.epoch;
         if (s->phase == CP_PHASE_PLAYING) s->phase = CP_PHASE_LOADING;   /* joining a running game: load first, the host answers with LOAD_BEGIN */
         if (s->pid >= 0 && s->pid < CP_MAX_PLAYERS && s->pl[s->pid].used) s->pl[s->pid].peer = -1;
+        s->pl[0].heard = s->rx_now, s->pl[0].silent_on = 0;
         cn_log("session: welcomed as player %d (%s), phase %d", s->pid, cp_char_name(s->pl[s->pid].character), s->phase);
         note(s, CS_N_CONNECTED, s->pid, s->phase, 0, NULL, NULL);
         note(s, CS_N_LOBBY, -1, 0, 0, NULL, NULL);
@@ -705,8 +839,8 @@ static void client_message(cs_t *s, const cp_msg *m, const uint8_t *raw, size_t 
     case CP_REFUSE:
         if (!s->joining) return;
         s->joining = 0;
-        cn_log("session: refused by the host: %s", m->u.refuse.text);
-        note(s, CS_N_REFUSED, -1, m->u.refuse.code, 0, m->u.refuse.text, NULL);
+        cn_log("session: refused by the host (its co-op mod: %s): %s", m->u.refuse.mod[0] ? m->u.refuse.mod : "not named", m->u.refuse.text);
+        note_ex(s, CS_N_REFUSED, -1, m->u.refuse.code, 0, m->u.refuse.text, NULL, m->u.refuse.mod);
         cn_stop(s->net);
         reset_session(s);
         break;
@@ -760,6 +894,71 @@ static void send_hello(cs_t *s)
     memcpy(h->name, s->name, sizeof h->name);
     snprintf(h->mod, sizeof h->mod, "%s", s->mod);
     send_msg(s, 0, CP_CH_CONTROL, 1, &m);
+    s->hello_sent = 1;
+}
+
+/* SILENT_FIRST_MS / SILENT_LIMIT_MS (top of the file): the host watches its clients, a client its host */
+static void silence_watch(cs_t *s, uint32_t now)
+{
+    for (int i = 0; i < CP_MAX_PLAYERS && s->role != CN_ROLE_NONE; i++) {
+        pl_t *p = &s->pl[i];
+        if (i == s->pid || !p->used || !p->connected) continue;
+        if (s->role == CN_ROLE_HOST ? !p->hello_done : i != 0) continue;
+        uint32_t quiet = now - p->heard;
+        if ((int32_t)quiet < 0) continue;
+        if (quiet >= SILENT_LIMIT_MS) {
+            if (s->role == CN_ROLE_HOST) {
+                int peer = p->peer;
+                cn_log("session: player %d (%s) has sent nothing for %u s: given up, its seat is kept (it may join again)", i, p->name, quiet / 1000u);
+                player_gone(s, i, 1, 1);
+                cn_disconnect_peer(s->net, peer, 0);
+            } else {
+                char why[96];
+                snprintf(why, sizeof why, "no answer from the host for %u s", quiet / 1000u);
+                cn_log("session: %s: the session is closed", why);
+                cn_stop(s->net);
+                reset_session(s);
+                note(s, CS_N_LOST, -1, 2, 0, why, NULL);
+            }
+            continue;
+        }
+        if (quiet >= SILENT_FIRST_MS && (!p->silent_on || (int32_t)(now - p->silent_next) >= 0)) {
+            p->silent_on = 1, p->silent_next = now + SILENT_EVERY_MS;
+            cn_log("session: nothing from player %d (%s) for %u s (its game paused or in the background, a long load or a stall); the session gives up at %u s", i, p->name,
+                   quiet / 1000u, SILENT_LIMIT_MS / 1000u);
+            note(s, CS_N_SILENT, i, (int)(quiet / 1000u), SILENT_LIMIT_MS / 1000, p->name, NULL);
+        }
+    }
+}
+
+/* (steamgap) the game calls cs_poll from its logic pass; a pass that comes >= 3 s after the previous one means this game's loop was away (a level load, a lost
+ * display device: m3c / m3d, the Intel content-protection service of the main PC dropped the device for 60-75 s; a pause or a hang). The network thread went on
+ * receiving meanwhile and the inbox kept only the newest unreliable messages: one log line says so, so that the jump of the partner's state sequence after it
+ * is not read as network loss. */
+#define AWAY_NOTE_MS 3000
+static void away_check(cs_t *s)
+{
+#ifndef R2_MODEL_BEFORE_STEAMGAP
+    uint32_t now = now_of(s);
+    uint32_t away = s->last_poll ? now - s->last_poll : 0;
+    s->last_poll = now ? now : 1;
+    cn_stats ns;
+    cn_get_stats(s->net, &ns);
+    uint32_t exp = ns.expired - s->exp_seen;
+    s->exp_seen = ns.expired;
+    if (away < AWAY_NOTE_MS || away > 0x7FFFFFFFu) return;
+    s->st.away_n++;
+    if (away > s->st.away_max_ms) s->st.away_max_ms = away;
+    if (exp)
+        cn_log("session: this game's loop did not run for %u.%u s (a level load, a lost display device, a paused or stalled game): %u unreliable message(s) that "
+               "arrived meanwhile were dropped here (the newest are kept), so the partner's state sequence jumps without any network loss", away / 1000u,
+               away % 1000u / 100u, exp);
+    else
+        cn_log("session: this game's loop did not run for %u.%u s (a level load, a lost display device, a paused or stalled game): every message that arrived "
+               "meanwhile was kept", away / 1000u, away % 1000u / 100u);
+#else
+    (void)s;
+#endif
 }
 
 void cs_poll(cs_t *s)
@@ -767,6 +966,7 @@ void cs_poll(cs_t *s)
     EnterCriticalSection(&s->lock);
     if (s->role == CN_ROLE_NONE || !s->net) { LeaveCriticalSection(&s->lock); return; }
     if (!s->threaded) cn_pump(s->net);
+    away_check(s);
     cn_event ev;
     while (cn_recv(s->net, &ev)) {
         if (ev.type == CN_EV_CONNECT) {
@@ -774,24 +974,30 @@ void cs_poll(cs_t *s)
             else s->pend_ms[ev.peer] = now_of(s) | 1u;
         } else if (ev.type == CN_EV_DISCONNECT) {
             if (s->role == CN_ROLE_CLIENT) {
-                int was = s->joining;
+                int was = s->joining, left = s->host_left, reason = s->host_reason;
                 char why[80];
-                snprintf(why, sizeof why, "%s", was ? "no answer from the host" : "connection to the host lost");
+                snprintf(why, sizeof why, "%s", was ? "no answer from the host"
+                                                : !left ? "connection to the host lost"
+                                                : reason == CP_LEAVE_REMOVED ? "the host removed this player from the session"
+                                                : reason == CP_LEAVE_END_COOP ? "the host ended co-op play"
+                                                : reason == CP_LEAVE_EP_END ? "the host's game reached the end of the episode" : "the host left the session");
                 int active = s->joining || s->phase != CP_PHASE_NONE;
                 cn_log("session: %s", why);
                 if (active) {
                     cn_stop(s->net);
                     reset_session(s);
-                    note(s, was ? CS_N_REFUSED : CS_N_LOST, -1, 0, 0, why, NULL);
+                    if (was) note(s, CS_N_REFUSED, -1, CS_REF_NOANSWER, 0, why, NULL);
+                    else note(s, CS_N_LOST, -1, left ? 1 : 0, left ? reason : 0, why, NULL);
                 }
             } else {
                 s->pend_ms[ev.peer] = 0;
                 int pid = pid_of_peer(s, ev.peer);
-                if (pid >= 0) player_gone(s, pid, 1);
+                if (pid >= 0) player_gone(s, pid, 1, 0);
             }
         } else if (ev.type == CN_EV_RECEIVE) {
             cp_msg m;
             s->rx_now = ev.t_ms ? ev.t_ms : now_of(s);
+            heard(s, s->role == CN_ROLE_HOST ? pid_of_peer(s, ev.peer) : (ev.peer == 0 && !s->joining ? 0 : -1), s->rx_now);
             if (!cp_decode(ev.data, ev.len, &m)) {
                 s->st.rx_bad++;
                 cn_log("session: malformed packet (%u bytes, type %02x) from peer %d", (unsigned)ev.len, ev.len ? ev.data[0] : 0, ev.peer);
@@ -815,14 +1021,17 @@ void cs_poll(cs_t *s)
                     if (s->pl[i].used && s->pl[i].connected && !s->pl[i].loaded) cn_log("session: barrier timeout, player %d never reported loaded", i);
                 open_barrier(s, "barrier timeout");
             }
-        } else if (s->joining) {
+            silence_watch(s, now);
+        } else if (!s->joining) {
+            silence_watch(s, now);   /* may close the session (the host silent for the limit) */
+        } else {
             char why[200] = "";
             int gave_up = cn_failed(s->net, why, sizeof why);   /* the backend knows why (Steam: no such lobby, full, not ours, ...) */
             if (gave_up || (int32_t)(now - s->join_start) > (int32_t)s->join_deadline) {
                 cn_log("session: %s", gave_up ? why : "no welcome in time");
                 cn_stop(s->net);
                 reset_session(s);
-                note(s, CS_N_REFUSED, -1, 0, 0, gave_up ? why : "no answer from the host", NULL);
+                note(s, CS_N_REFUSED, -1, gave_up ? 0 : CS_REF_NOANSWER, 0, gave_up ? why : "no answer from the host", NULL);
             }
         }
     }
@@ -965,6 +1174,40 @@ int cs_start(cs_t *s, int force, char *err, size_t esz)
     }
     LeaveCriticalSection(&s->lock);
     return ok;
+}
+
+int cs_kick(cs_t *s, int pid, int reason)
+{
+    int ok = 0;
+    EnterCriticalSection(&s->lock);
+    if (s->role == CN_ROLE_HOST && pid > 0 && pid < CP_MAX_PLAYERS && s->pl[pid].used && s->pl[pid].connected && s->pl[pid].hello_done) {
+        pl_t *p = &s->pl[pid];
+        int peer = p->peer;
+        cp_msg m;
+        memset(&m, 0, sizeof m);
+        m.type = CP_LEAVE, m.u.leave.reason = (uint8_t)reason;
+        send_msg(s, peer, CP_CH_CONTROL, 1, &m);
+        cn_disconnect_peer(s->net, peer, 1);   /* after the LEAVE has gone out */
+        if (reason == CP_LEAVE_REMOVED)
+            for (int i = 0; i < 4; i++)
+                if (!s->removed[i][0] || i == 3) {
+                    memcpy(s->removed[i], p->name, sizeof s->removed[i]);
+                    break;
+                }
+        cn_log("session: player %d (%s) is told to leave (reason %d)", pid, p->name, reason);
+        player_gone(s, pid, 0, CS_GONE_REMOVED);
+        ok = 1;
+    }
+    LeaveCriticalSection(&s->lock);
+    return ok;
+}
+
+int cs_join_stage(cs_t *s)
+{
+    EnterCriticalSection(&s->lock);
+    int r = s->role == CN_ROLE_CLIENT && s->joining ? (s->hello_sent ? 2 : 1) : 0;
+    LeaveCriticalSection(&s->lock);
+    return r;
 }
 
 void cs_load_begin(cs_t *s, uint32_t area_id)
@@ -1143,7 +1386,7 @@ int cs_player(cs_t *s, int pid, cs_player_info *out)
         memcpy(out->name, p->name, sizeof out->name);
         out->character = p->character, out->ready = p->ready, out->flags = p->flags, out->loaded = p->loaded;
         out->rtt_ms = p->have_rtt ? (int)(p->srtt + 0.5f) : -1;
-        out->rx = p->n_rx, out->dup = p->n_dup, out->old = p->n_old, out->stale = p->n_stale, out->gap = p->n_gap;
+        out->rx = p->n_rx, out->dup = p->n_dup, out->old = p->n_old, out->stale = p->n_stale, out->gap = p->n_gap, out->expired = p->n_exp;
         ok = 1;
     }
     LeaveCriticalSection(&s->lock);
@@ -1171,13 +1414,16 @@ void cs_status(cs_t *s, char *out, size_t size)
             o += snprintf(out + o, size - o, " rtt=");
             if (p->have_rtt) o += snprintf(out + o, size - o, "%dms", (int)(p->srtt + 0.5f));
             else o += snprintf(out + o, size - o, "?");
-            o += snprintf(out + o, size - o, " rx=%u dup=%u old=%u gap=%u stale=%u", p->n_rx, p->n_dup, p->n_old, p->n_gap, p->n_stale);
+            o += snprintf(out + o, size - o, " rx=%u dup=%u old=%u gap=%u stale=%u expired=%u", p->n_rx, p->n_dup, p->n_old, p->n_gap, p->n_stale, p->n_exp);
         }
     }
     cn_stats ns;
     cn_get_stats(s->net, &ns);
-    snprintf(out + o, size - o, "\n  tx state=%u event=%u; rx event=%u hb=%u bad=%u; transport in %u+%u pk %u+%u B, out %u+%u pk %u+%u B", s->st.tx_state, s->st.tx_event, s->st.rx_event, s->st.hb_rx,
-             s->st.rx_bad, ns.pk_in[0], ns.pk_in[1], ns.by_in[0], ns.by_in[1], ns.pk_out[0], ns.pk_out[1], ns.by_out[0], ns.by_out[1]);
+    o += snprintf(out + o, size - o, "\n  tx state=%u event=%u; rx event=%u hb=%u bad=%u; transport in %u+%u pk %u+%u B, out %u+%u pk %u+%u B", s->st.tx_state, s->st.tx_event, s->st.rx_event,
+                  s->st.hb_rx, s->st.rx_bad, ns.pk_in[0], ns.pk_in[1], ns.by_in[0], ns.by_in[1], ns.pk_out[0], ns.pk_out[1], ns.by_out[0], ns.by_out[1]);
+    /* (steamgap) messages that arrived but expired here while this game's loop was away, and how often / how long it was away (>= 3 s) */
+    if (o < (int)size) snprintf(out + o, size - o, "; expired here %u (%u states), loop away %u x, longest %u.%u s", ns.expired, ns.expired_state, s->st.away_n,
+                                s->st.away_max_ms / 1000u, s->st.away_max_ms % 1000u / 100u);
     LeaveCriticalSection(&s->lock);
 }
 
@@ -1229,16 +1475,23 @@ int cs_command(cs_t *s, const char *line, char *out, size_t size)
         if (cs_start(s, force, err, sizeof err)) snprintf(out, size, "START sent");
         else snprintf(out, size, "not started: %s", err);
     } else if (!strcmp(cmd, "stop") || !strcmp(cmd, "leave")) {
-        cs_leave(s, 0);
+        int reason = 0;
+        sscanf(arg, "%d", &reason);
+        cs_leave(s, reason);
         snprintf(out, size, "session closed");
+    } else if (!strcmp(cmd, "kick")) {   /* kick [pid] [reason]: host only; default the other player, reason 2 = removed (3 = co-op ended by the host) */
+        int pid = -1, reason = CP_LEAVE_REMOVED;
+        sscanf(arg, "%d %d", &pid, &reason);
+        if (pid < 0) pid = cs_remote_pid(s);
+        snprintf(out, size, cs_kick(s, pid, reason) ? "player %d told to leave (reason %d)" : "cannot remove player %d now (host only, a connected player)", pid, reason);
     } else if (!strcmp(cmd, "session")) {
         cp_session ss;
         cs_session_get(s, &ss);
-        unsigned ep = ss.episode, part = ss.part, diff = ss.difficulty;
-        if (sscanf(arg, "%u %u %u", &ep, &part, &diff) >= 1) {
-            ss.episode = (uint8_t)ep, ss.part = (uint8_t)part, ss.difficulty = (uint8_t)diff;
-            snprintf(out, size, cs_set_session(s, &ss) ? "session: episode %u part %u difficulty %u" : "cannot change the session now (host, lobby)", ep, part, diff);
-        } else snprintf(out, size, "session: episode %u part %u difficulty %u (net session <ep> <part> <diff>)", ep, part, diff);
+        unsigned ep = ss.episode, part = ss.part, diff = ss.difficulty, fl = ss.flags;
+        if (sscanf(arg, "%u %u %u %u", &ep, &part, &diff, &fl) >= 1) {
+            ss.episode = (uint8_t)ep, ss.part = (uint8_t)part, ss.difficulty = (uint8_t)diff, ss.flags = (uint8_t)fl;
+            snprintf(out, size, cs_set_session(s, &ss) ? "session: episode %u part %u difficulty %u flags %u" : "cannot change the session now (host, lobby)", ep, part, diff, fl);
+        } else snprintf(out, size, "session: episode %u part %u difficulty %u flags %u (net session <ep> <part> <diff> [flags])", ep, part, diff, fl);
     } else if (!strcmp(cmd, "event") || !strcmp(cmd, "say")) {
         unsigned kind = !strcmp(cmd, "say") ? CP_EV_TEXT : CP_EV_USER;
         if (!strcmp(cmd, "event")) { sscanf(arg, "%u", &kind); skip_word(&arg); }

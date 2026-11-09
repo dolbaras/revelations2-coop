@@ -107,6 +107,57 @@ int main(void)
     hr = devreset_wait(DEVRESET_OK, f_coop, f_reset, f_sleep, f_now, &f, 1000, 100, NULL);
     chk(hr == DEVRESET_OK, "NULL tries accepted");
 
+    /* 10. the driver gives up (TestCooperativeLevel = D3DERR_DRIVERINTERNALERROR): the wait ends at once with that answer, no Reset is tried,
+           the window is not frozen for the whole budget before the game's error box */
+    {
+        static const long coop[] = {DEVRESET_INTERNAL};
+        static const long reset[] = {DEVRESET_OK};
+        f = (struct fake){0}; f.coop_seq = coop; f.coop_n = 1; f.reset_seq = reset; f.reset_n = 1;
+        hr = RUN(f, DEVRESET_LOST, 20000, &tries);
+        chk(hr == DEVRESET_INTERNAL && tries == 0 && f.sleeps == 1, "driver internal error: returned after one poll, no Reset");
+    }
+
+    /* 11. lost for two polls, then the driver error: three polls, the error is returned */
+    {
+        static const long coop[] = {DEVRESET_LOST, DEVRESET_LOST, DEVRESET_INTERNAL};
+        static const long reset[] = {DEVRESET_OK};
+        f = (struct fake){0}; f.coop_seq = coop; f.coop_n = 3; f.reset_seq = reset; f.reset_n = 1;
+        hr = RUN(f, DEVRESET_LOST, 20000, &tries);
+        chk(hr == DEVRESET_INTERNAL && tries == 0 && f.sleeps == 3, "lost, lost, driver error: the error after three polls");
+    }
+
+    /* 12. the device is lost again right after it could be reset (another program took the GPU once more): the wait goes on and recovers */
+    {
+        static const long coop[] = {DEVRESET_NOTRESET, DEVRESET_LOST, DEVRESET_LOST, DEVRESET_NOTRESET};
+        static const long reset[] = {DEVRESET_LOST, DEVRESET_OK};
+        f = (struct fake){0}; f.coop_seq = coop; f.coop_n = 4; f.reset_seq = reset; f.reset_n = 2;
+        hr = RUN(f, DEVRESET_LOST, 20000, &tries);
+        chk(hr == DEVRESET_OK && tries == 2 && f.sleeps == 4, "lost again after NOTRESET: waited on, recovered with the second Reset");
+    }
+
+    /* 13. GetTickCount wraps during the wait (49.7 days of uptime): no early give-up and no endless wait */
+    {
+        static const long coop[] = {DEVRESET_LOST, DEVRESET_LOST, DEVRESET_LOST, DEVRESET_LOST, DEVRESET_LOST, DEVRESET_LOST,
+                                    DEVRESET_LOST, DEVRESET_LOST, DEVRESET_LOST, DEVRESET_LOST, DEVRESET_LOST, DEVRESET_NOTRESET};
+        static const long reset[] = {DEVRESET_OK};
+        f = (struct fake){0}; f.coop_seq = coop; f.coop_n = 12; f.reset_seq = reset; f.reset_n = 1; f.now = 0xFFFFFF38u;   /* 200 ms before the wrap */
+        hr = RUN(f, DEVRESET_LOST, 20000, &tries);
+        chk(hr == DEVRESET_OK && tries == 1 && f.sleeps == 12, "clock wraps while lost for 1.1 s: recovers");
+        static const long never[] = {DEVRESET_LOST};
+        f = (struct fake){0}; f.coop_seq = never; f.coop_n = 1; f.reset_seq = reset; f.reset_n = 1; f.now = 0xFFFFFF38u;
+        hr = RUN(f, DEVRESET_LOST, 1000, &tries);
+        chk(hr == DEVRESET_LOST && f.sleeps >= 10 && f.sleeps <= 11, "clock wraps, device never comes back: gives up after the 1 s budget");
+    }
+
+    /* 14. budget 0: exactly one look at the device, no endless loop */
+    {
+        static const long coop[] = {DEVRESET_LOST};
+        static const long reset[] = {DEVRESET_OK};
+        f = (struct fake){0}; f.coop_seq = coop; f.coop_n = 1; f.reset_seq = reset; f.reset_n = 1;
+        hr = RUN(f, DEVRESET_LOST, 0, &tries);
+        chk(hr == DEVRESET_LOST && f.sleeps == 1 && tries == 0, "budget 0: one poll, the lost code back");
+    }
+
     printf("%d checks, %d failed\n", n, bad);
     return bad != 0;
 }

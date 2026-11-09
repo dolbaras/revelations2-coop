@@ -91,6 +91,13 @@ static void save_frame(IDirect3DDevice9 *dev)
         goto done;
     }
     char path[MAX_PATH + 40];
+    /* (the folders are made by the first screenshot, not at load: a player who never takes one gets no rev2_coop\ in the game folder) */
+    snprintf(path, sizeof path, "%s", shot_dir);
+    char *up = strrchr(path, '\\');
+    if (up && up > path) {
+        *up = 0;
+        CreateDirectoryA(path, NULL);
+    }
     CreateDirectoryA(shot_dir, NULL);
     snprintf(path, sizeof path, "%s\\shot%04d_%03lu.bmp", shot_dir, ++shot_serial, (GetTickCount() - t0) / 1000);
     FILE *f = fopen(path, "wb");
@@ -115,9 +122,18 @@ done:
 
 static HRESULT WINAPI hook_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp);
 
+/* The game creates its device with D3DCREATE_MULTITHREADED (flags=0x46 in every CreateDevice log line), so Present and Reset may come from different threads.
+ * The overlay's resources are used in both (drawn in Present, released before Reset). ov_lock serialises the two: a Reset waits for an overlay frame that is
+ * being drawn, a Present that arrives while a Reset (or its device-lost wait) runs on another thread skips the overlay for that one frame instead of waiting,
+ * so no thread ever blocks in Present on this lock. Same thread: the lock is recursive. The log names both threads. */
+static CRITICAL_SECTION ov_lock;
+static volatile LONG ov_skips;
+static volatile DWORD present_tid;
+
 static HRESULT WINAPI hook_Present(IDirect3DDevice9 *dev, const RECT *s, const RECT *d, HWND w, const RGNDATA *r)
 {
     unsigned n = ++frames;
+    present_tid = GetCurrentThreadId();
     LONG tn = InterlockedExchange(&devreset_test_pending, 0);
     if (tn > 0) {   /* `devreset <n>` (test): a Reset on this (render) thread with n injected lost answers */
         D3DPRESENT_PARAMETERS tp = dr_pp;
@@ -126,11 +142,15 @@ static HRESULT WINAPI hook_Present(IDirect3DDevice9 *dev, const RECT *s, const R
         r2_log("devreset test: %ld injected lost answers, Reset returned 0x%08lx, %ld injections left", (long)tn, (unsigned long)th, (long)devreset_inject);
         devreset_inject = 0;
     }
-    menu_present(dev);   /* the lobby overlay (stage 8), above the screenshot code below so that shots show it */
+    if (TryEnterCriticalSection(&ov_lock)) {
+        menu_present(dev);   /* the lobby overlay (stage 8), above the screenshot code below so that shots show it */
+        LeaveCriticalSection(&ov_lock);
+    } else
+        InterlockedIncrement(&ov_skips);
     if (n == 1) {
         char st[160];
         r2_text_state(st, sizeof st);
-        r2_log("first Present (the game renders): %s", st);
+        r2_log("first Present (the game renders) on thread %lu: %s", (unsigned long)GetCurrentThreadId(), st);
         r2_iat_check("first Present");
         lt_install();
         menu_install();
@@ -183,12 +203,13 @@ static HRESULT WINAPI hook_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *p
         pp->Windowed = TRUE;
         pp->FullScreen_RefreshRateInHz = 0;
     }
+    EnterCriticalSection(&ov_lock);   /* waits for an overlay frame in progress on another thread; Presents during the Reset skip the overlay */
     menu_before_reset();
     if (pp)
         dr_pp = *pp;
     HRESULT hr = do_reset(dev, pp);
-    r2_log("device Reset %ux%u windowed=%d -> hr=0x%08lx", pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0, pp ? pp->Windowed : -1,
-           (unsigned long)hr);
+    r2_log("device Reset %ux%u windowed=%d -> hr=0x%08lx (thread %lu, Present thread %lu)", pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0, pp ? pp->Windowed : -1,
+           (unsigned long)hr, (unsigned long)GetCurrentThreadId(), (unsigned long)present_tid);
     if (devreset_is_lost((long)hr)) {
         struct devreset_ctx x = {dev, pp};
         unsigned tries = 0;
@@ -197,8 +218,12 @@ static HRESULT WINAPI hook_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *p
         hr = (HRESULT)devreset_wait((long)hr, devreset_coop, devreset_reset, devreset_sleep, devreset_now, &x,
                                     DEVRESET_BUDGET_MS, DEVRESET_POLL_MS, &tries);
         r2_log("device Reset after the wait: %u more Reset call(s) -> hr=0x%08lx%s", tries, (unsigned long)hr,
-               devreset_is_lost((long)hr) ? " (still lost: the game will show its error)" : " (no longer lost: returned to the game)");
+               devreset_is_lost((long)hr) ? " (still lost: the game will show its error)"
+               : FAILED(hr) ? " (TestCooperativeLevel or Reset gave a real error: the game will show its error)" : " (no longer lost: returned to the game)");
     }
+    LONG sk = InterlockedExchange(&ov_skips, 0);
+    LeaveCriticalSection(&ov_lock);
+    if (sk) r2_log("device Reset: %ld Present call(s) on another thread skipped the overlay meanwhile", (long)sk);
     return hr;
 }
 
@@ -255,6 +280,7 @@ static IDirect3D9 *WINAPI hook_Direct3DCreate9(UINT sdk)
 void d3d_install(void)
 {
     char shots[256];
+    InitializeCriticalSection(&ov_lock);
     t0 = GetTickCount();
     if (!r2_env("REV2_SHOTDIR", shot_dir, sizeof shot_dir)) {
         char exe[MAX_PATH];
@@ -262,7 +288,6 @@ void d3d_install(void)
         char *slash = strrchr(exe, '\\');
         if (n && slash && slash - exe + 24 < MAX_PATH) {
             strcpy(slash + 1, "rev2_coop");
-            CreateDirectoryA(exe, NULL);
             snprintf(shot_dir, sizeof shot_dir, "%s\\shots", exe);
         }
     }

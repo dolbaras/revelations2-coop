@@ -51,8 +51,10 @@ static void make_all(cp_msg *m, int *n)
     m[k].type = CP_WELCOME;
     m[k].u.welcome.version = 1, m[k].u.welcome.pid = 1, m[k].u.welcome.flags = 0, m[k].u.welcome.host_ms = 123456, m[k].u.welcome.phase = CP_PHASE_LOBBY, m[k].u.welcome.epoch = 0;
     sample_session(&m[k].u.welcome.session), sample_lobby(&m[k].u.welcome.lobby);
+    snprintf(m[k].u.welcome.mod, sizeof m[k].u.welcome.mod, "0.2.0");
     k++;
     m[k].type = CP_REFUSE, m[k].u.refuse.code = CP_REF_VERSION, snprintf(m[k].u.refuse.text, sizeof m[k].u.refuse.text, "different co-op protocol version");
+    snprintf(m[k].u.refuse.mod, sizeof m[k].u.refuse.mod, "0.2.0-rc.x");
     k++;
     m[k].type = CP_NOTICE, m[k].u.refuse.code = CP_NOTE_SLOT_TAKEN, snprintf(m[k].u.refuse.text, sizeof m[k].u.refuse.text, "claire is taken");
     k++;
@@ -119,7 +121,17 @@ int main(void)
         CHECK(cp_decode(buf, len, &dec));
         CHECK(msg_eq(&all[i], &dec));
         CHECK(len <= CP_MAX_PACKET);
-        for (size_t cut = 0; cut < len; cut++) CHECK(!cp_decode(buf, cut, &dec));
+        /* WELCOME / REFUSE end with an optional tail (the host's mod version, 0.2.0): cut before or inside it, the message is the older form and decodes with mod "" */
+        size_t tail = all[i].type == CP_WELCOME ? 1 + strlen(all[i].u.welcome.mod) : all[i].type == CP_REFUSE ? 1 + strlen(all[i].u.refuse.mod) : 0;
+        for (size_t cut = 0; cut < len; cut++) {
+            if (cut >= len - tail) {
+                CHECK(cp_decode(buf, cut, &dec) && (all[i].type == CP_WELCOME ? dec.u.welcome.mod : dec.u.refuse.mod)[0] == 0);
+                continue;
+            }
+            CHECK(!cp_decode(buf, cut, &dec));
+        }
+        if (tail) CHECK(!strcmp(all[i].type == CP_WELCOME ? dec.u.welcome.mod : dec.u.refuse.mod, "") && cp_decode(buf, len, &dec) &&
+                        !strcmp(all[i].type == CP_WELCOME ? dec.u.welcome.mod : dec.u.refuse.mod, all[i].type == CP_WELCOME ? all[i].u.welcome.mod : all[i].u.refuse.mod));
         memset(buf + len, 0xAB, 5);
         CHECK(cp_decode(buf, len + 5, &dec));
         CHECK(msg_eq(&all[i], &dec));

@@ -119,6 +119,7 @@ void cst_note_callback_layout(int slot0_kind);    /* 1: slot 0 of a callback vta
 void cst_game_tick(void);                         /* game thread, before SteamAPI_RunCallbacks: registers our callbacks, pumps events, auto-join */
 int cst_swallow_game_callback(int id, const void *pv);   /* 1 = the callback concerns our lobby: do not run the game's handler */
 void cst_set_runner(int (*run)(const char *line, char *out, int size));   /* how the auto-join runs a console line (`join lobby:<id> steam`) */
+int cst_callbacks_wanted(void);                   /* 1 = the game tick asked for the callback objects (Join game, invites, session requests) */
 uint64_t cst_take_pending_lobby(void);            /* a lobby from "Join game" / invite / +connect_lobby that nobody used yet (0 none) */
 
 /* ---- internal: the real platform (coop_steam_real.c; stubs in a 64-bit build) ---- */

@@ -111,7 +111,7 @@ void console_exec(const char *cmd, char *out, int size) { run(cmd, out, size); }
 static int is_s3(const char *n)
 {
     static const char *const list[] = {"call", "w32", "w8", "wf", "rf", "pls", "pads3", "area", "ltinfo", "join", "leave", "joinnow", "slottype", "view", "vp",
-                                       "viewguard", "replace", "rec", "stoprec", "play", "stopplay", "pupinfo", "pset", NULL};
+                                       "viewguard", "replace", "rec", "stoprec", "play", "stopplay", "pupinfo", "pset", "warp", NULL};
     for (int i = 0; list[i]; i++)
         if (!strcmp(n, list[i]))
             return 1;
@@ -229,6 +229,21 @@ static void run(const char *cmd, char *out, int size)
             g.bLeftTrigger = (BYTE)v[4], g.bRightTrigger = (BYTE)v[5];
             testmode_pad_pretend(user, 1, &g);
             snprintf(out, size, "rpad %d: buttons %04x stick %d,%d (a pretended real pad until 'rpad %d off')", user, g.wButtons, v[0], v[1], user);
+        }
+    } else if (!strcmp(name, "rpadhold")) {   /* combat4 LAB: rpadhold <user 0-3> <hexbuttons> <ms> [lx ly rx ry lt rt]: rpad for ms, then off by itself (one console round trip per press) */
+        int user = -1, ms = 250;
+        char b[16] = "0";
+        int v[6] = {0, 0, 0, 0, 0, 0};
+        if (sscanf(arg, "%d %15s %d %d %d %d %d %d %d", &user, b, &ms, &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) < 3 || user < 0 || user > 3) {
+            snprintf(out, size, "usage: rpadhold <user 0-3> <hexbuttons> <ms> [lx ly rx ry lt rt]");
+        } else {
+            XINPUT_GAMEPAD g;
+            memset(&g, 0, sizeof g);
+            g.wButtons = (WORD)hex(b);
+            g.sThumbLX = (SHORT)v[0], g.sThumbLY = (SHORT)v[1], g.sThumbRX = (SHORT)v[2], g.sThumbRY = (SHORT)v[3];
+            g.bLeftTrigger = (BYTE)v[4], g.bRightTrigger = (BYTE)v[5];
+            testmode_pad_pretend_for(user, &g, (unsigned)(ms < 20 ? 20 : ms));
+            snprintf(out, size, "rpad %d: buttons %04x lt %d rt %d for %d ms (a pretended real pad)", user, g.wButtons, v[4], v[5], ms);
         }
     } else if (!strcmp(name, "shake")) {   /* shake <user> <ms>: the pretended pad of that user shakes its left stick (+-30000 every 70 ms) for <ms>: the break-free of a grab (stage 6f); a console round trip to the N100 is too slow to do it by hand */
         int user = 0, ms = 3000, half = 150;

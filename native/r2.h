@@ -2,7 +2,7 @@
 #define R2_H
 #include <windows.h>
 
-#define R2_VERSION "0.1.1"
+#define R2_VERSION "0.2.0"
 
 /* The Steam build 3658995 exe (SHA-256 of rerev2.exe on disk). Any other exe: the proxy only forwards DirectInput8Create. */
 #define R2_EXE_SHA256 "55ac7d2bd80704c6a8a1fa7bd2371726adbaa01ae0fda056198fb042404367f9"
@@ -36,6 +36,7 @@ void testmode_pad_hold(int slot, const void *xinput_gamepad, int ms);       /* .
 void testmode_pad_keep(int user, int on);                                    /* co-op (stage 5): this game user is always a connected pad (neutral unless it is the human's) */
 void testmode_pad_human(int game_user);                                      /* game user that carries this PC's real pad (-1 off) */
 void testmode_pad_pretend(int user, int active, const void *xinput_gamepad); /* test: pretend a real pad (console rpad) */
+void testmode_pad_pretend_for(int user, const void *xinput_gamepad, unsigned ms); /* test: the same for ms (console rpadhold) */
 int testmode_pad_snapshot(unsigned short *buttons, short *lx, short *ly);   /* stage 8: what the game's pad scan would see on users 0..3 (lobby overlay input) */
 DWORD testmode_pad_activity(void);                                           /* tick of the last non-neutral state of the human's real pad */
 void testmode_dinput_stats(char *out, int size);

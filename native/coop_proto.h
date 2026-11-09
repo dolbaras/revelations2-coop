@@ -56,9 +56,20 @@ enum cp_refuse_code {
     CP_REF_FULL = 3,
     CP_REF_STARTED = 4,     /* the game already started and this is not a known player */
     CP_REF_BAD = 5,         /* malformed or unexpected first message */
-    CP_REF_MODVER = 6       /* reserved: mod build policy */
+    CP_REF_MODVER = 6,      /* another release version of the co-op mod (0.2.0 on: the host compares HELLO.mod with its own, bots excepted) */
+    CP_REF_REMOVED = 7      /* 0.2.0: the host removed this player from the session (kick) and refuses its name until the session ends */
+};
+/* LEAVE.reason (0.2.0; older peers send 0 and ignore it): why a player or the host ends the link */
+enum cp_leave_reason {
+    CP_LEAVE_QUIT = 0,      /* the player quit (menu Leave, back at the title, window closed) */
+    CP_LEAVE_REMOVED = 2,   /* host -> one client: removed from the session (Remove partner in the room) */
+    CP_LEAVE_END_COOP = 3,  /* host -> one client: the host ended co-op play in the pause menu and plays on alone */
+    CP_LEAVE_EP_END = 4     /* any: this PC reached the end of the co-op episode (0.2.0: Episode 1); the session is over for both */
 };
 enum cp_notice_code { CP_NOTE_SLOT_TAKEN = 1, CP_NOTE_NOT_READY = 2, CP_NOTE_REJECTED = 3, CP_NOTE_INFO = 4 };
+
+/* cp_session.flags (host settings every player sees): bit 0 = the downed / revive rule is on, bits 1..2 = bleed-out preset (0 60 s, 1 30 s, 2 120 s, 3 never); see docs/downed-revive.md */
+#define CP_SESS_DOWNED 1u
 
 enum cp_player_flags { CP_PF_HOST = 1, CP_PF_CONNECTED = 2, CP_PF_INGAME = 4, CP_PF_LOADED = 8, CP_PF_BOT = 16 };
 
@@ -167,8 +178,9 @@ typedef struct {
     uint8_t type;           /* enum cp_type */
     union {
         cp_hello hello;
-        struct { uint16_t version; uint8_t pid, flags; uint32_t host_ms; uint8_t phase, epoch; cp_session session; cp_lobby lobby; } welcome;
-        struct { uint8_t code; char text[CP_TEXT_MAX + 1]; } refuse;   /* REFUSE and NOTICE */
+        /* WELCOME / REFUSE end with an optional tail: `mod` = the host's mod version (0.2.0 on; an older host sends none: decoded as ""), flags CP_PF_BOT = the host is a bot */
+        struct { uint16_t version; uint8_t pid, flags; uint32_t host_ms; uint8_t phase, epoch; cp_session session; cp_lobby lobby; char mod[CP_MOD_MAX + 1]; } welcome;
+        struct { uint8_t code; char text[CP_TEXT_MAX + 1]; char mod[CP_MOD_MAX + 1]; } refuse;   /* REFUSE and NOTICE (`mod`: REFUSE only) */
         cp_session session;
         struct { uint8_t character; } pick;
         struct { uint8_t ready; } ready;

@@ -342,7 +342,7 @@ void testmode_pad_hold(int slot, const void *gamepad, int ms)
  * are never shown to the game under their own number while the mapping is on (a real pad 0 would otherwise become a third pad slot). */
 static volatile LONG keep_user[4];
 static volatile LONG human_user = -1;
-static struct { volatile LONG active; XINPUT_GAMEPAD pad; } rpad[4];   /* test: pretend real pads (console rpad) */
+static struct { volatile LONG active; XINPUT_GAMEPAD pad; volatile DWORD until; } rpad[4];   /* test: pretend real pads (console rpad; rpadhold: until a tick) */
 static volatile DWORD pad_activity_tick;                               /* GetTickCount of the last non-neutral state of the human's real pad */
 static volatile LONG real_user_cache = -1;   /* the XInput user chosen as the human's pad (pad_logic.h); read by several threads (R2-4) */
 static pad_act_t pad_scan_act[4];            /* per user: baseline of the activity detector */
@@ -371,7 +371,17 @@ void testmode_pad_pretend(int user, int active, const void *gamepad)
         return;
     if (gamepad)
         rpad[user].pad = *(const XINPUT_GAMEPAD *)gamepad;
+    rpad[user].until = 0;
     InterlockedExchange(&rpad[user].active, active);
+}
+
+void testmode_pad_pretend_for(int user, const void *gamepad, unsigned ms)   /* combat4 LAB: a pretended real pad that lets go by itself after ms (console rpadhold) */
+{
+    if (user < 0 || user > 3 || !gamepad)
+        return;
+    rpad[user].pad = *(const XINPUT_GAMEPAD *)gamepad;
+    rpad[user].until = (GetTickCount() + ms) | 1;
+    InterlockedExchange(&rpad[user].active, 1);
 }
 
 DWORD testmode_pad_activity(void) { return pad_activity_tick; }
@@ -406,6 +416,10 @@ static int real_pad_read(XINPUT_STATE *st, DWORD *real_user)
 {
     for (int u = 0; u < 4; u++)
         if (rpad[u].active) {
+            if (rpad[u].until && (LONG)(GetTickCount() - rpad[u].until) >= 0) {
+                InterlockedExchange(&rpad[u].active, 0);
+                continue;
+            }
             memset(st, 0, sizeof *st);
             st->Gamepad = rpad[u].pad;
             st->dwPacketNumber = GetTickCount();

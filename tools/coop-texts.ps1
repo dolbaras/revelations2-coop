@@ -47,9 +47,14 @@ $script:TEXTS = @{
   another = 'Another installation of the mod is running: wait until it ends.'; noadmin = 'Windows did not allow writing to the game folder without administrator rights.'
   incomplete = 'The downloaded mod is incomplete: nothing was changed. Start the game again to retry.'; wait = 'Please wait until it ends.'
   pick = 'Select the Resident Evil Revelations 2 folder'; confirm = 'Remove the co-op mod from {0}?'; kept = 'Original kept: '; copied = 'Copied {0} file(s).'; nrem = 'Removed {0} file(s).'; putback = 'Put back: '
+  asicopy = 'Your ASI loader also runs as: '; leftalone = 'Not the copy made by co-op any more, left in place: '
+  asinote = 'Your ASI loader (a dinput8.dll of another mod) now runs as winmm.dll, so its plugins in the scripts folder stay on. Removing co-op puts everything back as it was.'
+  offnote = 'Your dinput8.dll of another mod is kept in coop-backup and does not run while co-op is installed. Removing co-op puts it back.'
+  overcoop = 'Another mod''s dinput8.dll was put over co-op''s; it is kept as the original now: '; leftin = 'Another mod''s file over co-op''s, left in place: '; leftnote = 'Another mod''s dinput8.dll had been put over co-op''s: it stays in place.'; winmmtaken = 'A winmm.dll of someone else''s is in the game folder already: the ASI loader stays off.'
   lnk = 'Shortcut: '; lnkdesc = 'Resident Evil Revelations 2 with the co-op mod (installs a newer mod version first, if there is one)'; err = 'Error: '
   notmod = 'The co-op mod is not installed in {0}'; notgame = 'Not a Resident Evil Revelations 2 folder: {0}'; nofiles = 'The "files" folder is missing next to the installer.'
   l_found = 'Co-op {0} is out (you have {1}). Downloading...'; l_verify = 'Checking the download...'; l_failed = 'The update could not be installed: {0}||The game starts with the version you have ({1}).'; l_bad = 'The download does not match its checksum.'
+  l_why_net = 'the connection to GitHub failed or broke off'; l_why_noinst = 'the downloaded package has no installer'; l_why_exit = 'the installer stopped with code {0}'; l_why_other = 'an unexpected error (the details are in coop\launcher-log.txt)'
  }
  "fr" = @{
   sub = 'Version {0} : coop en réseau pour la campagne (deux joueurs, deux PC)'; folder = 'Dossier du jeu'; browse = 'Parcourir...'
@@ -67,9 +72,14 @@ $script:TEXTS = @{
   another = 'Une autre installation du mod est en cours : attendez qu''elle se termine.'; noadmin = 'Windows n''autorise pas l''écriture dans le dossier du jeu sans droits d''administrateur.'
   incomplete = 'Le mod téléchargé est incomplet : rien n''a été modifié. Relancez le jeu pour réessayer.'; wait = 'Veuillez patienter jusqu''à la fin.'
   pick = 'Choisissez le dossier de Resident Evil Revelations 2'; confirm = 'Retirer le mod coop de {0} ?'; kept = 'Original conservé : '; copied = '{0} fichier(s) copié(s).'; nrem = '{0} fichier(s) supprimé(s).'; putback = 'Remis en place : '
+  asicopy = 'Votre chargeur ASI tourne aussi sous le nom : '; leftalone = 'N''est plus la copie faite par le mod coop, laissé en place : '
+  asinote = 'Votre chargeur ASI (le dinput8.dll d''un autre mod) tourne désormais sous le nom winmm.dll : ses plugins du dossier scripts restent actifs. Retirer le mod coop remet tout comme avant.'
+  offnote = 'Le dinput8.dll de votre autre mod est conservé dans coop-backup et ne tourne pas tant que le mod coop est installé. Retirer le mod coop le remet en place.'
+  overcoop = 'Le dinput8.dll d''un autre mod a remplacé celui du mod coop ; il est désormais conservé comme original : '; leftin = 'Fichier d''un autre mod à la place de celui du mod coop, laissé en place : '; leftnote = 'Le dinput8.dll d''un autre mod avait remplacé celui du mod coop : il reste en place.'; winmmtaken = 'Un winmm.dll d''un autre mod est déjà dans le dossier du jeu : le chargeur ASI reste désactivé.'
   lnk = 'Raccourci : '; lnkdesc = 'Resident Evil Revelations 2 avec le mod coop (installe d''abord une version plus récente du mod, s''il y en a une)'; err = 'Erreur : '
   notmod = 'Le mod coop n''est pas installé dans {0}'; notgame = 'Ce n''est pas un dossier Resident Evil Revelations 2 : {0}'; nofiles = 'Le dossier « files » manque à côté de l''installateur.'
   l_found = 'Le coop {0} est sorti (vous avez {1}). Téléchargement...'; l_verify = 'Vérification du téléchargement...'; l_failed = 'La mise à jour n''a pas pu être installée : {0}||Le jeu démarre avec votre version ({1}).'; l_bad = 'Le téléchargement ne correspond pas à sa somme de contrôle.'
+  l_why_net = 'la connexion à GitHub a échoué ou a été interrompue'; l_why_noinst = 'le paquet téléchargé ne contient pas d''installateur'; l_why_exit = 'l''installateur s''est arrêté avec le code {0}'; l_why_other = 'une erreur inattendue (détails dans coop\launcher-log.txt)'
  }
  "it" = @{
   sub = 'Versione {0}: co-op in rete per la campagna (due giocatori, due PC)'; folder = 'Cartella del gioco'; browse = 'Sfoglia...'
@@ -87,9 +97,14 @@ $script:TEXTS = @{
   another = 'È in corso un''altra installazione della mod: attendi che finisca.'; noadmin = 'Windows non consente di scrivere nella cartella del gioco senza diritti di amministratore.'
   incomplete = 'La mod scaricata è incompleta: non è stato modificato nulla. Riavvia il gioco per riprovare.'; wait = 'Attendi che finisca.'
   pick = 'Scegli la cartella di Resident Evil Revelations 2'; confirm = 'Rimuovere la mod co-op da {0}?'; kept = 'Originale conservato: '; copied = '{0} file copiati.'; nrem = '{0} file rimossi.'; putback = 'Ripristinato: '
+  asicopy = 'Il tuo caricatore ASI gira anche come: '; leftalone = 'Non è più la copia fatta dalla mod co-op, lasciato al suo posto: '
+  asinote = 'Il tuo caricatore ASI (il dinput8.dll di un''altra mod) ora gira come winmm.dll, quindi i suoi plugin nella cartella scripts restano attivi. Rimuovendo la mod co-op tutto torna com''era.'
+  offnote = 'Il dinput8.dll della tua altra mod è conservato in coop-backup e non gira finché la mod co-op è installata. Rimuovendo la mod co-op torna al suo posto.'
+  overcoop = 'Il dinput8.dll di un''altra mod ha sostituito quello della mod co-op; ora è conservato come originale: '; leftin = 'File di un''altra mod al posto di quello della mod co-op, lasciato al suo posto: '; leftnote = 'Il dinput8.dll di un''altra mod aveva sostituito quello della mod co-op: resta al suo posto.'; winmmtaken = 'Nella cartella del gioco c''è già un winmm.dll di un''altra mod: il caricatore ASI resta disattivato.'
   lnk = 'Collegamento: '; lnkdesc = 'Resident Evil Revelations 2 con la mod co-op (prima installa una versione più recente della mod, se c''è)'; err = 'Errore: '
   notmod = 'La mod co-op non è installata in {0}'; notgame = 'Non è una cartella di Resident Evil Revelations 2: {0}'; nofiles = 'La cartella "files" manca accanto all''installer.'
   l_found = 'È uscito il co-op {0} (hai {1}). Download in corso...'; l_verify = 'Verifica del download...'; l_failed = 'Impossibile installare l''aggiornamento: {0}||Il gioco parte con la versione che hai ({1}).'; l_bad = 'Il download non corrisponde al suo checksum.'
+  l_why_net = 'la connessione a GitHub non è riuscita o si è interrotta'; l_why_noinst = 'il pacchetto scaricato non contiene il programma di installazione'; l_why_exit = 'il programma di installazione si è fermato con il codice {0}'; l_why_other = 'un errore imprevisto (i dettagli sono in coop\launcher-log.txt)'
  }
  "de" = @{
   sub = 'Version {0}: Netzwerk-Koop für die Story-Kampagne (zwei Spieler, zwei PCs)'; folder = 'Spielordner'; browse = 'Durchsuchen...'
@@ -107,9 +122,14 @@ $script:TEXTS = @{
   another = 'Eine andere Installation der Mod läuft: warte, bis sie fertig ist.'; noadmin = 'Windows erlaubt das Schreiben in den Spielordner nur mit Administratorrechten.'
   incomplete = 'Die heruntergeladene Mod ist unvollständig: nichts wurde geändert. Starte das Spiel erneut, um es nochmal zu versuchen.'; wait = 'Bitte warte, bis es fertig ist.'
   pick = 'Wähle den Ordner von Resident Evil Revelations 2'; confirm = 'Die Koop-Mod aus {0} entfernen?'; kept = 'Original gesichert: '; copied = '{0} Datei(en) kopiert.'; nrem = '{0} Datei(en) entfernt.'; putback = 'Zurückgelegt: '
+  asicopy = 'Dein ASI-Loader läuft zusätzlich als: '; leftalone = 'Nicht mehr die Kopie der Koop-Mod, bleibt liegen: '
+  asinote = 'Dein ASI-Loader (die dinput8.dll einer anderen Mod) läuft jetzt als winmm.dll, seine Plugins im Ordner scripts bleiben also aktiv. Beim Entfernen der Koop-Mod wird alles wie vorher.'
+  offnote = 'Die dinput8.dll deiner anderen Mod liegt in coop-backup und läuft nicht, solange die Koop-Mod installiert ist. Beim Entfernen der Koop-Mod kommt sie zurück.'
+  overcoop = 'Die dinput8.dll einer anderen Mod wurde über die der Koop-Mod gelegt; sie gilt jetzt als Original: '; leftin = 'Datei einer anderen Mod über der der Koop-Mod, bleibt liegen: '; leftnote = 'Über die dinput8.dll der Koop-Mod war die einer anderen Mod gelegt worden: sie bleibt liegen.'; winmmtaken = 'Im Spielordner liegt schon eine winmm.dll einer anderen Mod: der ASI-Loader bleibt aus.'
   lnk = 'Verknüpfung: '; lnkdesc = 'Resident Evil Revelations 2 mit der Koop-Mod (installiert zuerst eine neuere Mod-Version, falls vorhanden)'; err = 'Fehler: '
   notmod = 'Die Koop-Mod ist in {0} nicht installiert'; notgame = 'Kein Resident-Evil-Revelations-2-Ordner: {0}'; nofiles = 'Der Ordner "files" fehlt neben dem Installer.'
   l_found = 'Koop {0} ist erschienen (du hast {1}). Download läuft...'; l_verify = 'Download wird geprüft...'; l_failed = 'Das Update konnte nicht installiert werden: {0}||Das Spiel startet mit deiner Version ({1}).'; l_bad = 'Der Download passt nicht zur Prüfsumme.'
+  l_why_net = 'die Verbindung zu GitHub ist fehlgeschlagen oder abgebrochen'; l_why_noinst = 'das heruntergeladene Paket enthält kein Installationsprogramm'; l_why_exit = 'das Installationsprogramm endete mit Code {0}'; l_why_other = 'ein unerwarteter Fehler (Details in coop\launcher-log.txt)'
  }
  "es" = @{
   sub = 'Versión {0}: cooperativo en red para la campaña (dos jugadores, dos PC)'; folder = 'Carpeta del juego'; browse = 'Examinar...'
@@ -127,9 +147,14 @@ $script:TEXTS = @{
   another = 'Hay otra instalación del mod en curso: espera a que termine.'; noadmin = 'Windows no permite escribir en la carpeta del juego sin derechos de administrador.'
   incomplete = 'El mod descargado está incompleto: no se cambió nada. Inicia el juego otra vez para reintentarlo.'; wait = 'Espera a que termine.'
   pick = 'Elige la carpeta de Resident Evil Revelations 2'; confirm = '¿Quitar el mod cooperativo de {0}?'; kept = 'Original conservado: '; copied = '{0} archivo(s) copiado(s).'; nrem = '{0} archivo(s) quitado(s).'; putback = 'Devuelto: '
+  asicopy = 'Tu cargador ASI también funciona como: '; leftalone = 'Ya no es la copia hecha por el mod cooperativo, se deja en su sitio: '
+  asinote = 'Tu cargador ASI (el dinput8.dll de otro mod) ahora funciona como winmm.dll, así que sus plugins de la carpeta scripts siguen activos. Al quitar el mod cooperativo todo vuelve a estar como antes.'
+  offnote = 'El dinput8.dll de tu otro mod se guarda en coop-backup y no funciona mientras el mod cooperativo esté instalado. Al quitar el mod cooperativo vuelve a su sitio.'
+  overcoop = 'El dinput8.dll de otro mod sustituyó al del mod cooperativo; ahora se guarda como original: '; leftin = 'Archivo de otro mod en lugar del del mod cooperativo, se deja en su sitio: '; leftnote = 'Un dinput8.dll de otro mod había sustituido al del mod cooperativo: se queda en su sitio.'; winmmtaken = 'Ya hay un winmm.dll de otro mod en la carpeta del juego: el cargador ASI queda desactivado.'
   lnk = 'Acceso directo: '; lnkdesc = 'Resident Evil Revelations 2 con el mod cooperativo (antes instala una versión más reciente del mod, si la hay)'; err = 'Error: '
   notmod = 'El mod cooperativo no está instalado en {0}'; notgame = 'No es una carpeta de Resident Evil Revelations 2: {0}'; nofiles = 'Falta la carpeta "files" junto al instalador.'
   l_found = 'Ya está el cooperativo {0} (tienes {1}). Descargando...'; l_verify = 'Comprobando la descarga...'; l_failed = 'No se pudo instalar la actualización: {0}||El juego arranca con la versión que tienes ({1}).'; l_bad = 'La descarga no coincide con su suma de comprobación.'
+  l_why_net = 'la conexión con GitHub falló o se cortó'; l_why_noinst = 'el paquete descargado no contiene el instalador'; l_why_exit = 'el instalador terminó con el código {0}'; l_why_other = 'un error inesperado (los detalles están en coop\launcher-log.txt)'
  }
  "ru" = @{
   sub = 'Версия {0}: сетевой кооператив для сюжетной кампании (два игрока, два ПК)'; folder = 'Папка игры'; browse = 'Обзор...'
@@ -147,9 +172,14 @@ $script:TEXTS = @{
   another = 'Уже идёт другая установка мода: дождитесь её конца.'; noadmin = 'Windows не разрешила запись в папку игры без прав администратора.'
   incomplete = 'Загруженный мод неполон: ничего не изменено. Запустите игру ещё раз, чтобы повторить.'; wait = 'Подождите, пока всё закончится.'
   pick = 'Выберите папку Resident Evil Revelations 2'; confirm = 'Удалить кооперативный мод из {0}?'; kept = 'Оригинал сохранён: '; copied = 'Скопировано файлов: {0}.'; nrem = 'Удалено файлов: {0}.'; putback = 'Возвращено: '
+  asicopy = 'Ваш загрузчик ASI работает также как: '; leftalone = 'Уже не копия, сделанная кооперативным модом, оставлено на месте: '
+  asinote = 'Ваш загрузчик ASI (dinput8.dll другого мода) теперь работает как winmm.dll, поэтому его плагины из папки scripts продолжают работать. Удаление кооперативного мода вернёт всё как было.'
+  offnote = 'dinput8.dll вашего другого мода сохранён в coop-backup и не работает, пока установлен кооперативный мод. Удаление кооперативного мода вернёт его на место.'
+  overcoop = 'Поверх кооперативного мода положен dinput8.dll другого мода; теперь он сохранён как оригинал: '; leftin = 'Файл другого мода поверх кооперативного, оставлено на месте: '; leftnote = 'Поверх кооперативного мода был положен dinput8.dll другого мода: он остаётся на месте.'; winmmtaken = 'В папке игры уже есть winmm.dll другого мода: загрузчик ASI остаётся выключенным.'
   lnk = 'Ярлык: '; lnkdesc = 'Resident Evil Revelations 2 с кооперативным модом (сначала ставит более новую версию мода, если она есть)'; err = 'Ошибка: '
   notmod = 'Кооперативный мод не установлен в {0}'; notgame = 'Это не папка Resident Evil Revelations 2: {0}'; nofiles = 'Рядом с установщиком нет папки «files».'
   l_found = 'Вышел кооператив {0} (у вас {1}). Загрузка...'; l_verify = 'Проверка загрузки...'; l_failed = 'Обновление не удалось установить: {0}||Игра запустится с вашей версией ({1}).'; l_bad = 'Загруженный файл не совпадает с контрольной суммой.'
+  l_why_net = 'не удалось связаться с GitHub или связь прервалась'; l_why_noinst = 'в загруженном пакете нет установщика'; l_why_exit = 'установщик завершился с кодом {0}'; l_why_other = 'непредвиденная ошибка (подробности в coop\launcher-log.txt)'
  }
  "pl" = @{
   sub = 'Wersja {0}: kooperacja sieciowa w kampanii fabularnej (dwóch graczy, dwa komputery)'; folder = 'Folder gry'; browse = 'Przeglądaj...'
@@ -167,9 +197,14 @@ $script:TEXTS = @{
   another = 'Trwa inna instalacja moda: poczekaj, aż się skończy.'; noadmin = 'Windows nie pozwala zapisywać w folderze gry bez uprawnień administratora.'
   incomplete = 'Pobrany mod jest niekompletny: nic nie zmieniono. Uruchom grę ponownie, aby spróbować jeszcze raz.'; wait = 'Poczekaj na zakończenie.'
   pick = 'Wybierz folder Resident Evil Revelations 2'; confirm = 'Usunąć moda kooperacji z {0}?'; kept = 'Zachowano oryginał: '; copied = 'Skopiowano plików: {0}.'; nrem = 'Usunięto plików: {0}.'; putback = 'Przywrócono: '
+  asicopy = 'Twój loader ASI działa też jako: '; leftalone = 'To już nie kopia zrobiona przez moda kooperacji, zostaje na miejscu: '
+  asinote = 'Twój loader ASI (dinput8.dll innego moda) działa teraz jako winmm.dll, więc jego wtyczki z folderu scripts dalej działają. Usunięcie moda kooperacji przywraca wszystko jak było.'
+  offnote = 'dinput8.dll Twojego innego moda jest zachowany w coop-backup i nie działa, dopóki mod kooperacji jest zainstalowany. Usunięcie moda kooperacji przywraca go.'
+  overcoop = 'dinput8.dll innego moda został położony na plik moda kooperacji; teraz jest zachowany jako oryginał: '; leftin = 'Plik innego moda w miejscu pliku moda kooperacji, zostaje na miejscu: '; leftnote = 'Na dinput8.dll moda kooperacji położono plik innego moda: zostaje na miejscu.'; winmmtaken = 'W folderze gry jest już winmm.dll innego moda: loader ASI pozostaje wyłączony.'
   lnk = 'Skrót: '; lnkdesc = 'Resident Evil Revelations 2 z modem kooperacji (najpierw instaluje nowszą wersję moda, jeśli jest)'; err = 'Błąd: '
   notmod = 'Mod kooperacji nie jest zainstalowany w {0}'; notgame = 'To nie jest folder Resident Evil Revelations 2: {0}'; nofiles = 'Obok instalatora brakuje folderu „files”.'
   l_found = 'Wyszła kooperacja {0} (masz {1}). Pobieranie...'; l_verify = 'Sprawdzanie pobranego pliku...'; l_failed = 'Nie udało się zainstalować aktualizacji: {0}||Gra uruchomi się z posiadaną wersją ({1}).'; l_bad = 'Pobrany plik nie zgadza się z sumą kontrolną.'
+  l_why_net = 'połączenie z GitHubem nie powiodło się lub zostało przerwane'; l_why_noinst = 'pobrany pakiet nie zawiera instalatora'; l_why_exit = 'instalator zakończył się kodem {0}'; l_why_other = 'nieoczekiwany błąd (szczegóły w coop\launcher-log.txt)'
  }
  "pt-br" = @{
   sub = 'Versão {0}: cooperativo em rede para a campanha (dois jogadores, dois PCs)'; folder = 'Pasta do jogo'; browse = 'Procurar...'
@@ -187,9 +222,14 @@ $script:TEXTS = @{
   another = 'Outra instalação do mod está em andamento: aguarde o fim.'; noadmin = 'O Windows não permitiu gravar na pasta do jogo sem direitos de administrador.'
   incomplete = 'O mod baixado está incompleto: nada foi alterado. Inicie o jogo de novo para tentar outra vez.'; wait = 'Aguarde até terminar.'
   pick = 'Escolha a pasta do Resident Evil Revelations 2'; confirm = 'Remover o mod cooperativo de {0}?'; kept = 'Original guardado: '; copied = '{0} arquivo(s) copiado(s).'; nrem = '{0} arquivo(s) removido(s).'; putback = 'Devolvido: '
+  asicopy = 'Seu carregador ASI também roda como: '; leftalone = 'Não é mais a cópia feita pelo mod cooperativo, deixado no lugar: '
+  asinote = 'Seu carregador ASI (o dinput8.dll de outro mod) agora roda como winmm.dll, então os plugins da pasta scripts continuam ativos. Remover o mod cooperativo deixa tudo como era.'
+  offnote = 'O dinput8.dll do seu outro mod fica guardado em coop-backup e não roda enquanto o mod cooperativo estiver instalado. Remover o mod cooperativo o coloca de volta.'
+  overcoop = 'O dinput8.dll de outro mod foi colocado sobre o do mod cooperativo; agora ele fica guardado como original: '; leftin = 'Arquivo de outro mod no lugar do mod cooperativo, deixado no lugar: '; leftnote = 'Um dinput8.dll de outro mod tinha sido colocado sobre o do mod cooperativo: ele fica no lugar.'; winmmtaken = 'Já existe um winmm.dll de outro mod na pasta do jogo: o carregador ASI fica desligado.'
   lnk = 'Atalho: '; lnkdesc = 'Resident Evil Revelations 2 com o mod cooperativo (primeiro instala uma versão mais recente do mod, se houver)'; err = 'Erro: '
   notmod = 'O mod cooperativo não está instalado em {0}'; notgame = 'Não é uma pasta do Resident Evil Revelations 2: {0}'; nofiles = 'A pasta "files" está faltando ao lado do instalador.'
   l_found = 'O cooperativo {0} foi lançado (você tem {1}). Baixando...'; l_verify = 'Verificando o download...'; l_failed = 'Não foi possível instalar a atualização: {0}||O jogo inicia com a versão que você tem ({1}).'; l_bad = 'O download não corresponde ao seu checksum.'
+  l_why_net = 'a conexão com o GitHub falhou ou caiu'; l_why_noinst = 'o pacote baixado não tem o instalador'; l_why_exit = 'o instalador terminou com o código {0}'; l_why_other = 'um erro inesperado (os detalhes estão em coop\launcher-log.txt)'
  }
  "ja" = @{
   sub = 'バージョン {0}：ストーリーキャンペーンのネットワーク協力プレイ（2人、PC 2台）'; folder = 'ゲームのフォルダー'; browse = '参照...'
@@ -207,9 +247,14 @@ $script:TEXTS = @{
   another = '別のMODのインストールが実行中です。終わるまでお待ちください。'; noadmin = '管理者権限がないと、Windows はゲームのフォルダーへの書き込みを許可しません。'
   incomplete = 'ダウンロードしたMODが不完全です。何も変更していません。ゲームをもう一度起動してやり直してください。'; wait = '終わるまでお待ちください。'
   pick = 'Resident Evil Revelations 2 のフォルダーを選んでください'; confirm = '{0} から Co-op MODを削除しますか？'; kept = '元のファイルを保存: '; copied = '{0} 個のファイルをコピーしました。'; nrem = '{0} 個のファイルを削除しました。'; putback = '元に戻しました: '
+  asicopy = 'ASI ローダーは次の名前でも動作します: '; leftalone = 'Co-op MODが作ったコピーではなくなったため、そのまま残します: '
+  asinote = 'お使いの ASI ローダー（別の MOD の dinput8.dll）は winmm.dll として動作するようになり、scripts フォルダーのプラグインは有効なままです。Co-op MODを削除すると元どおりに戻ります。'
+  offnote = '別の MOD の dinput8.dll は coop-backup に保管され、Co-op MODがインストールされている間は動作しません。Co-op MODを削除すると元に戻ります。'
+  overcoop = '別の MOD の dinput8.dll が Co-op MODのファイルの上に置かれていたため、これを元のファイルとして保存します: '; leftin = 'Co-op MODのファイルの上に置かれた別の MOD のファイルなので、そのまま残します: '; leftnote = 'Co-op MODの dinput8.dll の上に別の MOD の dinput8.dll が置かれていたため、そのまま残しました。'; winmmtaken = 'ゲームフォルダーには別の MOD の winmm.dll が既にあるため、ASI ローダーは無効のままです。'
   lnk = 'ショートカット: '; lnkdesc = 'Co-op MOD付きの Resident Evil Revelations 2（新しいMODがあれば先にインストールします）'; err = 'エラー: '
   notmod = '{0} に Co-op MODはインストールされていません'; notgame = 'Resident Evil Revelations 2 のフォルダーではありません: {0}'; nofiles = 'インストーラーの隣に「files」フォルダーがありません。'
   l_found = 'Co-op {0} が公開されました（現在 {1}）。ダウンロード中...'; l_verify = 'ダウンロードを確認中...'; l_failed = '更新をインストールできませんでした: {0}||現在のバージョン（{1}）でゲームを起動します。'; l_bad = 'ダウンロードしたファイルがチェックサムと一致しません。'
+  l_why_net = 'GitHub への接続に失敗したか、途中で切れました'; l_why_noinst = 'ダウンロードしたパッケージにインストーラーがありません'; l_why_exit = 'インストーラーがコード {0} で終了しました'; l_why_other = '予期しないエラー (詳細は coop\launcher-log.txt)'
  }
  "ko" = @{
   sub = '버전 {0}: 스토리 캠페인 네트워크 협동 플레이 (2명, PC 2대)'; folder = '게임 폴더'; browse = '찾아보기...'
@@ -227,9 +272,14 @@ $script:TEXTS = @{
   another = '다른 모드 설치가 진행 중입니다. 끝날 때까지 기다리세요.'; noadmin = '관리자 권한 없이는 Windows가 게임 폴더에 쓰는 것을 허용하지 않습니다.'
   incomplete = '다운로드한 모드가 불완전합니다. 아무것도 변경되지 않았습니다. 게임을 다시 실행하여 다시 시도하세요.'; wait = '끝날 때까지 기다려 주세요.'
   pick = 'Resident Evil Revelations 2 폴더를 선택하세요'; confirm = '{0}에서 협동 모드를 제거할까요?'; kept = '원본 보관: '; copied = '파일 {0}개를 복사했습니다.'; nrem = '파일 {0}개를 제거했습니다.'; putback = '복원: '
+  asicopy = 'ASI 로더가 다음 이름으로도 실행됩니다: '; leftalone = '협동 모드가 만든 사본이 아니므로 그대로 둡니다: '
+  asinote = '사용 중인 ASI 로더(다른 모드의 dinput8.dll)가 이제 winmm.dll로 실행되므로 scripts 폴더의 플러그인이 계속 작동합니다. 협동 모드를 제거하면 원래대로 돌아갑니다.'
+  offnote = '다른 모드의 dinput8.dll은 coop-backup에 보관되며 협동 모드가 설치되어 있는 동안에는 실행되지 않습니다. 협동 모드를 제거하면 다시 제자리로 돌아갑니다.'
+  overcoop = '다른 모드의 dinput8.dll이 협동 모드의 파일 위에 놓여 있어 이제 원본으로 보관합니다: '; leftin = '협동 모드의 파일 위에 놓인 다른 모드의 파일이므로 그대로 둡니다: '; leftnote = '협동 모드의 dinput8.dll 위에 다른 모드의 dinput8.dll이 놓여 있었으므로 그대로 두었습니다.'; winmmtaken = '게임 폴더에 다른 모드의 winmm.dll이 이미 있으므로 ASI 로더는 꺼진 상태로 둡니다.'
   lnk = '바로 가기: '; lnkdesc = '협동 모드가 적용된 Resident Evil Revelations 2 (더 새로운 모드 버전이 있으면 먼저 설치합니다)'; err = '오류: '
   notmod = '{0}에 협동 모드가 설치되어 있지 않습니다'; notgame = 'Resident Evil Revelations 2 폴더가 아닙니다: {0}'; nofiles = '설치 프로그램 옆에 "files" 폴더가 없습니다.'
   l_found = '협동 모드 {0}이(가) 출시되었습니다(현재 {1}). 다운로드 중...'; l_verify = '다운로드 확인 중...'; l_failed = '업데이트를 설치하지 못했습니다: {0}||현재 버전({1})으로 게임을 시작합니다.'; l_bad = '다운로드한 파일이 체크섬과 일치하지 않습니다.'
+  l_why_net = 'GitHub 연결에 실패했거나 연결이 끊어졌습니다'; l_why_noinst = '다운로드한 패키지에 설치 프로그램이 없습니다'; l_why_exit = '설치 프로그램이 코드 {0}(으)로 종료되었습니다'; l_why_other = '예기치 않은 오류 (자세한 내용은 coop\launcher-log.txt)'
  }
  "zh-cn" = @{
   sub = '版本 {0}：剧情战役的联机合作（两名玩家，两台电脑）'; folder = '游戏文件夹'; browse = '浏览...'
@@ -247,9 +297,14 @@ $script:TEXTS = @{
   another = '另一个模组安装正在进行：请等它结束。'; noadmin = '没有管理员权限，Windows 不允许写入游戏文件夹。'
   incomplete = '下载的模组不完整：未做任何更改。请重新启动游戏再试一次。'; wait = '请等待完成。'
   pick = '请选择 Resident Evil Revelations 2 文件夹'; confirm = '从 {0} 移除合作模组？'; kept = '已保留原文件：'; copied = '已复制 {0} 个文件。'; nrem = '已删除 {0} 个文件。'; putback = '已还原：'
+  asicopy = '您的 ASI 加载器也以此名称运行：'; leftalone = '已不是合作模组创建的副本，保留原样：'
+  asinote = '您的 ASI 加载器（另一个模组的 dinput8.dll）现在以 winmm.dll 运行，scripts 文件夹中的插件仍然有效。移除合作模组后一切恢复原样。'
+  offnote = '您另一个模组的 dinput8.dll 已保存在 coop-backup 中，安装合作模组期间不会运行。移除合作模组后会放回原处。'
+  overcoop = '另一个模组的 dinput8.dll 覆盖了合作模组的文件，现将其作为原始文件保存：'; leftin = '覆盖合作模组文件的另一个模组的文件，保留原样：'; leftnote = '合作模组的 dinput8.dll 已被另一个模组的 dinput8.dll 覆盖：它保留在原处。'; winmmtaken = '游戏文件夹中已有另一个模组的 winmm.dll：ASI 加载器保持关闭。'
   lnk = '快捷方式：'; lnkdesc = '带合作模组的 Resident Evil Revelations 2（如有更新版本，会先安装）'; err = '错误：'
   notmod = '{0} 中未安装合作模组'; notgame = '不是 Resident Evil Revelations 2 文件夹：{0}'; nofiles = '安装程序旁边缺少“files”文件夹。'
   l_found = '合作模式 {0} 已发布（您当前为 {1}）。正在下载...'; l_verify = '正在校验下载...'; l_failed = '无法安装更新：{0}||游戏将以当前版本（{1}）启动。'; l_bad = '下载的文件与其校验和不符。'
+  l_why_net = '连接 GitHub 失败或中断'; l_why_noinst = '下载的包中没有安装程序'; l_why_exit = '安装程序以代码 {0} 退出'; l_why_other = '意外错误（详情见 coop\launcher-log.txt）'
  }
  "zh-tw" = @{
   sub = '版本 {0}：劇情戰役的連線合作（兩名玩家，兩台電腦）'; folder = '遊戲資料夾'; browse = '瀏覽...'
@@ -267,8 +322,13 @@ $script:TEXTS = @{
   another = '另一個模組安裝正在進行：請等它結束。'; noadmin = '沒有系統管理員權限，Windows 不允許寫入遊戲資料夾。'
   incomplete = '下載的模組不完整：未做任何變更。請重新啟動遊戲再試一次。'; wait = '請等待完成。'
   pick = '請選擇 Resident Evil Revelations 2 資料夾'; confirm = '從 {0} 移除合作模組？'; kept = '已保留原檔案：'; copied = '已複製 {0} 個檔案。'; nrem = '已刪除 {0} 個檔案。'; putback = '已還原：'
+  asicopy = '您的 ASI 載入器也以此名稱執行：'; leftalone = '已不是合作模組建立的副本，保留原樣：'
+  asinote = '您的 ASI 載入器（另一個模組的 dinput8.dll）現在以 winmm.dll 執行，scripts 資料夾中的外掛仍然有效。移除合作模組後一切恢復原狀。'
+  offnote = '您另一個模組的 dinput8.dll 已保存在 coop-backup 中，安裝合作模組期間不會執行。移除合作模組後會放回原處。'
+  overcoop = '另一個模組的 dinput8.dll 覆蓋了合作模組的檔案，現將其作為原始檔案保存：'; leftin = '覆蓋合作模組檔案的另一個模組的檔案，保留原樣：'; leftnote = '合作模組的 dinput8.dll 已被另一個模組的 dinput8.dll 覆蓋：它保留在原處。'; winmmtaken = '遊戲資料夾中已有另一個模組的 winmm.dll：ASI 載入器保持關閉。'
   lnk = '捷徑：'; lnkdesc = '帶合作模組的 Resident Evil Revelations 2（如有較新的版本，會先安裝）'; err = '錯誤：'
   notmod = '{0} 中未安裝合作模組'; notgame = '不是 Resident Evil Revelations 2 資料夾：{0}'; nofiles = '安裝程式旁邊缺少「files」資料夾。'
   l_found = '合作模式 {0} 已發布（您目前為 {1}）。正在下載...'; l_verify = '正在驗證下載...'; l_failed = '無法安裝更新：{0}||遊戲將以目前版本（{1}）啟動。'; l_bad = '下載的檔案與其checksum不符。'
+  l_why_net = '連線 GitHub 失敗或中斷'; l_why_noinst = '下載的套件中沒有安裝程式'; l_why_exit = '安裝程式以代碼 {0} 結束'; l_why_other = '意外錯誤（詳情見 coop\launcher-log.txt）'
  }
 }

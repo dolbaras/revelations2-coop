@@ -1,0 +1,67 @@
+{
+  "url": "https://api.github.com/repos/dolbaras/revelations2-coop/releases/436091711",
+  "assets_url": "https://api.github.com/repos/dolbaras/revelations2-coop/releases/436091711/assets",
+  "upload_url": "https://uploads.github.com/repos/dolbaras/revelations2-coop/releases/436091711/assets{?name,label}",
+  "html_url": "https://github.com/dolbaras/revelations2-coop/releases/tag/v0.1.1",
+  "id": 436091711,
+  "author": {
+    "login": "dolbaras",
+    "type": "User",
+    "site_admin": false
+  },
+  "node_id": "RE_kwDOVhklKs4Z_js_",
+  "tag_name": "v0.1.1",
+  "target_commitish": "main",
+  "name": "Pre-release 2 (0.1.1)",
+  "draft": false,
+  "immutable": false,
+  "prerelease": true,
+  "created_at": "2026-11-06T04:12:54Z",
+  "updated_at": "2026-11-06T04:13:12Z",
+  "published_at": "2026-11-06T04:13:12Z",
+  "assets": [
+    {
+      "url": "https://api.github.com/repos/dolbaras/revelations2-coop/releases/assets/715867241",
+      "id": 715867241,
+      "node_id": "RA_kwDOVhklKs4qq0Rp",
+      "name": "revelations2-coop-0.1.1.zip",
+      "label": "",
+      "uploader": {
+        "login": "dolbaras",
+        "type": "User",
+        "site_admin": false
+      },
+      "content_type": "application/zip",
+      "state": "uploaded",
+      "size": 459857,
+      "digest": "sha256:68635c9b7025f0436c63549ef4388e16869746ed34c4104525b2ca2f40bac8fa",
+      "download_count": 2,
+      "created_at": "2026-11-06T04:13:11Z",
+      "updated_at": "2026-11-06T04:13:11Z",
+      "browser_download_url": "https://github.com/dolbaras/revelations2-coop/releases/download/v0.1.1/revelations2-coop-0.1.1.zip"
+    },
+    {
+      "url": "https://api.github.com/repos/dolbaras/revelations2-coop/releases/assets/715867245",
+      "id": 715867245,
+      "node_id": "RA_kwDOVhklKs4qq0Rt",
+      "name": "revelations2-coop-setup-0.1.1.exe",
+      "label": "",
+      "uploader": {
+        "login": "dolbaras",
+        "type": "User",
+        "site_admin": false
+      },
+      "content_type": "application/x-msdownload",
+      "state": "uploaded",
+      "size": 668160,
+      "digest": "sha256:90dac707440837b86adec2ec4eedc78ebb1ddf3a72438b76bdf47db5d4d791dd",
+      "download_count": 1,
+      "created_at": "2026-11-06T04:13:11Z",
+      "updated_at": "2026-11-06T04:13:11Z",
+      "browser_download_url": "https://github.com/dolbaras/revelations2-coop/releases/download/v0.1.1/revelations2-coop-setup-0.1.1.exe"
+    }
+  ],
+  "tarball_url": "https://api.github.com/repos/dolbaras/revelations2-coop/tarball/v0.1.1",
+  "zipball_url": "https://api.github.com/repos/dolbaras/revelations2-coop/zipball/v0.1.1",
+  "body": "(release notes trimmed for the fixture)"
+}

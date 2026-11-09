@@ -5,7 +5,9 @@
 
 Every packet goes through a link model, in each direction separately (up = client->server, down = server->client):
   loss        random loss in percent; with --burst N the loss comes in bursts of N packets on average (two-state
-              Gilbert model: the overall loss stays --loss, only its clustering changes)
+              Gilbert model: the overall loss stays --loss, only its clustering changes). The bursts count packets, not time:
+              on a sparse stream (a connect handshake, a loading game's heartbeat and retries 0.5-2 s apart) one burst spans
+              seconds, which a real link rarely does (netflake notes, sec 7 / 13); --burst-max-ms ends a burst after that long
   delay       one-way delay in ms (RTT = up + down), plus jitter: extra random 0..jitter ms (a normal-shaped spread,
               clipped), packets never overtake each other because of jitter unless --jitter-reorder
   reorder     in percent: that share of packets is held back an extra --reorder-delay ms (default delay+30) and so
@@ -47,11 +49,19 @@ def parse_addr(s):
 class Link:
     """One direction of the path."""
 
-    def __init__(self, name, a, rng):
+    def __init__(self, name, a, seed):
         self.name = name
-        self.rng = rng
+        # One random stream per direction and per decision (netflake, 2026-11-08). With one stream shared by both directions and all decisions, the k-th
+        # packet's fate depended on how the two directions' packets interleaved in time (scheduling), so --seed did not reproduce the link: the same seed gave a
+        # loss burst of 21 packets in one run and of 7 in the next. Now the k-th packet of a direction always meets the same loss / jitter / hold-back / copy
+        # draws for a given seed (str seeds are hashed with SHA-512 by random.Random: stable across runs and Python builds); without --seed every run differs.
+        def stream(kind):
+            return random.Random("netem/%s/%s/%s" % (seed, name, kind)) if seed is not None else random.Random()
+        self.rng_loss, self.rng_jitter, self.rng_reorder, self.rng_dup = (stream(k) for k in ("loss", "jitter", "reorder", "dup"))
         self.loss = a["loss"] / 100.0
         self.burst = max(1.0, a["burst"])
+        self.burst_max = a["burst_max_ms"] / 1000.0 if a["burst_max_ms"] else 0.0
+        self.bad_since = 0.0
         self.delay = a["delay"] / 1000.0
         self.jitter = a["jitter"] / 1000.0
         self.reorder = a["reorder"] / 100.0
@@ -66,29 +76,65 @@ class Link:
         self.bad = False
         self.free_at = 0.0
         self.last_due = 0.0
-        self.st = dict(pkts=0, bytes=0, lost=0, qdrop=0, dup=0, held=0, qmax=0.0, delivered=0)
+        self.st = dict(pkts=0, bytes=0, lost=0, qdrop=0, dup=0, held=0, qmax=0.0, delivered=0, blackout=0, burst_cut=0)
+        self.blackout = None   # (from, to) in perf_counter seconds, set by the relay (--blackout)
+        # --diag (netflake, 2026-11-08): the longest run of packets lost in a row, the longest time between two deliveries, how late the relay sent a packet
+        # against its due time (a sign that this process was not scheduled); times are QPC ms (time.perf_counter, the clock of the bots' cs_now)
+        self.dg = dict(run=0, run_max=0, run_max_at=0, gap_max=0.0, gap_max_at=0, gaps=[], late_max=0.0, late_max_at=0, late20=0)
+        self.cur_run = 0
+        self.last_deliv = 0.0
 
-    def lose(self):
+    def lose(self, now=None):
         if self.loss <= 0:
             return False
         if self.burst <= 1.0:
-            return self.rng.random() < self.loss
+            return self.rng_loss.random() < self.loss
+        x = self.rng_loss.random()   # one draw per packet in every case: the k-th packet keeps its draw
         if self.bad:
-            if self.rng.random() < self.p_bad_good:
+            if x < self.p_bad_good:
                 self.bad = False
+            elif self.burst_max and now is not None and now - self.bad_since >= self.burst_max:
+                # --burst-max-ms (netflake): a burst ends after this long however few packets came. The bursts count packets, so on a sparse stream (a
+                # connect, a game that loads and sends a heartbeat every 0.5 s while its LOAD_BEGIN / LOADED / GO is retried) one burst of "2 packets"
+                # lasted seconds and ate 4-5 retries in a row; a real link's bursts are bounded in time
+                self.bad = False
+                self.st["burst_cut"] += 1
         else:
-            if self.rng.random() < self.p_good_bad:
+            if x < self.p_good_bad:
                 self.bad = True
+                self.bad_since = now if now is not None else 0.0
         return self.bad
+
+    def note_delivery(self, now, due):
+        dg = self.dg
+        late = now - due
+        if late > dg["late_max"]:
+            dg["late_max"], dg["late_max_at"] = late, qms(due)
+        if late > 0.020:
+            dg["late20"] += 1
+        if self.last_deliv:
+            gap = now - self.last_deliv
+            if gap > dg["gap_max"]:
+                dg["gap_max"], dg["gap_max_at"] = gap, qms(self.last_deliv)
+            if gap > 0.3 and len(dg["gaps"]) < 40:
+                dg["gaps"].append([qms(self.last_deliv), round(gap * 1000)])
+        self.last_deliv = now
 
     def schedule(self, now, size):
         """Returns a list of delivery times (empty = dropped)."""
         st = self.st
         st["pkts"] += 1
         st["bytes"] += size
-        if self.lose():
-            st["lost"] += 1
+        if self.blackout and self.blackout[0] <= now < self.blackout[1]:
+            st["blackout"] += 1
             return []
+        if self.lose(now):
+            st["lost"] += 1
+            self.cur_run += 1
+            if self.cur_run > self.dg["run_max"]:
+                self.dg["run_max"], self.dg["run_max_at"] = self.cur_run, qms(now)
+            return []
+        self.cur_run = 0
         t = now
         if self.rate:
             start = max(now, self.free_at)
@@ -100,23 +146,28 @@ class Link:
             st["qmax"] = max(st["qmax"], start - now)
         due = t + self.delay
         if self.jitter:
-            due += min(max(self.rng.gauss(self.jitter / 2, self.jitter / 4), 0.0), self.jitter)
+            due += min(max(self.rng_jitter.gauss(self.jitter / 2, self.jitter / 4), 0.0), self.jitter)
         if not self.jitter_reorder:
             due = max(due, self.last_due)
         self.last_due = max(self.last_due, due)
-        if self.reorder and self.rng.random() < self.reorder:
+        if self.reorder and self.rng_reorder.random() < self.reorder:
             due += self.reorder_delay        # not stored in last_due: the next packets overtake it
             st["held"] += 1
         out = [due]
-        if self.dup and self.rng.random() < self.dup:
+        if self.dup and self.rng_dup.random() < self.dup:
             out.append(due + 0.001)
             st["dup"] += 1
         return out
 
 
+def qms(t):
+    """perf_counter seconds -> the bots' session clock (cn_now_ms: QPC ms modulo 2^32)"""
+    return int(t * 1000) & 0xFFFFFFFF
+
+
 def link_args(args, side):
     d = {}
-    for k in ("loss", "burst", "delay", "jitter", "reorder", "reorder_delay", "dup", "rate", "queue", "jitter_reorder"):
+    for k in ("loss", "burst", "burst_max_ms", "delay", "jitter", "reorder", "reorder_delay", "dup", "rate", "queue", "jitter_reorder"):
         v = getattr(args, k)
         o = getattr(args, side + "_" + k, None) if hasattr(args, side + "_" + k) else None
         d[k] = o if o is not None else v
@@ -143,9 +194,8 @@ class Relay:
     def __init__(self, args, log):
         self.args = args
         self.log = log
-        rng = random.Random(args.seed)
-        self.up = Link("up", link_args(args, "up"), rng)
-        self.down = Link("down", link_args(args, "down"), rng)
+        self.up = Link("up", link_args(args, "up"), args.seed)
+        self.down = Link("down", link_args(args, "down"), args.seed)
         self.listen = parse_addr(args.listen)
         self.server = parse_addr(args.to)
         self.front = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -158,6 +208,9 @@ class Relay:
         self.seq = 0
         self.stop = threading.Event()
         self.t0 = time.perf_counter()
+        if args.blackout:
+            b0, blen = (float(x) for x in args.blackout.split(","))
+            self.up.blackout = self.down.blackout = (self.t0 + b0, self.t0 + b0 + blen)
 
     def now(self):
         return time.perf_counter()
@@ -180,6 +233,7 @@ class Relay:
 
     def run(self):
         a = self.args
+        loop_prev, loop_max, loop_max_at, next_diag = 0.0, 0.0, 0, self.now() + 0.5
         next_stats = self.now() + a.stats
         end = self.now() + a.seconds if a.seconds else None
         self.log("relay %s:%d -> %s:%d; up %s; down %s" % (self.listen + self.server + (self.describe(self.up), self.describe(self.down))))
@@ -195,6 +249,12 @@ class Relay:
                 timeout = max(0.0, min(timeout, self.heap[0][0] - now))
             r, _, _ = select.select([self.front] + list(self.by_sock), [], [], timeout)
             now = self.now()
+            if loop_prev and now - loop_prev - timeout > loop_max:   # time beyond the select timeout: this process did not run
+                loop_max, loop_max_at = now - loop_prev - timeout, qms(loop_prev)
+            loop_prev = now
+            if a.diag and now >= next_diag:
+                next_diag = now + 0.5
+                self.write_diag(loop_max, loop_max_at)
             for s in r:
                 try:
                     data, src = s.recvfrom(65535)
@@ -212,7 +272,9 @@ class Relay:
                 due, _, sock, data, dest = heapq.heappop(self.heap)
                 try:
                     sock.sendto(data, dest)
-                    (self.up if sock is not self.front else self.down).st["delivered"] += 1
+                    l = self.up if sock is not self.front else self.down
+                    l.st["delivered"] += 1
+                    l.note_delivery(now, due)
                 except OSError:
                     pass
             if a.stats and now >= next_stats:
@@ -220,6 +282,20 @@ class Relay:
                 self.log("t=%ds %s | %s" % (now - self.t0, self.brief(self.up), self.brief(self.down)))
         self.log("summary up:   " + self.full(self.up))
         self.log("summary down: " + self.full(self.down))
+        if a.diag:
+            self.write_diag(loop_max, loop_max_at)
+
+    def write_diag(self, loop_max, loop_max_at):
+        import json
+        d = {"q_now": qms(self.now()), "loop_max": round(loop_max * 1000, 1), "loop_max_at": loop_max_at}
+        for l in (self.up, self.down):
+            d[l.name] = dict(l.dg, lost=l.st["lost"], pkts=l.st["pkts"], delivered=l.st["delivered"], burst_cut=l.st["burst_cut"])
+        try:
+            with open(self.args.diag + ".tmp", "w") as f:
+                json.dump(d, f)
+            os.replace(self.args.diag + ".tmp", self.args.diag)
+        except OSError:
+            pass
 
     @staticmethod
     def describe(l):
@@ -315,12 +391,16 @@ def main():
             ap.add_argument("--up-" + k, type=float, default=None)
             ap.add_argument("--down-" + k, type=float, default=None)
     ap.add_argument("--reorder-delay", dest="reorder_delay", type=float, default=None, help="ms (default delay+30)")
+    ap.add_argument("--burst-max-ms", dest="burst_max_ms", type=float, default=0.0, help="a loss burst ends after this long however few packets came (0 = no limit)")
     ap.add_argument("--jitter-reorder", action="store_true", help="let jitter reorder packets")
     ap.add_argument("--seconds", type=float, default=0)
     ap.add_argument("--stats", type=float, default=10)
     ap.add_argument("--log", default="")
     ap.add_argument("--stop-file", default="")
+    ap.add_argument("--blackout", default="", help="START,LEN seconds: drop every packet of both directions for LEN s from START s after the relay started (a dead link)")
+    ap.add_argument("--diag", default="", help="netflake: keep a JSON summary of loss runs, delivery gaps and relay lateness in this file (rewritten every 0.5 s)")
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--realization", type=int, default=0, help="print the loss fates of the first N packets per direction for this seed and these options, then exit")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--selftest-packets", type=int, default=400)
     ap.add_argument("--selftest-size", type=int, default=200)
@@ -328,8 +408,19 @@ def main():
     args = ap.parse_args()
     args.reorder_delay_or = lambda d: args.reorder_delay if args.reorder_delay is not None else d
     for side in ("up", "down"):
-        for k in ("reorder", "dup", "burst", "queue", "reorder_delay", "jitter_reorder"):
+        for k in ("reorder", "dup", "burst", "burst_max_ms", "queue", "reorder_delay", "jitter_reorder"):
             setattr(args, side + "_" + k, None)
+    if args.realization:
+        for side in ("up", "down"):
+            l = Link(side, link_args(args, side), args.seed)
+            fates = [l.lose() for _ in range(args.realization)]
+            run = best = 0
+            for x in fates:
+                run = run + 1 if x else 0
+                best = max(best, run)
+            print("%-4s first %d packets: lost %d (%.1f %%), longest loss run %d; first 60: %s" % (side, len(fates), sum(fates), 100.0 * sum(fates) / len(fates), best,
+                                                                                               "".join("x" if x else "." for x in fates[:60])))
+        return
     enable_fine_timer()
     if args.selftest:
         selftest(args)

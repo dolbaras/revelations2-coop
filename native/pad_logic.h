@@ -70,4 +70,37 @@ static inline int pad_pick_update(pad_pick_t *p, unsigned now, const int connect
             }
     return p->cur;
 }
+
+/* R2-6 (flashlive, 2026-11-08, notes\flashlive.md section 1): THE SEATS AFTER A LOAD. A player reads the logical pad cPad +0xC (its cPadEx: player +0x78E0 -> +0x4C0),
+ * and that number is the player's seat (+0x7924, from GameMan +0x7D4 [slot]) read when its uPlIntel goes human (FUN_00A14BE0, again after every slot-type change).
+ * The game's spawn of a level (sPlayer_SpawnAll 0x6E6490) swaps the two slots' types AND seats when slot 0 is the AI partner (type 1) and slot 1 a human (type 0),
+ * and the glue puts the partner to type 1 at every load begin, so on a PC whose human is slot 1 (the client's Moira / Natalia, a host who plays them) every load
+ * swapped the seats: the human got seat 0, read logical pad 0 = game user 0 (a neutral keep-alive pad), while this PC's real pad goes to game user = the slot:
+ * the gamepad did nothing after the first load (a stage change, a retry, a checkpoint), the keyboard still worked, the next load swapped back.
+ * pad_seat_writes: a bit per slot whose seat must be written back to its own number (the stock join's arrangement: slot 0 seat 0, slot 1 seat 1, which the
+ * real-pad routing and the achievement logic assume); pad_cpad_fix: the pad number to write into the local human's cPad when it reads another one, else -1.
+ * -DPAD_MODEL_BEFORE_R26 = rev2-int 6b40a90 (nothing written; tests/build.sh checks that test_pad fails with it). */
+static inline int pad_seat_writes(const int seat[2])
+{
+#ifdef PAD_MODEL_BEFORE_R26
+    (void)seat;
+    return 0;
+#else
+    int m = 0;
+    for (int k = 0; k < 2; k++)
+        if (seat[k] != k) m |= 1 << k;
+    return m;
+#endif
+}
+
+static inline int pad_cpad_fix(int my_slot, int cpad_no)
+{
+#ifdef PAD_MODEL_BEFORE_R26
+    (void)my_slot, (void)cpad_no;
+    return -1;
+#else
+    if (my_slot < 0 || my_slot > 1) return -1;
+    return cpad_no == my_slot ? -1 : my_slot;
+#endif
+}
 #endif

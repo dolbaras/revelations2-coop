@@ -164,7 +164,8 @@ static int wr(unsigned a, const void *p, unsigned n)
 static unsigned hx(const char *s) { return (unsigned)strtoul(s, NULL, 16); }
 static float arg_float(const char *s) { return (float)atof(s); }
 
-/* ---- generic call: call <cdecl|stdcall|thiscall|fastcall> <hexaddr> [args]; arg "f:1.5" = float bits; thiscall arg0 = ecx, fastcall arg0/1 = ecx/edx ---- */
+/* ---- generic call: call <cdecl|stdcall|thiscall|fastcall> <hexaddr> [args, up to 8 (combat4: PutItem = thiscall + 6)]; arg "f:1.5" = float bits; thiscall arg0 = ecx, fastcall arg0/1 = ecx/edx;
+ * arg "buf" = the address of a 64-byte scratch buffer (PutItem's out) ---- */
 #define TC __attribute__((thiscall))
 #define FC __attribute__((fastcall))
 #define SC __attribute__((stdcall))
@@ -181,7 +182,9 @@ static unsigned do_call(int conv, unsigned fn, const unsigned *a, int n)
         case 3: return ((u(CD *)(u, u, u))fn)(a[0], a[1], a[2]);
         case 4: return ((u(CD *)(u, u, u, u))fn)(a[0], a[1], a[2], a[3]);
         case 5: return ((u(CD *)(u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4]);
-        default: return ((u(CD *)(u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
+        case 6: return ((u(CD *)(u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
+        case 7: return ((u(CD *)(u, u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+        default: return ((u(CD *)(u, u, u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
         }
     case 1:   /* stdcall */
         switch (n) {
@@ -191,7 +194,9 @@ static unsigned do_call(int conv, unsigned fn, const unsigned *a, int n)
         case 3: return ((u(SC *)(u, u, u))fn)(a[0], a[1], a[2]);
         case 4: return ((u(SC *)(u, u, u, u))fn)(a[0], a[1], a[2], a[3]);
         case 5: return ((u(SC *)(u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4]);
-        default: return ((u(SC *)(u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
+        case 6: return ((u(SC *)(u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
+        case 7: return ((u(SC *)(u, u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+        default: return ((u(SC *)(u, u, u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
         }
     case 2:   /* thiscall: a[0] = ecx */
         switch (n) {
@@ -201,7 +206,9 @@ static unsigned do_call(int conv, unsigned fn, const unsigned *a, int n)
         case 3: return ((u(TC *)(u, u, u))fn)(a[0], a[1], a[2]);
         case 4: return ((u(TC *)(u, u, u, u))fn)(a[0], a[1], a[2], a[3]);
         case 5: return ((u(TC *)(u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4]);
-        default: return ((u(TC *)(u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
+        case 6: return ((u(TC *)(u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
+        case 7: return ((u(TC *)(u, u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+        default: return ((u(TC *)(u, u, u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
         }
     default:  /* fastcall: a[0] = ecx, a[1] = edx */
         switch (n) {
@@ -211,7 +218,9 @@ static unsigned do_call(int conv, unsigned fn, const unsigned *a, int n)
         case 3: return ((u(FC *)(u, u, u))fn)(a[0], a[1], a[2]);
         case 4: return ((u(FC *)(u, u, u, u))fn)(a[0], a[1], a[2], a[3]);
         case 5: return ((u(FC *)(u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4]);
-        default: return ((u(FC *)(u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
+        case 6: return ((u(FC *)(u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
+        case 7: return ((u(FC *)(u, u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+        default: return ((u(FC *)(u, u, u, u, u, u, u, u))fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
         }
     }
 }
@@ -320,6 +329,8 @@ static void pads_summary(char *out, int size)
     }
 }
 
+static void warp_cmd(const char *arg, char *out, int size);   /* warp.inc */
+
 /* ---- the command set ---- */
 void s3_run(const char *cmd, char *out, int size)
 {
@@ -333,19 +344,20 @@ void s3_run(const char *cmd, char *out, int size)
         char *rest = arg;
         int consumed = 0;
         if (sscanf(rest, "%15s %15s%n", cv, fa, &consumed) < 2) {
-            snprintf(out, size, "usage: call <cdecl|stdcall|thiscall|fastcall> <hexaddr> [hex args or f:float...] (up to 6)");
+            snprintf(out, size, "usage: call <cdecl|stdcall|thiscall|fastcall> <hexaddr> [hex args, f:float or buf...] (up to 8)");
             return;
         }
         rest += consumed;
         char tok[40];
         int c2;
-        while (n < 6 && sscanf(rest, "%39s%n", tok, &c2) == 1) {
-            a[n++] = tok[0] == 'f' && tok[1] == ':' ? ({ float f = arg_float(tok + 2); unsigned b; memcpy(&b, &f, 4); b; }) : hx(tok);
+        static unsigned char scratch[64];
+        while (n < 8 && sscanf(rest, "%39s%n", tok, &c2) == 1) {
+            a[n++] = !strcmp(tok, "buf") ? (memset(scratch, 0, sizeof scratch), (unsigned)scratch) : tok[0] == 'f' && tok[1] == ':' ? ({ float f = arg_float(tok + 2); unsigned b; memcpy(&b, &f, 4); b; }) : hx(tok);
             rest += c2;
         }
         int conv = !strcmp(cv, "cdecl") ? 0 : !strcmp(cv, "stdcall") ? 1 : !strcmp(cv, "thiscall") ? 2 : 3;
         unsigned r = do_call(conv, hx(fa), a, n);
-        snprintf(out, size, "returned %08x (%d)", r, (int)r);
+        snprintf(out, size, "returned %08x (%d); buf %02x %08x %08x", r, (int)r, scratch[0], *(unsigned *)(scratch + 4), *(unsigned *)(scratch + 8));
     } else if (!strcmp(name, "w32") || !strcmp(name, "w8") || !strcmp(name, "wf")) {
         char as[20], vs[40];
         if (sscanf(arg, "%19s %39s", as, vs) != 2) {
@@ -472,6 +484,8 @@ void s3_run(const char *cmd, char *out, int size)
         snprintf(out, size, "viewport %d shows player %d", v, p);
     } else if (!strcmp(name, "rec") || !strcmp(name, "play") || !strcmp(name, "stopplay") || !strcmp(name, "pupinfo") || !strcmp(name, "stoprec") || !strcmp(name, "pset")) {
         puppet_cmd(name, arg, out, size);
+    } else if (!strcmp(name, "warp")) {   /* lab stage warp of Episode 1 (warp.inc): the restart copy + the stock restart request */
+        warp_cmd(arg, out, size);
     } else {
         extern void console_exec(const char *, char *, int);
         console_exec(cmd, out, size);
@@ -482,6 +496,10 @@ void s3_run(const char *cmd, char *out, int size)
  * State of one character (the "network packet"): see puppet_state_* below; filled in after the field survey. */
 #include "puppet.inc"
 #include "coop_game.inc"
+#include "warp.inc"   /* lab stage warp (needs story_block / game_area / do_call) */
 #include "world.inc"
+#include "downed.inc"
 #include "ach.inc"
+#include "aim.inc"   /* LAB: `net aim` (needs world.inc) */
 #include "bot.inc"
+#include "lobbymust.inc"

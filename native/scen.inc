@@ -7,7 +7,7 @@
  * 9 lock + action 0x11 (8 and 9 only when the state byte at +0x4354 is not 2 / 6), 10 action 0x12 (only when the state byte is not 1 / 5).
  * Console: `net w sf` (all set flags of the current area), `net w sf get <n>`, `net w sf set <n> <0|1>`, `net w sf watch 0|1|log N` (log every change, 10 Hz), `net w doors op <a> <b> <c> <acttype>` (door.inc calls scen_door_op),
  * `net w door <a> <b> <c>` (state of one set model: action ids, lock word, flags, state byte). */
-#define SF_N 300
+#define SF_N 512   /* stage 10 (gap G3): every flag of the current area (FUN_00975B50 takes an index below 0x200 as the current stage); release-020 scanned 0..299 and lost 154's SF 300 / 303-305 / 320 / 321 */
 static int scen_door_op(unsigned door, int acttype);
 static void bgl_tick(unsigned now);   /* 6j: loader mirror, below */
 #include "bgl_logic.h"
@@ -55,8 +55,13 @@ static void bgl_fmt(const bgl_t *l, int n, char *s, int size)
     if (!n) snprintf(s, size, "-");
 }
 
-static unsigned char g_sf_last[SF_N];
+static unsigned g_sf_lastw[OS_SF_WORDS], g_ep_lastw[OS_SF_WORDS];   /* stage 10: baselines as the game's bit words (area flags, EpisodeFlags) */
 static int g_sf_watch, g_sf_init, g_sf_log = 400;
+/* stage 10 (G3 / G4): EpisodeFlags (global flags 99000 + n: the 101 box checkers write [2] / [3]) ride on the SF event with the area OS_EP_AREA; at the end of the quiet window after a load one digest of
+ * every set flag of the area (and of the EpisodeFlags) goes out, the receiver sets what it misses; a digest or flag of an area this PC is not in yet waits OS_PEND_MS. `net w sf ep 0|1`, `net w sf digest 0|1`. */
+static int g_ep_sync = 1, g_sfd_on = 1, g_sf_was_quiet, g_ep_init;
+static unsigned g_ep_tx, g_ep_rx, g_ep_applied, g_sfd_tx, g_sfd_rx, g_sfd_pended, g_sf_capped;
+static os_pend_t g_sf_pend;
 static unsigned g_sf_changes, g_sf_t0, g_sf_scan_t, g_sf_area;
 
 static int scen_get(int idx)
@@ -72,6 +77,35 @@ static int scen_set(int idx, int v)
     unsigned a[2] = {sb, (unsigned)idx};
     do_call(2, v ? 0xA91AE0 : 0xA91A60, a, 2);
     return 1;
+}
+
+/* stage 10: the 16 flag words of the current area (base 0) or of the EpisodeFlag block (base OS_EP_BASE) in one call: FUN_00975B50 (thiscall, ecx = story block + 0x31320, the flag index) returns the
+ * word of the index; the words of one stage follow each other (bit 0x80000000 >> (n & 31) of word n >> 5, as FUN_00A90510 tests). Release-020 called the getter once per flag (300 calls a scan). */
+static int scen_words(unsigned base, unsigned *w)
+{
+    unsigned sb = story_block();
+    if (!sb) return 0;
+    unsigned a[2] = {sb + 0x31320, base};
+    unsigned p = do_call(2, 0x975B50, a, 2);
+    if (p < 0x10000 || p >= 0x7FFF0000u) return 0;
+    for (int i = 0; i < OS_SF_WORDS; i++) w[i] = rd32(p + 4 * (unsigned)i);
+    return 1;
+}
+
+static unsigned g_sfd_applied;
+/* set every flag the words have and this PC has not (episode = 1: the EpisodeFlag block); the set flags become the baseline (no echo) */
+static int scen_apply_missing(const unsigned *w, int episode)
+{
+    unsigned local[OS_SF_WORDS];
+    int idx[OS_SF_WORDS * 32];
+    if (!scen_words(episode ? OS_EP_BASE : 0, local)) return 0;
+    int n = os_digest_missing(w, local, episode ? OS_SF_WORDS * 32 : SF_N, idx, OS_SF_WORDS * 32);
+    for (int k = 0; k < n; k++) {
+        scen_set((episode ? OS_EP_BASE : 0) + idx[k], 1);
+        if (g_sf_init) os_sf_setbit(episode ? g_ep_lastw : g_sf_lastw, idx[k]);
+    }
+    g_sfd_applied += (unsigned)n;
+    return n;
 }
 
 /* scenario flag sync (research, `net w sf sync 0|1|2`): the story FSMs run on both PCs and mostly reach the same flags by themselves (same scripts, same inputs), but an input that only the OWNER's PC sees (its human enters a trigger zone,
@@ -198,7 +232,7 @@ static void radio_tick(unsigned now, unsigned area)
         memcpy(b, &ar, 4), b[4] = (unsigned char)(flag & 0xFF), b[5] = (unsigned char)(flag >> 8), b[6] = 1;
         w_ev_send(EV_W_SF, b, 7);
         g_sf_tx++;
-        if (g_sf_init && flag < SF_N) g_sf_last[flag] = 1;
+        if (g_sf_init && flag < SF_N) os_sf_setbit(g_sf_lastw, flag);
     }
     if (g_radio_logs++ < 20) r2_log(W_LOG "radio trigger: every human stands inside the zone of %s (%d humans, %u ms): the host set SF[%d] (now %d), the flag sync mirrors it", z->name, in.n, RADIO_DWELL_MS, flag, scen_get(flag));
 }
@@ -213,30 +247,87 @@ static void scen_tick(void)
     smtrace_tick();   /* door.inc: per-frame change log of one set model (net w smtrace) */
     scen_celldoor_tick(now, area);
     radio_tick(now, area);
+    if (g_sf_pend.valid && g_sf_sync) {   /* stage 10: a digest / flag of this area that came before this PC changed into it */
+        unsigned w[OS_SF_WORDS];
+        if (os_pend_take(&g_sf_pend, (int)area, now, w)) {
+            int n = scen_apply_missing(w, 0);
+            if (n) r2_log(W_LOG "SF: %d flags of area %u that the other PC sent before this PC entered the area applied now", n, area);
+        }
+    }
     if (!g_sf_watch && !g_sf_sync) return;
     if (now - g_sf_scan_t < 100) return;
     g_sf_scan_t = now;
-    unsigned char cur[SF_N];
-    for (int i = 0; i < SF_N; i++) cur[i] = (unsigned char)scen_get(i);
+    unsigned cur[OS_SF_WORDS], ep[OS_SF_WORDS];
+    if (!scen_words(0, cur)) return;
+    int have_ep = scen_words(OS_EP_BASE, ep);
     if (!g_sf_init || (int)(now - g_w_sm_quiet_until) < 0 || g_sf_area != story_area_id()) {   /* first scan, a level was (re)loaded, the area changed: new baseline, nothing is an event */
-        memcpy(g_sf_last, cur, sizeof cur);
+        memcpy(g_sf_lastw, cur, sizeof cur);
+        if (have_ep) memcpy(g_ep_lastw, ep, sizeof ep);
+        g_ep_init = have_ep;
         g_sf_init = 1, g_sf_t0 = now, g_sf_area = story_area_id();
+        g_sf_was_quiet = 1;
         return;
     }
+    if (os_digest_step(&g_sf_was_quiet, g_sfd_on && g_sf_sync && w_session_running())) {   /* G4: what rose inside the quiet window was absorbed by the baseline: one digest of everything that is set,
+                                                                                               * held until the session plays again (a stage change takes the baseline while loading: osPB 07:16:53) */
+        unsigned char b[OS_DIGEST_LEN];
+        w_ev_send(EV_W_SFD, b, (unsigned)os_digest_pack((int)g_sf_area, 0, cur, b));
+        g_sfd_tx++;
+        if (have_ep && g_ep_sync) w_ev_send(EV_W_SFD, b, (unsigned)os_digest_pack(OS_EP_AREA, 1, ep, b)), g_sfd_tx++;
+        int nset = 0;
+        for (int i = 0; i < SF_N; i++) nset += os_sf_bit(cur, i);
+        r2_log(W_LOG "SF digest sent at the end of the quiet window: area %u, %d flags set", g_sf_area, nset);
+    }
     int sent = 0;
-    for (int i = 0; i < SF_N; i++)
-        if (cur[i] != g_sf_last[i]) {
-            g_sf_changes++;
-            if (g_sf_watch && (int)g_sf_changes <= g_sf_log) r2_log(W_LOG "SF[%d] %d -> %d (area %u, +%u ms since the watch started)", i, g_sf_last[i], cur[i], g_sf_area, now - g_sf_t0);
-            if (g_sf_sync && w_session_running() && (cur[i] || g_sf_sync >= 2) && sent < 16) {
-                unsigned char b[7];
-                int area = (int)g_sf_area;
-                memcpy(b, &area, 4), b[4] = (unsigned char)(i & 0xFF), b[5] = (unsigned char)(i >> 8), b[6] = cur[i];
-                w_ev_send(EV_W_SF, b, 7);
-                g_sf_tx++, sent++;
-            }
-            g_sf_last[i] = cur[i];
+    for (int i = 0; i < SF_N; i++) {
+        int c = os_sf_bit(cur, i), l = os_sf_bit(g_sf_lastw, i);
+        if (c == l) continue;
+        int want = g_sf_sync && w_session_running() && (c || g_sf_sync >= 2);
+        if (want && sent >= 16) {   /* at most 16 a scan: the rest stays different from the baseline and goes out with the next scan (release-020 dropped it) */
+            g_sf_capped++;
+            continue;
         }
+        g_sf_changes++;
+        if (g_sf_watch && (int)g_sf_changes <= g_sf_log) r2_log(W_LOG "SF[%d] %d -> %d (area %u, +%u ms since the watch started)", i, l, c, g_sf_area, now - g_sf_t0);
+        if (want) {
+            unsigned char b[7];
+            int ar = (int)g_sf_area;
+            memcpy(b, &ar, 4), b[4] = (unsigned char)(i & 0xFF), b[5] = (unsigned char)(i >> 8), b[6] = (unsigned char)c;
+            w_ev_send(EV_W_SF, b, 7);
+            g_sf_tx++, sent++;
+        }
+        g_sf_lastw[i >> 5] ^= 0x80000000u >> (i & 31);
+    }
+    if (!have_ep) return;
+    if (!g_ep_init) {   /* the EpisodeFlag words were not readable at the baseline: take them as the baseline now */
+        memcpy(g_ep_lastw, ep, sizeof ep);
+        g_ep_init = 1;
+        return;
+    }
+    for (int i = 0; i < OS_SF_WORDS * 32; i++) {
+        int c = os_sf_bit(ep, i), l = os_sf_bit(g_ep_lastw, i);
+        if (c == l) continue;
+        int want = g_ep_sync && g_sf_sync && w_session_running() && (c || g_sf_sync >= 2);
+        if (want && sent >= 16) {
+            g_sf_capped++;
+            continue;
+        }
+        if (g_sf_watch && (int)g_sf_changes <= g_sf_log) r2_log(W_LOG "EpisodeFlag[%d] %d -> %d", i, l, c);
+        if (want) {
+            unsigned char b[7];
+            int ar = OS_EP_AREA;
+            memcpy(b, &ar, 4), b[4] = (unsigned char)(i & 0xFF), b[5] = (unsigned char)(i >> 8), b[6] = (unsigned char)c;
+            w_ev_send(EV_W_SF, b, 7);
+            g_ep_tx++, sent++;
+        }
+        g_ep_lastw[i >> 5] ^= 0x80000000u >> (i & 31);
+    }
+}
+
+static void scen_base_bit(unsigned *w, unsigned idx, unsigned v)
+{
+    if (v) w[idx >> 5] |= 0x80000000u >> (idx & 31);
+    else w[idx >> 5] &= ~(0x80000000u >> (idx & 31));
 }
 
 static void scen_event(const cp_event *e)
@@ -246,19 +337,64 @@ static void scen_event(const cp_event *e)
     memcpy(&area, e->body, 4);
     unsigned idx = e->body[4] | ((unsigned)e->body[5] << 8), v = e->body[6] ? 1 : 0;
     g_sf_rx++;
-    if ((unsigned)area != story_area_id() || idx >= SF_N) {
+    if (area == OS_EP_AREA) {   /* stage 10: an EpisodeFlag (global flag 99000 + idx) */
+        g_ep_rx++;
+        if (!g_ep_sync || idx >= OS_SF_WORDS * 32) return;
+        if (scen_get(OS_EP_BASE + (int)idx) != (int)v) {
+            scen_set(OS_EP_BASE + (int)idx, (int)v);
+            g_ep_applied++;
+            if (g_ep_applied < 100) r2_log(W_LOG "EpisodeFlag[%u] = %u applied from the other PC", idx, v);
+        }
+        if (g_sf_init) scen_base_bit(g_ep_lastw, idx, v);
+        return;
+    }
+    if (!os_sf_index_ok((int)idx)) {
         g_sf_wrong_area++;
+        return;
+    }
+    if ((unsigned)area != story_area_id()) {
+        g_sf_wrong_area++;
+        if (v && area >= 100 && area < 3000) {   /* stage 10 (G4): the other PC is in this area already, this PC not yet (the stage gate lets the two change some seconds apart): keep it */
+            unsigned w[OS_SF_WORDS];
+            memset(w, 0, sizeof w);
+            os_sf_setbit(w, (int)idx);
+            os_pend_store(&g_sf_pend, area, w, GetTickCount());
+            g_sfd_pended++;
+        }
         return;
     }
     if (scen_get((int)idx) == (int)v) {
         g_sf_same++;
-        if (g_sf_init) g_sf_last[idx] = (unsigned char)v;
+        if (g_sf_init) scen_base_bit(g_sf_lastw, idx, v);
         return;
     }
     scen_set((int)idx, (int)v);
-    if (g_sf_init) g_sf_last[idx] = (unsigned char)v;   /* the applied value is this PC's baseline: no echo */
+    if (g_sf_init) scen_base_bit(g_sf_lastw, idx, v);   /* the applied value is this PC's baseline: no echo */
     g_sf_applied++;
     if (g_sf_applied < 100) r2_log(W_LOG "SF[%u] = %u applied from the other PC (area %d)", idx, v, area);
+}
+
+/* stage 10 (G4): a digest of the other PC (all flags set there at the end of its quiet window) */
+static void scen_digest_event(const cp_event *e)
+{
+    int area = 0, kind = 0;
+    unsigned w[OS_SF_WORDS];
+    if (!g_sf_sync || !g_sfd_on || !os_digest_unpack(e->body, e->len, &area, &kind, w)) return;
+    g_sfd_rx++;
+    if (kind == 1) {
+        if (g_ep_sync) {
+            int n = scen_apply_missing(w, 1);
+            if (n) r2_log(W_LOG "SF digest: %d EpisodeFlags set on the other PC applied here", n);
+        }
+        return;
+    }
+    if ((unsigned)area != story_area_id()) {
+        if (area >= 100 && area < 3000) os_pend_store(&g_sf_pend, area, w, GetTickCount()), g_sfd_pended++;
+        r2_log(W_LOG "SF digest of area %d kept for %u ms (this PC is in area %u)", area, OS_PEND_MS, story_area_id());
+        return;
+    }
+    int n = scen_apply_missing(w, 0);
+    r2_log(W_LOG "SF digest of area %d: %d flags set there and clear here applied", area, n);
 }
 
 static void scen_command(const char *arg, char *out, int size)
@@ -309,7 +445,39 @@ static void scen_command(const char *arg, char *out, int size)
         const char *p = arg + 4;
         while (*p == ' ') p++;
         if (*p) g_sf_sync = atoi(p), g_sf_init = 0;
-        snprintf(out, size, "scenario flag sync %d (0 off, 1 sets, 2 sets and clears): sent %u, received %u (applied %u, already same %u, other area %u)", g_sf_sync, g_sf_tx, g_sf_rx, g_sf_applied, g_sf_same, g_sf_wrong_area);
+        snprintf(out, size, "scenario flag sync %d (0 off, 1 sets, 2 sets and clears) over flags 0..%d: sent %u, received %u (applied %u, already same %u, other area %u, kept for later %u), held back by the 16-a-scan cap %u; EpisodeFlags %s: sent %u, received %u, applied %u; digests %s: sent %u, received %u, flags applied %u",
+                 g_sf_sync, SF_N - 1, g_sf_tx, g_sf_rx, g_sf_applied, g_sf_same, g_sf_wrong_area, g_sfd_pended, g_sf_capped, g_ep_sync ? "on" : "off", g_ep_tx, g_ep_rx, g_ep_applied, g_sfd_on ? "on" : "off", g_sfd_tx, g_sfd_rx, g_sfd_applied);
+        return;
+    }
+    if (!strcmp(w, "ep") || !strcmp(w, "digest")) {   /* stage 10: net w sf ep 0|1 (EpisodeFlag sync), net w sf digest 0|1 (the digest at the end of the quiet window) */
+        const char *p = arg + strlen(w);
+        while (*p == ' ') p++;
+        int *sw = !strcmp(w, "ep") ? &g_ep_sync : &g_sfd_on;
+        if (*p == '0' || *p == '1') *sw = *p - '0';
+        int o2 = snprintf(out, size, "%s %s; EpisodeFlags set:", w, *sw ? "on" : "off");
+        unsigned ew[OS_SF_WORDS];
+        if (scen_words(OS_EP_BASE, ew))
+            for (int i = 0; i < OS_SF_WORDS * 32 && o2 < size - 12; i++)
+                if (os_sf_bit(ew, i)) o2 += snprintf(out + o2, size - o2, " %d", i);
+        return;
+    }
+    if (!strcmp(w, "check")) {   /* stage 10, live check of the word reader: every flag 0..511 through the game's getter against the bit of scen_words */
+        unsigned cw[OS_SF_WORDS], ew[OS_SF_WORDS];
+        int bad = 0, set = 0, ebad = 0, eset = 0, first = -1;
+        if (!scen_words(0, cw) || !scen_words(OS_EP_BASE, ew)) {
+            snprintf(out, size, "check: the word reader found no flag words");
+            return;
+        }
+        for (int i = 0; i < SF_N; i++) {
+            int g = scen_get(i), b = os_sf_bit(cw, i);
+            set += g, bad += g != b;
+            if (g != b && first < 0) first = i;
+        }
+        for (int i = 0; i < OS_SF_WORDS * 32; i++) {
+            int g = scen_get(OS_EP_BASE + i), b = os_sf_bit(ew, i);
+            eset += g, ebad += g != b;
+        }
+        snprintf(out, size, "check (area %u): flags 0..%d: %d set, %d differ between the getter and the words (first %d); EpisodeFlags 0..%d: %d set, %d differ", story_area_id(), SF_N - 1, set, bad, first, OS_SF_WORDS * 32 - 1, eset, ebad);
         return;
     }
     if (!strcmp(w, "watch")) {

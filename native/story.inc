@@ -13,9 +13,15 @@
  */
 static unsigned w_find_active(unsigned cell, int a, unsigned b, unsigned c);
 static void w_sm_reset(void);   /* door.inc */
+#include "invmirror_logic.h"   /* combat4: the partner's inventory copy, the GUI hand-over, the puppet's hand, the partner's throw */
+static im_grace g_im_grace;     /* ids this PC itself changed in the partner's copy (story grant, PICKUP / GRANT replay, its own GUI hand-over) */
+static int g_im_op;             /* inside a mirror operation of this file: no grace, no GRANT */
+static int w_session_running(void);
 
 enum { WK_FLAGS = 2, WK_ITEMS = 3 };
 static int g_w_equip = 1, g_w_barrier = 1, g_w_barrier_ms = 6000, g_w_grant_sync = 1;
+static int g_w_hand = 1;   /* combat4: the puppet's hand also follows an empty hand and the light (`net w story hand 0|1`) */
+static unsigned g_w_hand_light, g_w_hand_cleared, g_w_hand_logs;
 static unsigned g_w_put_n, g_w_put_rx, g_w_grant_tx, g_w_grant_rx, g_w_grant_skip, g_w_pick_skip, g_w_equip_calls, g_w_equip_miss;
 static unsigned g_w_bar_tx, g_w_bar_rx, g_w_bar_passed, g_w_bar_timeouts, g_w_bar_since, g_w_bar_waiting, g_w_bar_wait_ms;
 static unsigned g_w_dig_tx, g_w_dig_rx, g_w_dig_applied, g_w_last_digest;
@@ -71,6 +77,7 @@ static __attribute__((thiscall)) void *h_putitem(void *self, void *out, int item
     unsigned char ok = 0;
     if (out) r2_safe_read(out, &ok, 1);
     g_w_put_n++;
+    if (ok && slot >= 0 && slot == g_rem_slot && !g_im_op && item > 0) im_grace_note(&g_im_grace, (uint16_t)item, GetTickCount());   /* combat4: this PC's own add to the partner's copy (story, PICKUP replay) */
     layout_t l = {0, 0, 0};
     layout_of(obj, &l);
     if ((int)g_w_put_n <= g_w_log_calls * 3)
@@ -104,6 +111,7 @@ static void story_put(int slot, unsigned item, unsigned cnt, unsigned obj, const
     g_w_replay++;
     o_putitem((void *)p, out, (int)item, cnt, obj, 0, 0);
     g_w_replay--;
+    if (slot == g_rem_slot && out[0]) im_grace_note(&g_im_grace, (uint16_t)item, GetTickCount());
     r2_log(W_LOG "%s applied: slot %d item %04x count %08x object %08x -> ok %u, inventory now %d items", what, slot, item, cnt, obj, out[0], inv_count(slot));
 }
 
@@ -135,14 +143,335 @@ static void w_apply_equipment(unsigned p, int slot, const cp_state *o)
         }
         story_equip(p, idx, t, o->weapon == (unsigned)t);
     }
-    if (o->weapon >= 1 && o->weapon <= 3 && o->item[o->weapon - 1]) {
-        unsigned a1[1] = {p};
-        unsigned hand = do_call(3, 0x6FB060, a1, 1) & 0xFF;   /* FUN_006fb060: weapon slot in the hand */
-        if (hand != o->weapon) {
-            int idx = inv_find(slot, o->item[o->weapon - 1]);
-            if (idx >= 0) story_equip(p, idx, (int)o->weapon, 1);
+    unsigned a1[1] = {p};
+    unsigned hand = do_call(3, 0x6FB060, a1, 1) & 0xFF;   /* FUN_006fb060: weapon slot in the hand (0 none / the default item, 1..3, 4 the light) */
+    switch (g_w_hand ? eq_hand_plan(o->weapon, o->item, hand) : (o->weapon >= 1 && o->weapon <= 3 ? eq_hand_plan(o->weapon, o->item, hand) : EQ_HAND_KEEP)) {
+    case EQ_HAND_SLOT: {
+        int idx = inv_find(slot, o->item[o->weapon - 1]);
+        if (idx >= 0) story_equip(p, idx, (int)o->weapon, 1);
+        break;
+    }
+    case EQ_HAND_LIGHT:   /* combat4: FUN_00710360(p, x, 4, 1) puts the puppet's light (FUN_006FB7F0) into its hand */
+        story_equip(p, 0, 4, 1);
+        g_w_hand_light++;
+        if (g_w_hand_logs++ < 20) r2_log(W_LOG "puppet hand: its owner holds the light: the light into the puppet's hand (hand slot was %u, now %u)", hand, do_call(3, 0x6FB060, a1, 1) & 0xFF);
+        break;
+    case EQ_HAND_DEFAULT: {   /* combat4: the owner's hand is empty (after a throw, a holster): the stock unequip FUN_00710360(p, -1, 0, 1) = the default item +0x7340 */
+        unsigned def = rd32(p + 0x7340), held = rd32(p + 0x7380);
+        if (def) story_equip(p, -1, 0, 1);
+        else if (held) {   /* no default item: holster what the hand holds (FUN_0070C980, what FUN_006F1A30 does to the old weapon) and leave the hand empty */
+            unsigned a2[2] = {p, held}, z = 0;
+            g_w_replay++;
+            do_call(2, 0x70C980, a2, 2);
+            g_w_replay--;
+            wr(p + 0x7380, &z, 4);
+        }
+        g_w_hand_cleared++;
+        if (g_w_hand_logs++ < 20) r2_log(W_LOG "puppet hand: its owner's hand is empty: the puppet's hand slot %u cleared (%s, default item %08x, held %08x): hand slot now %u", hand, def ? "stock unequip to the default item" : "holstered", def, held,
+                                        do_call(3, 0x6FB060, a1, 1) & 0xFF);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+
+/* ---------------------------------------------------------------- combat4: the partner's inventory copy mirrors its owner (invmirror_logic.h, notes\combat4.md)
+ * The owner (every PC for its own human) sends its entries when they change (checked every 100 ms) and a full set on request; the other PC keeps the table and
+ * reconciles its copy of the partner's slot every 250 ms (SET a count, ADD with PutItem, DEL with FUN_00993BC0, USE1 with FUN_007151A0, weapons never removed).
+ * The inventory screen of this PC's human (uGUIInventoryCampaign vtable slot 5 = 0x8FA590, every state of the screen runs inside it) may change the partner's copy:
+ * the stock hand-over; that difference goes to the owner (INVADJ) and is applied there to the real items. */
+enum { EV_W_INV = 0x131, EV_W_INVREQ = 0x132, EV_W_INVADJ = 0x133 };
+static int g_im_on = 1, g_im_log = 200;
+static im_inv g_im_sent;
+static int g_im_full_tx = 1;
+static unsigned g_im_owner_t, g_im_rec_t, g_im_req_t, g_im_gui_t, g_im_batt_t, g_im_batt_held;
+static im_table g_im_tab;
+static uint8_t g_im_seq;
+static unsigned g_im_lastlog[64];   /* per id (& 63): the last log line of a plain count change (Moira's light drains / recharges every 100 ms: run combat4-b) */
+static int im_log_ok(unsigned id, int count_only)
+{
+    unsigned now = GetTickCount(), *t = &g_im_lastlog[id & 63];
+    if (count_only && *t && now - *t < 2000) return 0;
+    *t = now | 1;
+    return 1;
+}
+static unsigned g_im_tx_ev, g_im_tx_full, g_im_rx_ev, g_im_rx_stale, g_im_req_tx, g_im_req_rx, g_im_opn[8], g_im_add_fail, g_im_deferred, g_im_adj_tx, g_im_adj_rx, g_im_gui_calls, g_im_logs, g_im_keepw_logged;
+
+static void im_read(int slot, im_inv *v)
+{
+    memset(v, 0, sizeof *v);
+    unsigned pi = inv_personal(slot), arr[IM_N];
+    if (!pi || !r2_safe_read((void *)(pi + 0xC), arr, sizeof arr)) return;
+    for (unsigned i = 0; i < IM_N; i++) {
+        unsigned e = arr[i], f[6];   /* +4 id, +8, +0xC count, +0x10 stack limit, +0x14, +0x18 */
+        if (!e || !r2_safe_read((void *)(e + 4), f, sizeof f) || !f[0] || f[0] > 0xFFFF) continue;
+        v->e[i].id = (uint16_t)f[0], v->e[i].count = (int32_t)f[2], v->e[i].max = (int32_t)f[3], v->e[i].p18 = f[5];
+    }
+}
+
+static int im_fmt(char *o, int size, const im_inv *v, const uint8_t *idx, int n)
+{
+    int k = 0;
+    o[0] = 0;
+    for (int i = 0; i < n && k < size - 24; i++) {
+        const im_ent *e = &v->e[idx[i] % IM_N];
+        k += snprintf(o + k, size - k, " [%u]%04x x%d", idx[i], e->id, e->id ? (int)e->count : 0);
+    }
+    return k;
+}
+
+static void im_send(int full)
+{
+    im_inv cur;
+    im_read(g_my_slot, &cur);
+    uint8_t idx[IM_N], b[IM_EV_MAX];
+    int n = full ? im_full_list(&cur, idx) : im_changed(&g_im_sent, &cur, idx);
+    if (!full && !n) return;
+    unsigned tnow = GetTickCount();
+    if (!full && !im_send_now(&g_im_sent, &cur, idx, n, tnow, g_im_batt_t)) {   /* a small battery-only change: later (g_im_sent keeps the old value) */
+        g_im_batt_held++;
+        return;
+    }
+    if (full || im_has_battery(&cur, idx, n)) g_im_batt_t = tnow | 1;
+    for (int s0 = 0; s0 < n || (full && s0 == 0); s0 += (int)IM_EV_ENTS) {
+        unsigned cnt = (unsigned)(n - s0) > IM_EV_ENTS ? IM_EV_ENTS : (unsigned)(n - s0), flags = 0;
+        if (full && s0 == 0) flags |= IM_F_BEGIN;
+        if (full && s0 + (int)IM_EV_ENTS >= n) flags |= IM_F_END;
+        w_ev_send(EV_W_INV, b, im_encode(b, g_my_slot, flags, g_im_seq++, &cur, idx + s0, cnt));
+        g_im_tx_ev++;
+    }
+    int count_only = !full && n == 1 && g_im_sent.e[idx[0]].id == cur.e[idx[0]].id && cur.e[idx[0]].id;
+    if (full) g_im_tx_full++;
+    g_im_sent = cur;
+    if (g_im_logs < (unsigned)g_im_log && im_log_ok(n == 1 ? cur.e[idx[0]].id : 0, count_only)) {
+        char t[600];
+        im_fmt(t, sizeof t, &cur, idx, n);
+        g_im_logs++;
+        r2_log(W_LOG "INV sent (%s, my human slot %d, %d entries):%s", full ? "full set" : "change", g_my_slot, n, t);
+    }
+}
+
+static void im_reconcile(unsigned now)
+{
+    unsigned p = player_obj(g_rem_slot), pi = inv_personal(g_rem_slot);
+    if (!p || !pi || !g_im_tab.have || p == player_obj(g_my_slot)) return;
+    im_inv loc;
+    im_read(g_rem_slot, &loc);
+    im_op ops[24];
+    int n = im_plan(&g_im_tab.inv, &loc, &g_im_grace, now, ops, 24);
+    for (int i = 0; i < n; i++) {
+        const im_op *o = &ops[i];
+        unsigned e = o->idx < IM_N ? rd32(pi + 0xC + 4 * o->idx) : 0, ok = 0;
+        int cur = e ? (int)rd32(e + 0xC) : 0;
+        if ((o->op == IM_OP_USE1 || o->op == IM_OP_DEL) && im_is_weapon(o->id)) {   /* the puppet's hand must not hold the object that goes away: the hand rule clears it first */
+            unsigned a1[1] = {p};
+            unsigned hand = do_call(3, 0x6FB060, a1, 1) & 0xFF;
+            if (hand >= 1 && hand <= 3 && equipped_item(p, (int)hand) == o->id) {
+                g_im_deferred++;
+                continue;
+            }
+        }
+        g_im_op++;
+        switch (o->op) {
+        case IM_OP_SET:
+            if (e && rd32(e + 4) == o->id) ok = wr(e + 0xC, &o->n, 4);
+            break;
+        case IM_OP_ADD: {
+            unsigned char out[16];
+            memset(out, 0, sizeof out);
+            g_w_replay++;
+            o_putitem((void *)p, out, (int)o->id, (unsigned)o->n, 0, o->p18, 0);
+            g_w_replay--;
+            ok = out[0];
+            if (!ok) g_im_add_fail++, im_grace_note(&g_im_grace, o->id, now);   /* no room / refused: try again after the grace */
+            break;
+        }
+        case IM_OP_DEL:
+            if (e && rd32(e + 4) == o->id) {
+                unsigned a[3] = {pi, e, 1};
+                do_call(2, 0x993BC0, a, 3);   /* FUN_00993BC0(entry, 1): what the GUI's use and FUN_00995170 do with an empty stack */
+                ok = 1;
+            }
+            break;
+        case IM_OP_USE1: {
+            unsigned a[2] = {p, o->id};
+            do_call(2, 0x7151A0, a, 2);   /* FUN_007151A0(id): the end of a throw (count - 1, removed below 1, the sub-weapon pointer refreshed) */
+            ok = 1;
+            break;
+        }
+        case IM_OP_KEEPW:
+            if (g_im_keepw_logged++ < 10) r2_log(W_LOG "INV mirror: the partner (slot %d) no longer has weapon %04x, my copy keeps it (weapons are never removed by the mirror)", g_rem_slot, o->id);
+            break;
+        }
+        g_im_op--;
+        g_im_opn[o->op & 7]++;
+        if (o->op != IM_OP_KEEPW && g_im_logs < (unsigned)g_im_log && im_log_ok(o->id, o->op == IM_OP_SET)) {
+            static const char *const names[] = {"?", "SET", "ADD", "DEL", "USE1", "KEEPW", "?", "?"};
+            int was = o->op == IM_OP_ADD ? (int)im_total(&loc, o->id) : cur;
+            int now_v = o->op == IM_OP_ADD ? was + (o->n < 0 ? 1 : (int)o->n) : o->op == IM_OP_SET ? (int)o->n : o->op == IM_OP_USE1 ? cur - 1 : 0;
+            g_im_logs++;
+            r2_log(W_LOG "INV mirror: the partner's (slot %d) copy %s item %04x entry [%u] %d -> %d%s (owner's total %d, my copy's before %d)", g_rem_slot, names[o->op & 7], o->id, o->idx, was, now_v, ok ? "" : " FAILED",
+                   (int)im_total(&g_im_tab.inv, o->id), (int)im_total(&loc, o->id));
         }
     }
+}
+
+/* the owner: the partner's inventory screen changed my human's items */
+static void im_apply_adj(const cp_event *e)
+{
+    im_op a[9];
+    int slot = -1, n = im_adj_decode(e->body, e->len, &slot, a, 9);
+    unsigned p = player_obj(g_my_slot), pi = inv_personal(g_my_slot);
+    if (n <= 0 || slot != g_my_slot || !p || !pi) return;
+    g_im_adj_rx++;
+    for (int i = 0; i < n; i++) {
+        im_inv v;
+        im_read(g_my_slot, &v);
+        int before = (int)im_total(&v, a[i].id);
+        if (a[i].n > 0) {
+            unsigned char out[16];
+            memset(out, 0, sizeof out);
+            g_w_replay++;
+            o_putitem((void *)p, out, (int)a[i].id, (unsigned)a[i].n, 0, a[i].p18, 0);
+            g_w_replay--;
+        } else if (!im_is_weapon(a[i].id)) {
+            unsigned args[3] = {pi, a[i].id, (unsigned)-a[i].n};
+            do_call(2, 0x995170, args, 3);   /* FUN_00995170(id, n): remove n of an id over the stacks */
+        } else if (im_is_throwable(a[i].id)) {
+            for (int k = 0; k < -a[i].n; k++) {
+                unsigned args[2] = {p, a[i].id};
+                do_call(2, 0x7151A0, args, 2);
+            }
+        }
+        im_read(g_my_slot, &v);
+        r2_log(W_LOG "INV hand-over from the partner's inventory screen applied to my human (slot %d): item %04x %+d: %d -> %d", g_my_slot, a[i].id, (int)a[i].n, before, (int)im_total(&v, a[i].id));
+    }
+}
+
+typedef void(__attribute__((thiscall)) *invgui_t)(void *self);
+static invgui_t o_invgui;
+static int im_gui_track_ok(void) { return g_im_on && g_w_on && g_cs && cs_active(g_cs) && g_rem_slot >= 0 && g_rem_slot != g_my_slot && w_session_running() && inv_personal(g_rem_slot); }
+/* after an inventory-screen pass (or the LAB hand-over below): what changed in the partner's copy goes to its owner */
+static void im_pw_resync(void);
+static int im_adj_out(const im_op *adj, int n, unsigned self, const char *who);
+static int im_gui_after(const im_inv *before, unsigned self, const char *who)
+{
+    im_inv after;
+    im_read(g_rem_slot, &after);
+    im_op adj[9];
+    int n = im_gui_delta(before, &after, adj, 9);
+    im_pw_resync();   /* flashlive: the per-frame pass watcher must not count this difference again */
+    if (n <= 0) return 0;
+    return im_adj_out(adj, n, self, who);
+}
+static int im_adj_out(const im_op *adj, int n, unsigned self, const char *who)
+{
+    unsigned char b[IM_EV_MAX];
+    w_ev_send(EV_W_INVADJ, b, im_adj_encode(b, g_rem_slot, adj, (unsigned)n));
+    g_im_adj_tx++;
+    unsigned now = GetTickCount();
+    char t[300];
+    int k = 0;
+    t[0] = 0;
+    for (int i = 0; i < n && k < (int)sizeof t - 16; i++) {
+        im_grace_note(&g_im_grace, adj[i].id, now);
+        k += snprintf(t + k, sizeof t - k, " %04x %+d", adj[i].id, (int)adj[i].n);
+    }
+    r2_log(W_LOG "INV hand-over in %s (%08x): the partner's (slot %d) items changed:%s; sent to its owner", who, self, g_rem_slot, t);
+    return n;
+}
+static __attribute__((thiscall)) void h_invgui(void *self)
+{
+    int track = im_gui_track_ok();
+    im_inv before;
+    if (track) im_read(g_rem_slot, &before);
+    o_invgui(self);
+    g_im_gui_calls++, g_im_gui_t = GetTickCount() | 1;
+    if (track) im_gui_after(&before, (unsigned)self, "my inventory screen");
+}
+/* LAB (`net w invm give <hex id> [n]`): the inventory screen's own hand-over calls on my human's item, inside the same tracking: a full stack FUN_009938F0 (a copy into the
+ * partner's inventory) + FUN_00993BC0 (removed from mine) as at 0x8F5185 / 0x8F5191; part of a stack FUN_009934B0(partner, id, n) + my count - n as at 0x8F51A7 */
+static void im_lab_give(unsigned id, int n, char *out, int size)
+{
+    unsigned pm = inv_personal(g_my_slot), pp = inv_personal(g_rem_slot);
+    int idx = inv_find(g_my_slot, id);
+    if (!im_gui_track_ok() || !pm || !pp || idx < 0) {
+        snprintf(out, size, "LAB give: no session / inventory / item %04x in my slot %d (index %d)", id, g_my_slot, idx);
+        return;
+    }
+    unsigned e = rd32(pm + 0xC + 4 * (unsigned)idx);
+    int cnt = (int)rd32(e + 0xC);
+    if (n <= 0 || n > cnt) n = cnt;
+    im_inv before;
+    im_read(g_rem_slot, &before);
+    if (n >= cnt) {
+        unsigned a1[2] = {pp, e}, a2[3] = {pm, e, 1};
+        do_call(2, 0x9938F0, a1, 2);
+        do_call(2, 0x993BC0, a2, 3);
+    } else {
+        unsigned a1[5] = {pp, id, (unsigned)n, 0, 0};
+        do_call(2, 0x9934B0, a1, 5);
+        int left = cnt - n;
+        wr(e + 0xC, &left, 4);
+    }
+    int sent = im_gui_after(&before, 0, "the LAB hand-over");
+    snprintf(out, size, "LAB give %04x x%d (of %d) to the partner (slot %d): ADJ sent for %d ids; partner's copy now %d, mine %d", id, n, cnt, g_rem_slot, sent, inv_find(g_rem_slot, id) >= 0 ? (int)rd32(rd32(pp + 0xC + 4 * (unsigned)inv_find(g_rem_slot, id)) + 0xC) : 0,
+             inv_find(g_my_slot, id) >= 0 ? (int)rd32(rd32(pm + 0xC + 4 * (unsigned)inv_find(g_my_slot, id)) + 0xC) : 0);
+}
+
+/* flashlive (CH1): the per-frame pass watcher (invmirror_logic.h im_pass_delta): the real inventory screen's pass runs outside the vf5 bracket of h_invgui */
+static im_inv g_im_pw_mine, g_im_pw_part;
+static int g_im_pw_have;
+static unsigned g_im_pw_found;
+static void im_pw_resync(void)
+{
+    if (!im_gui_track_ok()) { g_im_pw_have = 0; return; }
+    im_read(g_my_slot, &g_im_pw_mine), im_read(g_rem_slot, &g_im_pw_part), g_im_pw_have = 1;
+}
+static void im_pw_tick(void)
+{
+    if (!im_gui_track_ok()) { g_im_pw_have = 0; return; }
+    im_inv m, pt;
+    im_read(g_my_slot, &m), im_read(g_rem_slot, &pt);
+    if (g_im_pw_have) {
+        im_op adj[9];
+        int n = im_pass_delta(&g_im_pw_mine, &m, &g_im_pw_part, &pt, adj, 9);
+        if (n > 0) g_im_pw_found++, im_adj_out(adj, n, 0, "my inventory screen (pass watcher)");
+    }
+    g_im_pw_mine = m, g_im_pw_part = pt, g_im_pw_have = 1;
+}
+
+static void story_inv_tick(void)
+{
+    if (!g_im_on || !w_session_running() || g_my_slot < 0 || g_rem_slot < 0 || g_my_slot == g_rem_slot) return;
+    unsigned now = GetTickCount();
+    if (now - g_im_owner_t >= 100) {
+        g_im_owner_t = now;
+        int full = g_im_full_tx;
+        g_im_full_tx = 0;
+        im_send(full);
+    }
+    if (!g_im_tab.have && now - g_im_req_t >= 2000) {
+        unsigned char b[1] = {(unsigned char)g_my_slot};
+        g_im_req_t = now;
+        if (cs_send_event(g_cs, EV_W_INVREQ, b, 1)) g_im_req_tx++;
+    }
+    im_pw_tick();   /* flashlive: before the reconcile, which would take a pass back */
+    if (g_im_tab.have && now - g_im_rec_t >= 250) {
+        g_im_rec_t = now;
+        im_reconcile(now);
+        if (g_im_pw_have) im_read(g_rem_slot, &g_im_pw_part);   /* the mirror's own operations are not a hand-over */
+    }
+}
+
+static void im_status(char *out, int size)
+{
+    snprintf(out, size,
+             "inventory mirror %s: sent %u events (%u full sets, battery-only changes held %u), received %u (stale epoch %u, table %s, %u full sets, %u dropped, %u bad), requests tx %u rx %u; ops on the partner's copy: set %u add %u del %u use1 %u keep-weapon %u, add failed %u, deferred %u; GUI hand-overs sent %u received %u (screen calls %u, pass watcher %u); puppet hand: light %u cleared %u",
+             g_im_on ? "on" : "off", g_im_tx_ev, g_im_tx_full, g_im_batt_held, g_im_rx_ev, g_im_rx_stale, g_im_tab.have ? "complete" : "not yet", g_im_tab.n_full, g_im_tab.n_dropped, g_im_tab.n_bad, g_im_req_tx, g_im_req_rx, g_im_opn[IM_OP_SET],
+             g_im_opn[IM_OP_ADD], g_im_opn[IM_OP_DEL], g_im_opn[IM_OP_USE1], g_im_opn[IM_OP_KEEPW], g_im_add_fail, g_im_deferred, g_im_adj_tx, g_im_adj_rx, g_im_gui_calls, g_im_pw_found, g_w_hand_light, g_w_hand_cleared);
 }
 
 /* ---------------------------------------------------------------- the game's sync points (cutscene start barrier) */
@@ -495,6 +824,9 @@ static void w_level_reset(void)
     memset(g_w_item_abs, 0, sizeof g_w_item_abs);
     memset(g_w_item_tried, 0, sizeof g_w_item_tried);
     g_w_item_last_send = 0;
+    im_table_reset(&g_im_tab);   /* combat4: a new level instance (a retry restores each PC's own save): the owner's table is asked for again */
+    memset(&g_im_sent, 0, sizeof g_im_sent), memset(&g_im_grace, 0, sizeof g_im_grace);
+    g_im_full_tx = 1, g_im_req_t = 0;
     w_sm_reset();
 }
 
@@ -512,7 +844,12 @@ static void story_install(int *ok)
     int nd = 0;
     for (int i = 0; i < 3; i++)
         if ((t = w_tramp(demosub_va[i], b_demo[i], 6))) o_demosub[i] = (demosub_t)t, *ok += w_jmp(demosub_va[i], 6, hd[i]), nd++;
-    r2_log(W_LOG "story hooks: PutItem %s, sync-set %s, sync-check %s, demo submits %d of 3", o_putitem ? "yes" : "NO", o_syncset ? "yes" : "NO", o_synccheck ? "yes" : "NO", nd);
+    static const unsigned char b_gui[] = {0x83, 0xEC, 0x10, 0x56, 0x8B, 0xF1};   /* sub esp, 0x10; push esi; mov esi, ecx */
+    if ((t = w_tramp(0x8FA590, b_gui, 6))) o_invgui = (invgui_t)t, *ok += w_jmp(0x8FA590, 6, (void *)h_invgui);
+    char v[8];
+    if (r2_env("REV2_INVMIRROR", v, sizeof v) && v[0] == '0') g_im_on = 0;
+    r2_log(W_LOG "story hooks: PutItem %s, sync-set %s, sync-check %s, demo submits %d of 3, inventory screen %s (mirror %s)", o_putitem ? "yes" : "NO", o_syncset ? "yes" : "NO", o_synccheck ? "yes" : "NO", nd, o_invgui ? "yes" : "NO",
+           g_im_on ? "on" : "off");
 }
 
 static void story_on_event(const cp_event *e)
@@ -536,6 +873,30 @@ static void story_on_event(const cp_event *e)
     case EV_W_SCENE:
         scene_on_chunk(e);
         break;
+    case EV_W_INV:   /* combat4: the owner's entries of its own human */
+        if (e->len >= 4 && b[0] == (unsigned)g_rem_slot && g_im_on) {
+            if (e->epoch != (uint8_t)cs_epoch(g_cs)) {
+                g_im_rx_stale++;
+                break;
+            }
+            int had = g_im_tab.have;
+            if (im_table_apply(&g_im_tab, b, e->len)) g_im_rx_ev++;
+            if (!had && g_im_tab.have && g_im_logs < (unsigned)g_im_log) {
+                uint8_t idx[IM_N];
+                char t[600];
+                int n = im_full_list(&g_im_tab.inv, idx);
+                im_fmt(t, sizeof t, &g_im_tab.inv, idx, n);
+                g_im_logs++;
+                r2_log(W_LOG "INV: the partner's (slot %d) full set received (%d entries):%s", g_rem_slot, n, t);
+            }
+        }
+        break;
+    case EV_W_INVREQ:
+        if (e->epoch == (uint8_t)cs_epoch(g_cs)) g_im_full_tx = 1, g_im_req_rx++;
+        break;
+    case EV_W_INVADJ:
+        if (g_im_on) im_apply_adj(e);
+        break;
     case EV_W_BARRIER:
         if (e->len >= 1 && b[0] == 8) {
             g_w_bar_rx++;
@@ -553,4 +914,6 @@ static void story_status(char *out, int size)
              "story: PutItem %u (pickup tx %u rx %u, grant tx %u rx %u skipped %u, pickup skipped %u), equipment calls %u (item missing %u), cutscene barrier %s (arrived here %u, remote %u, passed %u, timeouts %u, last wait %u ms), flag digests tx %u rx %u applied %u, death scan tx %u, scenes %s tx %u rx %u applied %u skipped %u, item digests tx %u rx %u consumed %u\n",
              g_w_put_n, g_w_put_tx, g_w_put_rx, g_w_grant_tx, g_w_grant_rx, g_w_grant_skip, g_w_pick_skip, g_w_equip_calls, g_w_equip_miss, g_w_barrier ? "on" : "off", g_w_bar_tx, g_w_bar_rx, g_w_bar_passed, g_w_bar_timeouts, g_w_bar_wait_ms,
              g_w_dig_tx, g_w_dig_rx, g_w_dig_applied, g_w_death_tx, g_w_scene ? "on" : "off", g_scene_tx, g_scene_rx, g_scene_applied, g_scene_skip, g_w_item_tx, g_w_item_rx, g_w_item_killed);
+    int o = (int)strlen(out);
+    if (o < size - 400) im_status(out + o, size - o);
 }

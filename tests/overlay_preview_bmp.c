@@ -135,19 +135,36 @@ static void room(lobby_view *v, int lang)
     row(v, stk(LT_MOIRA, lang), "Boris6", LV_GREY);
     row(v, stk(LT_BARRY, lang), "", LV_NORMAL);
     row(v, stk(LT_NATALIA, lang), "", LV_GREY);
-    row(v, stk(LT_EPISODE, lang), "<  1  >", LV_NORMAL);
+    row(v, stk(LT_EPISODE, lang), "1", LV_INFO);   /* 0.2.0: Episode 1 only */
     snprintf(val, sizeof val, "<  %s  >", stk(LT_NORMAL, lang));
     row(v, stk(LT_DIFFICULTY, lang), val, LV_NORMAL);
     row(v, stk(LT_START, lang), "", LV_GREY);
+    row(v, lobby_own_text(LT_KICK, lang), "", LV_NORMAL);   /* 0.2.0: Remove partner */
     row(v, stk(LT_LEAVE, lang), "", LV_NORMAL);
     v->sel = 5;
     v->nplayers = 2;
     snprintf(v->players[0].name, sizeof v->players[0].name, "Alisa77"), snprintf(v->players[0].chr, sizeof v->players[0].chr, "%s", stk(LT_CLAIRE, lang));
     v->players[0].host = 1, v->players[0].me = 1, v->players[0].ping = -1;
     snprintf(v->players[1].name, sizeof v->players[1].name, "Boris6"), snprintf(v->players[1].chr, sizeof v->players[1].chr, "%s", stk(LT_MOIRA, lang));
-    v->players[1].ready = 1, v->players[1].ping = 12;
-    snprintf(v->status, sizeof v->status, "%s", lobby_own_text(LT_NEED_READY, lang));
+    v->players[1].ready = 0, v->players[1].ping = 12;
+    lobby_format(lobby_own_text(LT_HOST_WAIT_READY, lang), "Boris6", NULL, v->status, sizeof v->status);   /* 0.2.0 waiting line */
     snprintf(v->note, sizeof v->note, "%s", lobby_own_text(LT_SAVE_WARN, lang));
+    {   /* 0.2.0 info block: Episode 1 only + the System Link host's port hint */
+        char hint[400];
+        lobby_format(lobby_own_text(LT_HOST_NET_HINT, lang), "28410", NULL, hint, sizeof hint);
+        snprintf(v->info, sizeof v->info, "%s%c%s", lobby_own_text(LT_EP1_ONLY, lang), 10, hint);
+    }
+}
+
+/* 0.2.0: the host's "Remove partner" question (the game's own m19 #45 in the game; the preview has its English fallback unless the word table holds it) */
+static void kickask(lobby_view *v, int lang)
+{
+    room(v, lang);
+    v->nrows = 0;
+    lobby_format(stk(LT_KICK_ASK, lang), "Boris6", NULL, v->prompt, sizeof v->prompt);
+    row(v, stk(LT_YES, lang), "", LV_NORMAL), row(v, stk(LT_NO, lang), "", LV_NORMAL);
+    v->sel = 1;
+    v->status[0] = 0, v->info[0] = 0, v->note[0] = 0;
 }
 
 static void top(lobby_view *v, int lang)
@@ -202,12 +219,13 @@ int main(int argc, char **argv)
     static ov_scene sc;
     for (int lang = 0; lang < 12; lang++) {
         if (only && strcmp(only, codes[lang])) continue;
-        for (int k = 0; k < 4; k++) {
+        for (int k = 0; k < 5; k++) {
             if (k > 0 && lang != 0 && lang != 5 && lang != 8) continue;   /* the other screens in en / ru / ja only */
             memset(&sc, 0, sizeof sc);
             sc.lang = lang, sc.tick_ms = 600;
-            const char *name = k == 0 ? "room" : k == 1 ? "top" : k == 2 ? "ip" : "friends";
+            const char *name = k == 0 ? "room" : k == 1 ? "top" : k == 2 ? "ip" : k == 3 ? "friends" : "kickask";
             if (k == 0) room(&sc.v, lang);
+            else if (k == 4) kickask(&sc.v, lang);
             else if (k == 1) top(&sc.v, lang);
             else if (k == 2) ipin(&sc.v, lang);
             else friends(&sc.v, lang);

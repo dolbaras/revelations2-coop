@@ -34,17 +34,28 @@ client                                host
   | ---- (transport connect) ---------> |
   | -- HELLO{magic,version,min,exe,..} ->|   host: lo=max(min,PROTO_MIN) hi=min(version,PROTO_VERSION); lo>hi -> REFUSE(VERSION)
   |                                      |          exe tags both non-zero and different -> REFUSE(BUILD)
-  |                                      |          game started and not a known name -> REFUSE(STARTED); no free seat -> REFUSE(FULL)
-  | <-- WELCOME{version,pid,session,lobby,phase,epoch}                           otherwise: seat, character, then
+  |                                      |          mod versions both non-empty and different, neither a bot -> REFUSE(MODVER) (0.2.0)
+  |                                      |          a name removed from this session -> REFUSE(REMOVED) (0.2.0)
+  |                                      |          game started and (product, 0.2.0) anybody / (lab rejoin) not a known name -> REFUSE(STARTED); no free seat -> REFUSE(FULL)
+  | <-- WELCOME{version,pid,session,lobby,phase,epoch,mod}                       otherwise: seat, character, then
   | <-- LOBBY_STATE (to the others)       |
+  | client: WELCOME.mod != its own (an older host sends none) and neither is a bot -> LEAVE, the player sees REFUSED(MODVER)
 ```
 
 - `HELLO` carries `magic 'R2CP'`, the sender's `version` and the oldest version it still speaks (`min_version`), the first 8 bytes of the game
   exe's SHA-256 (`exe_tag`; zeros = unknown, the bot) and the mod build string. The negotiated version is `min(both versions)`; today `CP_PROTO_MIN` = `CP_PROTO_VERSION` = 2 (version 1 had a 40-byte STATE: a version 1 build is refused with `REFUSE(VERSION)`).
 - A host that has not received a `HELLO` 5 s after the transport connected drops the peer; a client that has no `WELCOME`/`REFUSE` after 10 s gives up.
 - `REFUSE` is followed by a graceful disconnect from the host. Anything but `HELLO` before the welcome is dropped.
-- **Re-join**: after the start, a `HELLO` whose name equals that of a disconnected player gets the same pid and character back; the host then opens a new
-  load epoch and the barrier waits for the returning player. Strangers are refused with `STARTED`.
+- **No join after the start (0.2.0 product rule, `cs_config.no_rejoin`, the glue sets it unless `REV2_REJOIN=1`)**: every `HELLO` after `START` is refused with
+  `STARTED` ("joining a running game is not possible in this version"), also a known name, and no seat is taken over from a silent link (a stranger never touches a
+  running game). A client with the rule that is welcomed into a running game anyway (a lab host) sends `LEAVE` at once and reports `REFUSED(STARTED)`.
+- **Re-join (lab, `REV2_REJOIN=1`)**: after the start, a `HELLO` whose name equals that of a disconnected player gets the same pid and character back; the host then opens a new
+  load epoch and the barrier waits for the returning player. Strangers are refused with `STARTED`. If the transport has not yet noticed that the old link is dead
+  (a crash and a quick restart), a `HELLO` with the name of a seat that has sent nothing for 3 s drops the old link first (`PEER_LEAVE` b = 2), in the lobby too.
+- **Package version (0.2.0)**: both PCs need the same release version of the mod (`HELLO.mod` / `WELCOME.mod` = `R2_VERSION`). The host refuses another one with
+  `REFUSE(MODVER)` whose English text names both versions (what an older client shows); `REFUSE` and `WELCOME` carry the host's version as an optional tail
+  (decoded as "" when missing, see 1), so a newer client shows its own text in the player's language and leaves an older host that does not check. The headless bot
+  (`flags` BOT in `HELLO`, and in `WELCOME` when the host is one) and an empty version are not checked. The protocol version itself did not change for this.
 
 ## 4. Messages
 
@@ -53,8 +64,8 @@ Offsets are within the message, type byte = offset 0.
 | Type | Name | Channel | Direction | Layout (after the type byte) |
 |---|---|---|---|---|
 | 0x01 | HELLO | 0 R | c -> h | `u32 magic` `u16 version` `u16 min_version` `u8[8] exe_tag` `u8 want_char` `u8 flags` `str name` `str mod` |
-| 0x02 | WELCOME | 0 R | h -> c | `u16 version` `u8 pid` `u8 flags` `u32 host_ms` `u8 phase` `u8 epoch` `session` `lobby` |
-| 0x03 | REFUSE | 0 R | h -> c | `u8 code` `str text` (1 version, 2 build, 3 full, 4 started, 5 bad, 6 modver) |
+| 0x02 | WELCOME | 0 R | h -> c | `u16 version` `u8 pid` `u8 flags` (BOT = the host is a bot) `u32 host_ms` `u8 phase` `u8 epoch` `session` `lobby` [`str mod`: the host's mod version, 0.2.0] |
+| 0x03 | REFUSE | 0 R | h -> c | `u8 code` `str text` (1 version, 2 build, 3 full, 4 started, 5 bad, 6 modver, 7 removed: 0.2.0) [`str mod`: the host's mod version, 0.2.0] |
 | 0x04 | SESSION | 0 R | h -> all | `session` (the host changed the settings) |
 | 0x05 | LOBBY_PICK | 0 R | c -> h | `u8 character` |
 | 0x06 | LOBBY_READY | 0 R | c -> h | `u8 ready` |
@@ -66,7 +77,7 @@ Offsets are within the message, type byte = offset 0.
 | 0x12 | GO | 0 R | h -> all | `u8 epoch` |
 | 0x20 | EVENT | 0 R | any -> all | `u8 pid` `u16 kind` `u16 eseq` `u32 t_ms` `u8 epoch` `u8 len` `u8[len] body` (len <= 96) |
 | 0x30 | HEARTBEAT | 1 U | any -> any | `u8 pid` `u32 t_ms` `u32 echo_t_ms` `u32 echo_dwell_ms` `u8 phase` `u8 epoch` `u16 state_seq` |
-| 0x3F | LEAVE | 0 R | any -> any | `u8 reason` |
+| 0x3F | LEAVE | 0 R | any -> any | `u8 reason` (0.2.0: 0 quit, 2 removed by the host, 3 the host ended co-op, 4 the end of the co-op episode; older peers send 0) |
 | 0x50 | STATE | 1 U | any -> all | 60 bytes, see 4.1 |
 | 0x51 | WORLD | 1 U | any -> all | stage 6, additive (no version change: an older peer drops an unknown type): `u8 pid` `u8 kind` `u16 seq` `u32 t_ms` `u8 epoch` `u16 len` `u8[len] body` (len <= 400); newer sequence only, other epochs dropped, relayed by the host. Bodies and the world events (kinds `0x120..0x12A`: SPAWN HIT DEATH PICKUP PDMG FLAG SCENE GRANT BARRIER; WORLD kinds 1 enemy records, 2 flag table digest, 3 item liveness digest): `world.md` |
 
@@ -121,7 +132,11 @@ from the console. Planned kinds and bodies (all little endian; ids are the game'
 | 9 | CUTSCENE | `u32 id` `u8 op` (0 start, 1 end, 2 skip vote) |
 | 10 | STAT | `u16 stat_id` `i32 delta` (per-player statistics for achievements) |
 | 11 | TEXT | UTF-8 text (console `net say`) |
-| 0x100+ | USER | free for tests. In use: `0x120..0x12D` world events (`world.md`; `0x12C` SF: `i32 area` `u16 flag index` `u8 value`, a scenario flag was set / cleared on the sender, stage 6e, off unless `net w sf sync 1|2`; `0x12D` BGL, stage 6j: `u8 count` (0..5), then `count` x (`i16 episode` `u16 stage` `u16 block`) = the sender's OWN block streamer list, sent when it changes and every 3 s while a session runs; the receiver merges it into the free slots of its list so that its streamer keeps the sender's blocks, `net w bgl mirror 0|1`), `0x150` ACH_BUMP (stage 8b, host -> client, reliable): `u8 kind` `u8 n` `u16 seq` `u32 tick`: "your human caused stat bump `kind` x`n` where only my enemies could see it" (`achievements.md`); the client replays the game's own bump and record check for its human unless its own code bumped the same kind within the dedupe window (1.5 s). `0x151..0x15F` reserved. |
+| 0x100+ | USER | free for tests. In use: `0x120..0x12F` world events (`world.md`; `0x12C` SF: `i32 area` `u16 flag index` `u8 value`, a scenario flag was set / cleared on the sender, stage 6e, on in a session (`net w sf sync 1|2`); stage 10: index 0..511, `area` 99 = an EpisodeFlag (global flag 99000 + index); `0x12E` PROP (stage 10): `i32 a` `u16 b` `u16 c` `u8 flags` `u8 slot` `u16 seq` `f32 pos[3]` `f32 quat[4]` `i32 action` = the transform of a movable set model the sender's human pushes or carries; `0x12F` SF digest (stage 10): `i32 area` `u8 kind` `u8 words` `u32 words[16]` = every flag set on the sender at the end of its quiet window after a load; `0x129` DOOR got an optional tail for co-op set models (`f32 pos[3]` `u8 kind`, 31 bytes): an older peer reads the first 18 bytes, ignores the unknown kinds 0x12E / 0x12F and drops the SF events of area 99 as another area (no version change); `0x12D` BGL, stage 6j: `u8 count` (0..5), then `count` x (`i16 episode` `u16 stage` `u16 block`) = the sender's OWN block streamer list, sent when it changes and every 3 s while a session runs; the receiver merges it into the free slots of its list so that its streamer keeps the sender's blocks, `net w bgl mirror 0|1`), `0x130` HITDI (0.2.0 MHIT, client -> host, reliable, 96 bytes): `i32 a` `u16 b` `u16 c` `u8 slot` `u8 part` `i32 damage` `u32 flags[3]` `i16 rel[3]` (hit point minus the enemy position, 0.1 units) `f32 dir[3]` `u32 +0x110` `u16 +0x114` `u32 +0xE0` `u8 +0xE4` `u8 +0xE5` `u32 +0x264` `u16 +0xA0` `u16 +0x80` `f32 +0xAC[6]` `f32 +0xA8` `u32 +0x98` = a real blow of the sender's human on a replica (the DamageInfo fields of the game's own Raid compact pair FUN_00ADDCD0 / FUN_00ADC650); the host runs its enemy's hit handler with it (`world.md`, MHIT); an older host ignores the unknown kind, `0x131` INV (combat4, reliable, any -> other): `u8 owner slot` `u8 flags` (1 first event of a full set: the table is cleared, 2 last event: complete) `u8 seq` `u8 n` then n x (`u8 index` `u16 item id` `i32 count` `u32 +0x18`) = entries of the sender's OWN human's personal inventory (changes; a full set on request), the receiver reconciles its copy of that slot, `0x132` INVREQ (`u8 sender slot`): ask the owner for a full set (every 2 s until complete, events of another epoch are dropped), `0x133` INVADJ (`u8 owner slot` `u8 n` then n x (`u16 item id` `i32 delta` `u32 +0x18`)): the sender's inventory screen changed the owner's items (the hand-over), the owner applies the delta to its real items, `0x134` THROW (`u8 thrower slot` `u8 throw number` (bomb, 1..255; 0 from an older peer) `u16 item id` `f32 vectors[4][3]`): the sender's human launched a projectile (the vectors of the stock launch), the receiver creates the same object for the thrower's puppet; older peers ignore all four, `0x135` BOOM (bomb, reliable, thrower -> other, 16 bytes): `u8 thrower slot` `u8 throw number` `u16 item id` `f32 pos[3]` = the sender's bomb of that throw explodes there (hook on the Raid sender FUN_009F6EF0); the receiver moves its copy of that throw there and starts the copy's explosion (action 8, as the Raid receiver FUN_009E07E0 does), for the eye only: the copy's blows are dropped on the host and never MHIT on a client; an older peer ignores it, `0x150` ACH_BUMP (stage 8b, host -> client, reliable): `u8 kind` `u8 n` `u16 seq` `u32 tick`: "your human caused stat bump `kind` x`n` where only my enemies could see it" (`achievements.md`); the client replays the game's own bump and record check for its human unless its own code bumped the same kind within the dedupe window (1.5 s). `0x151..0x15F` reserved. |
+
+Downed / revive events (stage 9, `downed-revive.md`, reliable, only while the session flag `CP_SESS_DOWNED` = bit 0 of `session.flags` is set; bits 1..2 of the same byte are the bleed-out preset): kinds `0x160` DOWN, `0x161` DEAD, `0x162` BEGIN,
+`0x163` KEEPALIVE, `0x164` CANCEL, `0x165` DONE (`CP_EV_USER + 0x60..0x65`); body `u8 sender slot` `u8 target slot (255 = none)`. `STATE` flag bit 128 (`CP_SF_DOWN`, reserved since version 2) is set while the sender lies. An older peer drops the unknown kinds
+and ignores the flag: no version change.
 
 ## 5. Lobby, start, barrier
 
@@ -138,6 +153,11 @@ reporting itself loaded at once. States of another epoch are dropped (counted as
 The game glue uses the barrier to flip the puppet slot to AI (type 1) for the length of a local load (a type-2 slot stalls the level load, stage 3 trap)
 and back to type 2 at `GO`.
 
+**Leave reasons (0.2.0)**: the host's `LEAVE` reaches a client as `CS_N_LOST` a = 1, b = the reason; a client's `LEAVE` with reason 4 reaches the host as `PEER_LEAVE`
+b = 4. **Remove partner / End Co-Op**: `cs_kick(pid, reason)` (host): `LEAVE{2 | 3}` to that one client, a graceful disconnect of it, `PEER_LEAVE` b = 3 on the host at
+once; reason 2 (in the room) puts the name on the session's removed list (`REFUSE(REMOVED)` until the session ends). A client whose join timed out without an answer
+reports `REFUSED` a = `CS_REF_NOANSWER` (100, local only); a backend's own failure (Steam) keeps a = 0 and its text.
+
 **Leave**: `LEAVE{reason}` then a graceful disconnect. Before the start a leaving player's seat is freed; after it the seat is kept (`connected` cleared) so the same
 name can return. A lost host ends the session on the clients (`CS_N_LOST`); the glue turns the puppet into the game's AI partner and the game goes on single player.
 
@@ -146,6 +166,12 @@ name can return. A lost host ends the session on the clients (`CS_N_LOST`); the 
 - `HEARTBEAT` every 500 ms to every peer on channel 1: `t_ms` (sender clock), the last heartbeat time received from the peer and how long ago it arrived
   (`echo_*`): RTT = `now - echo_t_ms - echo_dwell_ms` (smoothed 0.8/0.2). Receive times are taken on the **network thread** when the packet arrives, not when the game
   thread gets to it.
+- **Silence** (0.2.0): heartbeats and states are sent from the game thread, and the game runs its logic only while its window is active (`stage2a.md` 1), so a player in
+  Alt-Tab, a stalled PC (the owner's PC stalls up to ~90 s) or a hung game sends nothing while its transport stays up (ENet on its own thread, Steam pings). The host
+  watches every client, a client its host: no message of any kind for 8 s raises `CS_N_SILENT` (a = seconds, b = the limit; then every 10 s, a = 0 when heard again,
+  b = how long it lasted) and a log line; after **10 minutes** the session gives up on it: the host drops that link and keeps the seat (`PEER_LEAVE` a = 1, b = 1; the player
+  may join again), a client closes its session (`LOST` a = 2 "no answer from the host for 600 s"). So no wait of the session (also not a client's barrier) lasts for ever.
+  A real crash ends the link through the transport much sooner. A client told by `LEAVE` that the host left reports `LOST` a = 1 "the host left the session".
 - Clock offset per remote player: `off = min over time of (local_rx - sender_t_ms)` (minimum filter, creeping up 0.1 ms/s for drift; computed relative to the first
   sample so machines with days of difference in uptime work). The shown time is `local_now - off - interp_delay` (default 100 ms, `REV2_NET_INTERP`).
 - `cs_remote_sample` returns the state at that time: position and aim vector linear, yaw and aim angle along the short arc, discrete fields (action, hp, weapon, flags)
@@ -166,7 +192,11 @@ name can return. A lost host ends the session on the clients (`CS_N_LOST`); the 
   Peers are small integers: the host sees its clients as 1..3, a client sees the host as 0. The backend must deliver CONNECT / DISCONNECT / RECEIVE and notice dead peers itself.
   The Steam design is in `steam-transport.md`.
 - Untrusted input: every field is range-checked on decode; a client can only speak for its own pid (`STATE`, `EVENT`); a flood of unreliable messages while the game thread is
-  busy is bounded (the inbox keeps the newest 256 states).
+  busy is bounded (the inbox keeps the newest 256 unreliable messages).
+- While this game's loop is away (a level load, a lost D3D device, a pause or a stall) the network thread keeps receiving; the unreliable messages beyond the newest 256 are
+  dropped here. They are counted as `expired` (per player and epoch for STATE), never as `gap`: `gap` is loss on the way only. `net status` shows
+  `... gap=N stale=N expired=N` per player and `; expired here N (M states), loop away K x, longest X s` on the transport line, and the log says once per stall of >= 3 s
+  "this game's loop did not run for X s ...". (Steam run M3, 2026-11-08: the guest's device was lost for 60-75 s and `gap=1384` was all expiry; notes/steamgap.md.)
 
 ## 8. Test vectors
 

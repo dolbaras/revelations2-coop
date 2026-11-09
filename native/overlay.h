@@ -25,6 +25,7 @@ int overlay_row_at_client(int px, int py, int client_w, int client_h, int *vx, i
 void overlay_set_mode(int mode);
 void overlay_set_trace(int frames);
 int overlay_available(void);        /* d3dx9_43.dll and its two functions are there */
+int overlay_banner_measure(const char *utf8, int lang, int bb_w, int bb_h, int *room);   /* tests: text width in the strip's font, *room = what the strip leaves for it */
 unsigned overlay_frames(void);       /* frames drawn so far (the lobby gives up when none appears) */
 /* statistics for the console: frames drawn, resource creation failures */
 void overlay_stats(char *out, int size);

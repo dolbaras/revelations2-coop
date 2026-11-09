@@ -51,6 +51,8 @@ struct cn_t {
     qout *out_head, *out_tail;
     qin *in_head, *in_tail;
     int in_unrel;
+    uint32_t exp_state[CP_MAX_PLAYERS];   /* (steamgap) STATE messages of each player dropped from the inbox and not yet taken by the session ... */
+    uint8_t exp_epoch[CP_MAX_PLAYERS];    /* ... and the level instance they belong to (a drop of another epoch starts the count again) */
     int connected[CN_MAX_PEERS];
     uint32_t last_rx[CN_MAX_PEERS];
     cn_stats stats;
@@ -101,12 +103,44 @@ void cn_free(cn_t *c)
 void cn_set_clock(cn_t *c, uint32_t (*fn)(void *), void *user) { c->clock = fn, c->clock_user = user; }
 static uint32_t now(cn_t *c) { return c->clock ? c->clock(c->clock_user) : cn_now_ms(); }
 
+/* (steamgap, 2026-11-08) an unreliable message that arrived is dropped because the game thread did not collect it. Run M3 (m3c way c, m3d way a): the guest's
+ * D3D device was lost for 60-75 s at a time (the game runs no logic then, so cs_poll did not run) while the network thread went on receiving; the session later
+ * saw the jump of the host's state sequence and counted it all as network loss ("gap=1384" with 99 % of the packets received). The dropped STATE messages are
+ * counted per player and level instance so the session can tell them from loss on the way (cn_take_expired_states). */
+static void note_expired(cn_t *c, const uint8_t *data, size_t len)
+{
+#ifndef R2_MODEL_BEFORE_STEAMGAP
+    c->stats.expired++;
+    cp_msg m;
+    if (!cp_decode(data, len, &m) || m.type != CP_STATE || m.u.state.pid >= CP_MAX_PLAYERS) return;
+    int p = m.u.state.pid;
+    if (c->exp_epoch[p] != m.u.state.epoch) c->exp_epoch[p] = m.u.state.epoch, c->exp_state[p] = 0;
+    c->exp_state[p]++;
+    c->stats.expired_state++;
+#else
+    (void)c, (void)data, (void)len;
+#endif
+}
+
+uint32_t cn_take_expired_states(cn_t *c, int pid, unsigned epoch, uint32_t max)
+{
+    if (pid < 0 || pid >= CP_MAX_PLAYERS || !max) return 0;
+    uint32_t n = 0;
+    EnterCriticalSection(&c->lock);
+    if (c->exp_epoch[pid] == (uint8_t)epoch) {
+        n = c->exp_state[pid] < max ? c->exp_state[pid] : max;
+        c->exp_state[pid] -= n;
+    }
+    LeaveCriticalSection(&c->lock);
+    return n;
+}
+
 static void inbox_push(cn_t *c, int type, int peer, int channel, uint8_t *data, size_t len, uint32_t t_ms)
 {
     qin *n = (qin *)calloc(1, sizeof *n);
     n->ev.type = type, n->ev.peer = peer, n->ev.channel = channel, n->ev.data = data, n->ev.len = len, n->ev.t_ms = t_ms;
     if (type == CN_EV_RECEIVE && channel == CP_CH_STATE) {
-        if (c->in_unrel >= 256) {   /* the game thread is away (level load): drop the oldest unreliable message */
+        if (c->in_unrel >= 256) {   /* the game thread is away (level load, lost display device, pause): drop the oldest unreliable message */
             qin **pp = &c->in_head;
             while (*pp && !((*pp)->ev.type == CN_EV_RECEIVE && (*pp)->ev.channel == CP_CH_STATE)) pp = &(*pp)->next;
             if (*pp) {
@@ -116,6 +150,7 @@ static void inbox_push(cn_t *c, int type, int peer, int channel, uint8_t *data, 
                     c->in_tail = NULL;
                     for (qin *q = c->in_head; q; q = q->next) c->in_tail = q;
                 }
+                note_expired(c, d->ev.data, d->ev.len);
                 free(d->ev.data);
                 free(d);
                 c->in_unrel--;
@@ -201,6 +236,7 @@ static int start_common(cn_t *c, const cn_ops *ops, int role, int threaded)
     c->ops = ops, c->role = role, c->threaded = threaded;
     memset(c->connected, 0, sizeof c->connected);
     memset(&c->stats, 0, sizeof c->stats);
+    memset(c->exp_state, 0, sizeof c->exp_state), memset(c->exp_epoch, 0, sizeof c->exp_epoch);
     if (threaded) {
         c->running = 1;
         c->thread = CreateThread(NULL, 0, net_thread, c, 0, NULL);
@@ -279,6 +315,7 @@ void cn_stop(cn_t *c)
     qin *q;
     while ((q = c->in_head) != NULL) { c->in_head = q->next; free(q->ev.data); free(q); }
     c->in_tail = NULL, c->in_unrel = 0;
+    memset(c->exp_state, 0, sizeof c->exp_state), memset(c->exp_epoch, 0, sizeof c->exp_epoch);
     LeaveCriticalSection(&c->lock);
 }
 

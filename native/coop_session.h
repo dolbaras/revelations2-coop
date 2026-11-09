@@ -20,10 +20,14 @@ typedef struct cs_t cs_t;
 
 enum cs_notify {
     CS_N_CONNECTED = 1,    /* client: the host accepted us (pid = our pid) */
-    CS_N_REFUSED,          /* client: refused or no answer (text, a = cp_refuse_code or 0) */
-    CS_N_LOST,             /* the connection to the host is gone / session ended (text) */
+    CS_N_REFUSED,          /* client: refused or no answer (text, a = cp_refuse_code, CS_REF_NOANSWER or 0 (a backend's own reason, e.g. Steam), peer_mod = the host's mod
+                              version when it sent one); a = CP_REF_MODVER also when this client left a host whose WELCOME names another mod version ("" = a host older
+                              than that field); a = CP_REF_STARTED also when a no_rejoin client was welcomed into a running game */
+    CS_N_LOST,             /* the connection to the host is gone / session ended (text; a = 1 the host left on purpose (b = its LEAVE reason, enum cp_leave_reason),
+                              2 the host was silent for the limit, 0 transport) */
     CS_N_PEER_JOIN,        /* pid joined the lobby / reconnected */
-    CS_N_PEER_LEAVE,       /* pid left or was lost (a = 1 when lost without goodbye) */
+    CS_N_PEER_LEAVE,       /* pid left or was lost (a = 1 when lost without goodbye; b = 1 given up after the silence limit, 2 its old link was replaced by a new
+                              connection of the same player, 3 removed by this host (cs_kick), 4 it left because its game reached the end of the episode) */
     CS_N_LOBBY,            /* lobby table changed */
     CS_N_SESSION,          /* session settings changed */
     CS_N_START,            /* the host started the game: characters are final */
@@ -31,17 +35,26 @@ enum cs_notify {
     CS_N_GO,               /* barrier open: every player finished loading (a = epoch) */
     CS_N_EVENT,            /* ev = a game event from another player */
     CS_N_NOTICE,           /* host notice for us (text) */
-    CS_N_WAIT              /* stage 6i: this machine has finished loading and still waits for the barrier (a = seconds waited, b = the barrier limit in seconds (host) or 0, pid = who is awaited, text = his name) */
+    CS_N_WAIT,             /* stage 6i: this machine has finished loading and still waits for the barrier (a = seconds waited, b = the barrier limit in seconds (host) or 0, pid = who is awaited, text = his name) */
+    CS_N_SILENT            /* nothing at all has come from pid for a while (its game paused / in the background, a long load or a stall; the link itself is up):
+                              a = seconds of silence (first after 8 s, then every 10 s), b = the limit in seconds after which the session gives up on it, text = name;
+                              a = 0: pid is heard again (b = how long it was silent) */
 };
+
+/* CS_N_REFUSED a when the host never answered (direct address: nobody listens / the connect timed out / no WELCOME in time); not a wire code */
+#define CS_REF_NOANSWER 100
+/* CS_N_PEER_LEAVE b */
+enum { CS_GONE_LEFT = 0, CS_GONE_SILENT = 1, CS_GONE_REPLACED = 2, CS_GONE_REMOVED = 3, CS_GONE_EP_END = 4 };
 
 typedef struct {
     int what, pid, a, b;
     const char *text;
     const cp_event *ev;
+    const char *peer_mod;  /* CS_N_REFUSED: the host's mod version ("" unknown); NULL otherwise */
 } cs_note;
 
 typedef struct {
-    const char *name;                 /* player name shown in the lobby */
+    const char *name;                 /* player name shown in the lobby ("" = "Player 1" when hosting, "Player 2" when joining) */
     int want_char;                    /* CP_CHAR_* or CP_CHAR_NONE */
     uint8_t exe_tag[8];               /* first 8 bytes of the exe SHA-256; zeros = skip the build check (bot) */
     const char *mod_version;
@@ -51,11 +64,16 @@ typedef struct {
     void (*on_note)(void *user, const cs_note *n);
     void *user;
     int interp_delay_ms;              /* 0 = default 100 */
+    int no_rejoin;                    /* 0.2.0 product rule (1): nobody joins after the start, not even a known name (no seat take-over, REFUSE(STARTED)); a client that
+                                         is welcomed into a running game leaves at once. 0 = the lab's rejoin (a known name gets its seat back) */
 } cs_config;
 
 typedef struct {
-    uint32_t tx_state, rx_state, rx_dup, rx_old, rx_stale_epoch, rx_gap;   /* summed over remote players */
+    uint32_t tx_state, rx_state, rx_dup, rx_old, rx_stale_epoch, rx_gap;   /* summed over remote players; rx_gap = states lost on the way */
     uint32_t tx_event, rx_event, rx_bad, hb_rx;
+    /* (steamgap) rx_expired: states that arrived while this game's loop was away and were dropped from the inbox (only the newest are kept): never part of rx_gap.
+     * away_n / away_max_ms: how often this game's loop did not poll the session for >= 3 s (a level load, a lost display device, a pause) and the longest time */
+    uint32_t rx_expired, away_n, away_max_ms;
 } cs_stats;
 
 typedef struct {
@@ -64,6 +82,7 @@ typedef struct {
     uint8_t character, ready, flags, loaded;
     int rtt_ms;                       /* -1 unknown */
     uint32_t rx, dup, old, stale, gap;
+    uint32_t expired;                 /* (steamgap) see cs_stats.rx_expired */
 } cs_player_info;
 
 /* result of cs_remote_sample */
@@ -74,7 +93,11 @@ void cs_free(cs_t *s);
 
 int cs_host(cs_t *s, const char *transport, int port, int threaded, char *err, size_t esz);
 int cs_join(cs_t *s, const char *transport, const char *target, int threaded, char *err, size_t esz);
-void cs_leave(cs_t *s, int reason);                    /* LEAVE + close the transport; the session object stays usable */
+void cs_leave(cs_t *s, int reason);                    /* LEAVE + close the transport; the session object stays usable (reason: enum cp_leave_reason) */
+/* host only: end the link of one player with LEAVE(reason) (CP_LEAVE_REMOVED in the room: the name is refused with REFUSE(REMOVED) until the session ends;
+ * CP_LEAVE_END_COOP after the start: the host plays on alone). PEER_LEAVE b = CS_GONE_REMOVED follows at once. 1 = done */
+int cs_kick(cs_t *s, int pid, int reason);
+int cs_join_stage(cs_t *s);                            /* client: 0 not joining, 1 the transport connects, 2 HELLO sent (awaiting the host's reply) */
 
 void cs_poll(cs_t *s);                                 /* drain the transport, run timers (heartbeat, deadlines, barrier timeout) */
 

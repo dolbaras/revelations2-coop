@@ -11,7 +11,7 @@
 #include "lobby.h"
 
 enum {
-    A_NONE = 0, A_HOST, A_JOIN, A_BACK, A_FRIEND, A_LINK, A_REFRESH, A_EPISODE, A_DIFF, A_READY, A_START, A_LEAVE, A_YES, A_NO, A_INVITE,
+    A_NONE = 0, A_HOST, A_JOIN, A_BACK, A_FRIEND, A_LINK, A_REFRESH, A_EPISODE, A_DIFF, A_DOWNED, A_READY, A_START, A_LEAVE, A_YES, A_NO, A_INVITE, A_KICK,
     A_CHAR = 20,        /* + CP_CHAR_* (20..23) */
     A_FRIEND_ENTRY = 40 /* + index */
 };
@@ -38,7 +38,8 @@ struct lobby {
     struct { char label[96]; char cmd[48]; } fr[MAX_FR];
     int nfr, fr_done;
     char note_text[160];
-    int note_what, note_new;
+    int note_what, note_new, note_a, note_b, note_pid;
+    char target[64];                          /* what the guest connects to (the address, or the friend's name): "Connecting to <target>..." */
     char addr[64];
     int prev_ready_partner;
     char ask_from;                            /* the room the leave question came from */
@@ -79,8 +80,9 @@ void lobby_set_settings(lobby_t *l, const lobby_settings *s)
     l->set = *s;
     if (l->set.character < 0 || l->set.character > 3) l->set.character = CP_CHAR_CLAIRE;
     if (l->set.port <= 0 || l->set.port > 65535) l->set.port = 28410;
-    if (l->set.episode < 1 || l->set.episode > 4) l->set.episode = 1;
+    if (l->set.episode < 1 || l->set.episode > 4 || !l->set.episodes_all) l->set.episode = 1;   /* 0.2.0: Episode 1 only (the lab's REV2_EPISODES=all keeps 1-4) */
     if (l->set.difficulty < 0 || l->set.difficulty > 3) l->set.difficulty = 1;
+    l->set.sflags &= 7;
 }
 
 void lobby_get_settings(lobby_t *l, lobby_settings *s) { *s = l->set; }
@@ -152,6 +154,12 @@ static void get_facts(lobby_t *l, facts *f)
     }
     f->connected = f->pid >= 0 && f->has[f->pid];
 }
+
+/* a player's name as shown: the default names "Player 1" / "Player 2" in the player's language */
+static const char *shown_name(lobby_t *l, const char *wire, char *out, size_t size) { return lobby_display_name(wire, tx(l, LT_PLAYER), out, size); }
+
+/* 0.2.0: a session of another episode than 1 is not played (the lab's REV2_EPISODES=all is) */
+static int episode_ok(lobby_t *l, const facts *f) { return l->set.episodes_all || !f->active || f->ss.episode == 0 || f->ss.episode == 1; }
 
 static int slot_taken_by_partner(const facts *f, int character)
 {
@@ -244,10 +252,9 @@ int lobby_session_running(cs_t *s)
 
 void lobby_note(lobby_t *l, int what, int pid, int a, int b, const char *text)
 {
-    (void)pid, (void)a, (void)b;
-    if (what == CS_N_REFUSED || what == CS_N_LOST || what == CS_N_NOTICE) {
+    if (what == CS_N_REFUSED || what == CS_N_LOST || what == CS_N_NOTICE || what == CS_N_PEER_LEAVE) {
         snprintf(l->note_text, sizeof l->note_text, "%s", text ? text : "");
-        l->note_what = what, l->note_new = 1;
+        l->note_what = what, l->note_new = 1, l->note_a = a, l->note_b = b, l->note_pid = pid;
     }
 }
 
@@ -265,7 +272,7 @@ static void leave_session(lobby_t *l)
 static void push_session(lobby_t *l, int episode, int part, int diff)
 {
     char out[160];
-    run(l, out, sizeof out, "session %d %d %d", episode, part, diff);
+    run(l, out, sizeof out, "session %d %d %d %d", episode, part, diff, l->set.sflags & 7);
 }
 
 /* forget a finished result nobody collected (a cancelled attempt), so the next job is accepted */
@@ -301,7 +308,7 @@ static void begin_host(lobby_t *l, int way)
         set_status(l, LSK_ERROR, 4000, "%s", tx(l, LT_FAIL_CREATE));
 }
 
-static void begin_join(lobby_t *l, int way, const char *cmd_arg)
+static void begin_join(lobby_t *l, int way, const char *cmd_arg, const char *target_label)
 {
     char out[160], cmd[160];
     l->way = way;
@@ -310,6 +317,8 @@ static void begin_join(lobby_t *l, int way, const char *cmd_arg)
     run(l, out, sizeof out, "char %s", char_words[l->set.character & 3]);
     if (way == 0) snprintf(cmd, sizeof cmd, "steamjoin %s", cmd_arg);
     else snprintf(cmd, sizeof cmd, "join %s enet", cmd_arg);
+    if (!target_label || !target_label[0]) target_label = cmd_arg;
+    snprintf(l->target, sizeof l->target, "%s", target_label);
     l->hosting = 0;
     if (start_job(l, JOB_JOIN, cmd)) {
         goto_screen(l, LS_CONNECTING);
@@ -452,7 +461,7 @@ static void add_row(lobby_view *v, int action, int kind, const char *label, cons
 static int can_start(lobby_t *l, const facts *f, int *needs_partner)
 {
     *needs_partner = 0;
-    if (!f->active || !f->host || f->phase != CP_PHASE_LOBBY) return 0;
+    if (!f->active || !f->host || f->phase != CP_PHASE_LOBBY || !episode_ok(l, f)) return 0;
     if (f->count < 2) {
         if (l->set.solo) return 1;
         *needs_partner = 1;
@@ -519,32 +528,50 @@ static void build_rows(lobby_t *l, lobby_view *v, const facts *f)
         add_row(v, A_YES, LV_NORMAL, tx(l, LT_YES), "");
         add_row(v, A_NO, LV_NORMAL, tx(l, LT_NO), "");
         break;
+    case LS_KICK_ASK: {   /* the host's "Remove partner": the stock "Do you want to kick <name>?" */
+        char nm[64];
+        snprintf(v->title, sizeof v->title, "%s", tx(l, LT_COOP));
+        lobby_format(tx(l, LT_KICK_ASK), f->other >= 0 ? shown_name(l, f->pl[f->other].name, nm, sizeof nm) : "?", NULL, v->prompt, sizeof v->prompt);
+        add_row(v, A_YES, LV_NORMAL, tx(l, LT_YES), "");
+        add_row(v, A_NO, LV_NORMAL, tx(l, LT_NO), "");
+        break;
+    }
     case LS_ROOM: {
         snprintf(v->title, sizeof v->title, "%s", tx(l, LT_COOP));
         int myc = f->connected ? f->pl[f->pid].character : CP_CHAR_NONE;
+        char nm[64];
         for (int c = 0; c < 4; c++) {
             int taken = slot_taken_by_partner(f, c);
             int other_part = !f->host && (c >> 1) != f->ss.part;
             const char *val = "";
             if (c == myc) val = tx(l, LT_YOU);
-            else if (taken && f->other >= 0 && f->pl[f->other].character == c) val = f->pl[f->other].name;
+            else if (taken && f->other >= 0 && f->pl[f->other].character == c) val = shown_name(l, f->pl[f->other].name, nm, sizeof nm);
             add_row(v, A_CHAR + c, taken || other_part ? LV_GREY : LV_NORMAL, char_name(l, c), val);
         }
         if (f->host) {
-            snprintf(buf, sizeof buf, "<  %d  >", f->ss.episode);
-            add_row(v, A_EPISODE, LV_NORMAL, tx(l, LT_EPISODE), buf);
+            if (l->set.episodes_all) {
+                snprintf(buf, sizeof buf, "<  %d  >", f->ss.episode);
+                add_row(v, A_EPISODE, LV_NORMAL, tx(l, LT_EPISODE), buf);
+            } else {   /* 0.2.0: Episode 1 only (the info block says so) */
+                snprintf(buf, sizeof buf, "%d", f->ss.episode ? f->ss.episode : 1);
+                add_row(v, 0, LV_INFO, tx(l, LT_EPISODE), buf);
+            }
             snprintf(buf, sizeof buf, "<  %s  >", diff_name(l, f->ss.difficulty));
             add_row(v, A_DIFF, LV_NORMAL, tx(l, LT_DIFFICULTY), buf);
+            snprintf(buf, sizeof buf, "<  %s  >", tx(l, (f->ss.flags & CP_SESS_DOWNED) ? LT_YES : LT_NO));
+            add_row(v, A_DOWNED, LV_NORMAL, tx(l, LT_DOWNED), buf);
             int need = 0;
             int ok = can_start(l, f, &need);
             add_row(v, A_START, ok ? LV_NORMAL : LV_GREY, tx(l, LT_START), "");
             if (f->steam && f->count < 2) add_row(v, A_INVITE, LV_NORMAL, tx(l, LT_INVITE), "");
+            if (f->other >= 0 && f->phase == CP_PHASE_LOBBY) add_row(v, A_KICK, LV_NORMAL, tx(l, LT_KICK), "");
         } else {
             snprintf(buf, sizeof buf, "%d", f->ss.episode);
             add_row(v, 0, LV_INFO, tx(l, LT_EPISODE), buf);
             add_row(v, 0, LV_INFO, tx(l, LT_DIFFICULTY), diff_name(l, f->ss.difficulty));
+            add_row(v, 0, LV_INFO, tx(l, LT_DOWNED), tx(l, (f->ss.flags & CP_SESS_DOWNED) ? LT_YES : LT_NO));
             int me_ready = f->connected && f->pl[f->pid].ready;
-            add_row(v, A_READY, LV_NORMAL, tx(l, LT_READY), me_ready ? "[X]" : "[  ]");
+            add_row(v, A_READY, episode_ok(l, f) ? LV_NORMAL : LV_GREY, tx(l, LT_READY), me_ready ? "[X]" : "[  ]");
         }
         add_row(v, A_LEAVE, LV_NORMAL, tx(l, LT_LEAVE), "");
         break;
@@ -577,14 +604,15 @@ void lobby_view_get(lobby_t *l, lobby_view *v)
     snprintf(v->t_ready, sizeof v->t_ready, "%s", tx(l, LT_PARTNER_READY));
     snprintf(v->t_not_ready, sizeof v->t_not_ready, "%s", tx(l, LT_NOT_READY));
     snprintf(v->t_host, sizeof v->t_host, "%s", tx(l, LT_HOST_TAG));
+    snprintf(v->t_ms, sizeof v->t_ms, "%s", tx(l, LT_MS));
     build_rows(l, v, &f);
     fix_sel(v, &l->sel);
     v->sel = l->sel;
-    if ((l->screen == LS_ROOM || l->screen == LS_LEAVE_ASK)) {
+    if ((l->screen == LS_ROOM || l->screen == LS_LEAVE_ASK || l->screen == LS_KICK_ASK)) {
         for (int i = 0; i < CP_MAX_PLAYERS; i++) {
             if (!f.has[i] || !f.pl[i].connected) continue;
             lobby_vplayer *p = &v->players[v->nplayers++];
-            snprintf(p->name, sizeof p->name, "%s", f.pl[i].name);
+            shown_name(l, f.pl[i].name, p->name, sizeof p->name);
             snprintf(p->chr, sizeof p->chr, "%s", char_name(l, f.pl[i].character));
             p->ready = f.pl[i].ready || i == 0, p->host = i == 0, p->me = i == f.pid, p->ping = f.pl[i].rtt_ms;
         }
@@ -595,13 +623,40 @@ void lobby_view_get(lobby_t *l, lobby_view *v)
         }
     }
     if (l->screen == LS_ROOM) snprintf(v->note, sizeof v->note, "%s", tx(l, LT_SAVE_WARN));
+    if (l->screen == LS_LEAVE_ASK) snprintf(v->note, sizeof v->note, "%s", tx(l, LT_LEAVE_HINT));
+    if (l->screen == LS_ROOM && f.active) {   /* the info block: Episode 1 only; how a friend reaches a System Link host over the internet */
+        char port[16], hint[400];
+        int o = snprintf(v->info, sizeof v->info, "%s", l->set.episodes_all ? "" : tx(l, LT_EP1_ONLY));
+        if (f.host && !f.steam) {
+            snprintf(port, sizeof port, "%d", l->set.port);
+            lobby_format(tx(l, LT_HOST_NET_HINT), port, NULL, hint, sizeof hint);
+            if (o < (int)sizeof v->info - 2) snprintf(v->info + o, sizeof v->info - (size_t)o, "%s%s", o ? "\n" : "", hint);
+        }
+    }
     snprintf(v->status, sizeof v->status, "%s", l->status);
     v->status_kind = l->status_kind;
+    if (l->screen == LS_CONNECTING && !l->hosting && l->target[0] && !strcmp(l->status, tx(l, LT_CONNECTING))) {
+        /* the guest's progress (RE5 / RE6 style): the transport connects, then the host's answer is awaited */
+        int stage = sess(l) ? cs_join_stage(sess(l)) : 0;
+        lobby_format(tx(l, stage == 2 ? LT_AWAITING : LT_CONNECTING_TO), l->target, NULL, v->status, sizeof v->status);
+    }
     if (l->screen == LS_ROOM && !l->status[0] && f.active) {
         int need = 0;
+        char nm[64];
+        const char *other = f.other >= 0 ? shown_name(l, f.pl[f.other].name, nm, sizeof nm) : "";
         if (f.host && f.phase == CP_PHASE_LOBBY) {
             if (f.count < 2) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_WAITING));
-            else if (!can_start(l, &f, &need) && need) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_NEED_READY));
+            else if (!can_start(l, &f, &need) && need) {
+                if (f.other >= 0 && !f.pl[f.other].ready) lobby_format(tx(l, LT_HOST_WAIT_READY), other, NULL, v->status, sizeof v->status);
+                else snprintf(v->status, sizeof v->status, "%s", tx(l, LT_NEED_READY));
+            } else if (f.other >= 0) lobby_format(tx(l, LT_HOST_CAN_START), other, NULL, v->status, sizeof v->status);
+        } else if (!f.host && f.phase == CP_PHASE_LOBBY && f.connected) {
+            if (!episode_ok(l, &f)) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_EP1_ONLY)), v->status_kind = LSK_ERROR;
+            else if (!f.pl[f.pid].ready) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_GUEST_PICK));
+            else {
+                char hn[64];
+                lobby_format(tx(l, LT_GUEST_WAIT_HOST), f.has[0] ? shown_name(l, f.pl[0].name, hn, sizeof hn) : "?", NULL, v->status, sizeof v->status);
+            }
         }
         if (f.phase != CP_PHASE_LOBBY) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_STARTING));
     }
@@ -651,6 +706,7 @@ static void change_value(lobby_t *l, int action, int dir)
     int ep = f.ss.episode ? f.ss.episode : 1, df = f.ss.difficulty;
     if (action == A_EPISODE) ep = (ep - 1 + dir + 4) % 4 + 1;
     else if (action == A_DIFF) df = (df + dir + 4) % 4;
+    else if (action == A_DOWNED) l->set.sflags = (int)(((unsigned)f.ss.flags ^ CP_SESS_DOWNED) & 7u);   /* the rule is a toggle (the bleed-out preset bits stay as they are) */
     else return;
     push_session(l, ep, f.ss.part, df);
     l->set.episode = ep, l->set.difficulty = df;
@@ -668,7 +724,7 @@ static void activate(lobby_t *l, int action)
     }
     if (action >= A_FRIEND_ENTRY && action < A_FRIEND_ENTRY + MAX_FR) {
         int i = action - A_FRIEND_ENTRY;
-        if (i < l->nfr) begin_join(l, 0, l->fr[i].cmd);
+        if (i < l->nfr) begin_join(l, 0, l->fr[i].cmd, l->fr[i].label);
         return;
     }
     switch (action) {
@@ -677,7 +733,7 @@ static void activate(lobby_t *l, int action)
         if (l->screen == LS_JOIN_IP) {
             if (l->input[0]) {
                 snprintf(l->set.ip, sizeof l->set.ip, "%s", l->input);
-                begin_join(l, 1, l->input);
+                begin_join(l, 1, l->input, l->input);
             }
         } else
             goto_screen(l, LS_JOIN_WAY), clear_status(l);
@@ -705,8 +761,19 @@ static void activate(lobby_t *l, int action)
         break;
     case A_EPISODE: change_value(l, A_EPISODE, 1); break;
     case A_DIFF: change_value(l, A_DIFF, 1); break;
+    case A_DOWNED: change_value(l, A_DOWNED, 1); break;
     case A_READY:
+        if (!episode_ok(l, &f)) {
+            set_status(l, LSK_ERROR, 4000, "%s", tx(l, LT_EP1_ONLY));
+            break;
+        }
         if (f.active && f.connected) cs_ready(sess(l), !f.pl[f.pid].ready);
+        break;
+    case A_KICK:   /* host, room: "Remove partner" asks first (the cursor starts on "No") */
+        if (f.active && f.host && f.other >= 0 && f.phase == CP_PHASE_LOBBY) {
+            goto_screen(l, LS_KICK_ASK);
+            l->sel = 1;
+        }
         break;
     case A_START: {
         int need = 0;
@@ -715,7 +782,7 @@ static void activate(lobby_t *l, int action)
             break;
         }
         run(l, out, sizeof out, f.count < 2 && l->set.solo ? "start force" : "start");
-        if (!strstr(out, "START sent")) set_status(l, LSK_ERROR, 4000, "%s", out);
+        if (!strstr(out, "START sent")) set_status(l, LSK_ERROR, 4000, "%s", tx(l, LT_NEED_READY));   /* (lang: was the console's English reply) */
         break;
     }
     case A_LEAVE:
@@ -729,6 +796,11 @@ static void activate(lobby_t *l, int action)
         }
         break;
     case A_YES:
+        if (l->screen == LS_KICK_ASK) {
+            if (f.active && f.host && f.other >= 0) run(l, out, sizeof out, "kick %d %d", f.other, CP_LEAVE_REMOVED);
+            goto_screen(l, LS_ROOM), l->sel = -1;
+            break;
+        }
         leave_session(l);
         goto_screen(l, LS_TOP);
         break;
@@ -757,7 +829,8 @@ static void back(lobby_t *l)
 {
     switch (l->screen) {
     case LS_ROOM: activate(l, A_LEAVE); break;
-    case LS_LEAVE_ASK: activate(l, A_NO); break;
+    case LS_LEAVE_ASK:
+    case LS_KICK_ASK: activate(l, A_NO); break;
     default: activate(l, A_BACK); break;
     }
 }
@@ -833,11 +906,21 @@ void lobby_update(lobby_t *l)
         l->note_new = 0;
         if (l->screen == LS_CONNECTING && (l->note_what == CS_N_REFUSED || l->note_what == CS_N_LOST)) {
             goto_screen(l, l->hosting ? LS_HOST_WAY : (l->way == 0 ? LS_FRIENDS : LS_JOIN_IP));
-            set_status(l, LSK_ERROR, 8000, "%s%s%s", tx(l, LT_FAIL_JOIN), l->note_text[0] ? "  " : "", l->note_text);
+            /* REFUSED: menu.c put the reason in the player's language; LOST (the link dropped while joining): the session's text is English, the stock words instead */
+            const char *why = l->note_what == CS_N_REFUSED ? l->note_text : tx(l, LT_CONN_LOST);
+            set_status(l, LSK_ERROR, 8000, "%s%s%s", tx(l, LT_FAIL_JOIN), why[0] ? "  " : "", why);
             l->job = JOB_NONE;
-        } else if (l->screen == LS_ROOM && l->note_what == CS_N_LOST) {
+        } else if ((l->screen == LS_ROOM || l->screen == LS_LEAVE_ASK || l->screen == LS_KICK_ASK) && l->note_what == CS_N_LOST) {
+            /* the guest in the room: removed by the host, the host closed the room, or the link is gone */
             goto_screen(l, LS_TOP);
-            set_status(l, LSK_ERROR, 8000, "%s", tx(l, LT_CONN_LOST));
+            set_status(l, LSK_ERROR, 8000, "%s", tx(l, l->note_a == 1 && l->note_b == CP_LEAVE_REMOVED ? LT_REMOVED : l->note_a == 1 ? LT_SESSION_OVER : LT_CONN_LOST));
+        } else if ((l->screen == LS_ROOM || l->screen == LS_KICK_ASK) && l->note_what == CS_N_PEER_LEAVE && f.host && f.phase == CP_PHASE_LOBBY && l->note_b != CS_GONE_REMOVED &&
+                   l->note_b != CS_GONE_REPLACED) {
+            /* the host in the room: the partner left or was lost (the stock "<name> has left the session." / "... has disconnected.") */
+            char nm[64];
+            if (l->screen == LS_KICK_ASK) goto_screen(l, LS_ROOM), l->sel = -1;
+            set_status(l, LSK_INFO, 5000, "%s", "");
+            lobby_format(tx(l, l->note_a == 1 ? LT_PARTNER_LOST_ROOM : LT_PARTNER_LEFT_ROOM), shown_name(l, l->note_text, nm, sizeof nm), NULL, l->status, sizeof l->status);
         }
     }
 
@@ -862,12 +945,19 @@ void lobby_update(lobby_t *l)
         break;
     case LS_ROOM:
     case LS_LEAVE_ASK:
+    case LS_KICK_ASK:
         if (!f.active) {
             goto_screen(l, LS_TOP);
             set_status(l, LSK_ERROR, 8000, "%s", tx(l, LT_CONN_LOST));
             break;
         }
         if (!l->started && f.phase != CP_PHASE_LOBBY && f.phase != CP_PHASE_NONE) {
+            if (!episode_ok(l, &f)) {   /* 0.2.0: a (lab) host started another episode than 1: this PC does not start it */
+                leave_session(l);
+                goto_screen(l, LS_TOP);
+                set_status(l, LSK_ERROR, 8000, "%s", tx(l, LT_EP1_ONLY));
+                break;
+            }
             l->started = 1;
             l->request = LR_START;
             set_status(l, LSK_OK, 0, "%s", tx(l, LT_STARTING));
@@ -892,7 +982,8 @@ void lobby_update(lobby_t *l)
         }
         if (f.other >= 0 && !l->partner_seen) {
             l->partner_seen = 1;
-            set_status(l, LSK_OK, 3000, "%s", tx(l, LT_PARTNER_JOINED));
+            /* the host only: the guest's "partner" is the host it just joined (run 5 showed "A partner has joined." on the guest); its line says what to do next */
+            if (f.host) set_status(l, LSK_OK, 3000, "%s", tx(l, LT_PARTNER_JOINED));
         } else if (f.other < 0) l->partner_seen = 0;
         break;
     default: break;

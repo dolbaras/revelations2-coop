@@ -47,7 +47,15 @@ static int w_jmp(unsigned target, int n, void *hook)
 
 /* ---------------------------------------------------------------- state */
 enum { WK_ENEMIES = 1 };           /* WORLD batch kinds */
-enum { EV_W_SPAWN = 0x120, EV_W_HIT, EV_W_DEATH, EV_W_PICKUP, EV_W_ITEM_GONE, EV_W_PDMG, EV_W_FLAG, EV_W_SCENE, EV_W_GRANT, EV_W_DOOR, EV_W_BARRIER, EV_W_SNAP, EV_W_SF, EV_W_BGL };   /* CP_EV_USER + n: world events (docs\world.md) */
+enum { EV_W_SPAWN = 0x120, EV_W_HIT, EV_W_DEATH, EV_W_PICKUP, EV_W_ITEM_GONE, EV_W_PDMG, EV_W_FLAG, EV_W_SCENE, EV_W_GRANT, EV_W_DOOR, EV_W_BARRIER, EV_W_SNAP, EV_W_SF, EV_W_BGL, EV_W_PROP, EV_W_SFD };   /* CP_EV_USER + n: world events (docs\world.md); 0x12E PROP / 0x12F SF digest: stage 10 */
+enum { EV_W_HITDI = 0x130 };   /* 0.2.0 MHIT: client -> host, a real blow of the client's human on a replica (meleehit_logic.h, 96 bytes) */
+enum { EV_W_THROW = 0x134, EV_W_BOOM = 0x135 };   /* combat4: the thrower's PC -> the other: a projectile the local human launched (invmirror_logic.h th_*); 0x131..0x133 are the inventory mirror (story.inc);
+                                                  * bomb: 0x135 BOOM, the thrower's bomb explodes (tb_*), the other PC explodes its copy there */
+#include "meleehit_logic.h"
+#include "grapple_logic.h"   /* 0.2.0: the replica's alerted bit follows the host (physical attack on a staggered replica) */
+#include "invmirror_logic.h"   /* combat4: the partner's throw (th_*), the inventory mirror (story.inc) */
+static int g_w_alert = 1;           /* 0.2.0 (grapple_logic.h): the replica's +0x37B8 bit 30 (alerted) follows the host's record; `net w alert 0|1`, REV2_ALERT=0 */
+static unsigned g_w_alert_set, g_w_alert_clr, g_w_notice_fix;
 
 static unsigned g_w_put_tx;
 static int g_w_in_additem;            /* >0 while AddItem runs (its PutItem calls are part of the pickup, not separate grants) */
@@ -192,6 +200,7 @@ static __attribute__((thiscall)) void h_psub(void *self, int amount)
         if (++g_w_pdmg_sent <= (unsigned)g_w_log_calls) r2_log(W_LOG "PDMG sent: damage %d to slot %d (the puppet), caller exe+%x", amount, slot, (unsigned)__builtin_return_address(0) - 0x400000);
         return;
     }
+    if (g_dl_on && downed_hit(p, &amount)) return;   /* stage 9: the downed / revive rule turns a lethal hit on my human into DOWN at hp 1 */
     o_psub(self, amount);
 }
 
@@ -202,11 +211,221 @@ static __attribute__((thiscall)) void h_psub(void *self, int amount)
 typedef void(__attribute__((thiscall)) *intel_upd_t)(void *self);
 static intel_upd_t o_intel_upd;
 static unsigned g_w_ai_skipped;
+/* 0.2.0 MHIT (meleehit_logic.h, notes\melee.md): this update is also the only reader of the enemy's pending DamageInfo. On a client the skipped update of a replica still
+ * looks at it and sends the local human's blow to the host; on the host the partner's blows are posted into the mailbox right before the stock update reads it. */
+static int g_mh_on = 1, g_mh_mailbox;   /* g_mh_mailbox: lab only, see the M1 note at g_mh_seen */
+static int g_mh_part = 1;   /* combat2: the host also runs the part damage (vtable +0x3B0) for a client's blow; `net w mhit part 0|1`, REV2_MHITPART=0 */
+static unsigned g_mh_part_n;
+static CRITICAL_SECTION g_mh_lock;
+static volatile LONG g_mh_lock_init;
+static void mh_client_scan(unsigned en);
+static void mh_host_post(unsigned en);
+static void mh_status(char *out, int size);
+/* combat2 (grapple_logic.h): the host drops a pending DI that the partner's PUPPET made itself (its copy of the partner's kick / shot hit the host's enemy) before the stock
+ * update reads it: the partner's real blow comes as MHIT; the stock refusal (FUN_0060DFD0) only works while enemy+0x6FB8 is set. `net w pupblow 0|1`, REV2_PUPBLOW=0. */
+static int g_w_pupblow = 1;
+static int g_mh_held = 1;   /* combat4: a blow of an object the human holds counts as the human's (MHIT on the client, P2 on the host): `net w mhit held 0|1` */
+static unsigned g_mh_held_n;
+static unsigned g_w_pupblow_n;
+/* bomb (invmirror_logic.h tb_*): this PC's own thrown projectiles (named in BOOM and in the MHIT lines) and the copies of the partner's throws (exploded by BOOM for the
+ * eye; P2 drops every blow of a copy). Written on the game pass, read by the Intel jobs (32-bit pointers, a stale entry only means one comparison more). */
+static tb_tab_t g_tb_mine, g_tb_copies;
+static int g_w_boom = 1;   /* `net w throw boom 0|1`, REV2_BOOM=0: the copy of the partner's bomb explodes where the partner's real one did */
+static unsigned g_w_boom_tx, g_w_boom_rx, g_w_boom_done, g_w_boom_gone, g_w_boom_refused, g_w_boom_logs, g_tb_drop_n;
+static void w_puppet_blow_guard(unsigned en)
+{
+    unsigned pup = player_obj(g_rem_slot);
+    if (!en || !pup || !g_w_pupblow) return;
+    unsigned now = GetTickCount();
+    for (int part = 0; part <= MH_NPARTS; part++) {
+        unsigned obj = part ? rd32(en + MH_PARTS + 4 * (part - 1)) : en;
+        if (!obj) continue;
+        unsigned di = obj + MH_ENEMY_DI;
+        unsigned char valid = 0;
+        if (!r2_safe_read((void *)(di + DI_VALID), &valid, 1) || !valid) continue;
+        unsigned att = rd32(di + DI_ATT), own = att ? rd32(att + MH_OWNER) : 0;
+        if (g_mh_held && att && att != pup && own != pup) {   /* combat4: an object the puppet holds (its weapon) made the blow */
+            uint32_t held[HW_N];
+            for (int k = 0; k < HW_N; k++) held[k] = rd32(pup + HW_FIRST + 0x10 * (unsigned)k);
+            if (hw_held(att, held)) own = pup;
+        }
+        tb_ent_t *copy = att ? tb_by_obj(&g_tb_copies, att, now) : 0;   /* bomb: a blow of the copy of the partner's bomb (BOOM made it explode here for the eye) */
+        if (!tb_p2_drop(valid, att, own, pup, g_mh_mailbox, copy != 0)) continue;
+        unsigned char z = 0;
+        if (!wr(di + DI_VALID, &z, 1)) continue;
+        if (copy) {   /* logged under its own budget (the light's puppet blows filled the 20 lines below in flashlive) */
+            g_tb_drop_n++;
+            if (g_tb_drop_n <= 30) {
+                layout_t l;
+                layout_of(en, &l);
+                r2_log(W_LOG "thrown copy blow dropped on the host: enemy (%d,%u,%u) %08x part %d, attacker %08x = the copy of the partner's (slot %u) %04x (throw %u), owner field %08x%s, DI damage %d, flags %08x %08x (the real blow comes as MHIT)",
+                       l.a, l.b, l.c, en, part, att, copy->slot, copy->id, copy->seq, own, own == pup ? " (the puppet)" : " (NOT the puppet: only the copy table caught it)", (int)rd32(di + DI_DMG),
+                       rd32(di + DI_FL), rd32(di + DI_FL + 4));
+            }
+            continue;
+        }
+        g_w_pupblow_n++;
+        if (g_w_pupblow_n <= 20) {
+            layout_t l;
+            layout_of(en, &l);
+            r2_log(W_LOG "puppet blow dropped on the host: enemy (%d,%u,%u) %08x part %d, attacker %08x (owner %08x) = the partner's puppet %08x, DI damage %d, enemy +6FB8 %u (the real blow comes as MHIT)", l.a, l.b, l.c, en,
+                   part, att, own, pup, (int)rd32(di + DI_DMG), rd32(en + 0x6FB8) & 0xFF);
+        }
+    }
+}
+
+/* ---- combat4: the partner's throw (invmirror_logic.h): the thrower's FUN_009F7C70 (after the stock launch) -> THROW -> the other PC creates the same uWpBomb for the
+ * thrower's puppet the way the Raid receiver FUN_009DF640 does; its owner +0x19C0 is the puppet, so P2 drops its own hit on the host's enemies (the real one comes as MHIT) */
+typedef void(__attribute__((thiscall)) *throwsend_t)(void *self, unsigned player, unsigned proj, const float *p3, const float *p4, const float *p5, const float *p6);
+static throwsend_t o_throwsend;
+static int g_w_throw = 1;
+static unsigned g_w_throw_tx, g_w_throw_rx, g_w_throw_refused, g_w_throw_fail, g_w_throw_logs;
+static __attribute__((thiscall)) void h_throwsend(void *self, unsigned player, unsigned proj, const float *p3, const float *p4, const float *p5, const float *p6)
+{
+    o_throwsend(self, player, proj, p3, p4, p5, p6);
+    if (!g_w_on || !g_w_throw || g_w_replay || !g_cs || !cs_active(g_cs) || !player || player != player_obj(g_my_slot) || !proj || !p3 || !p4 || !p5 || !p6) return;
+    float v[12];
+    if (!r2_safe_read(p3, v, 12) || !r2_safe_read(p4, v + 3, 12) || !r2_safe_read(p5, v + 6, 12) || !r2_safe_read(p6, v + 9, 12)) return;
+    unsigned a1[1] = {proj};
+    unsigned id = do_call(0, 0x403380, a1, 1) & 0xFFFF;   /* FUN_00403380: the item id of the object */
+    unsigned char b[TH_LEN];
+    th_encode(b, g_my_slot, (uint16_t)id, v);
+    uint8_t seq = tb_next_seq(&g_tb_mine);   /* bomb: the throw number in the spare byte [1] (an older peer sent 0 there and ignores it) */
+    b[1] = seq;
+    tb_add(&g_tb_mine, proj, g_my_slot, seq, (uint16_t)id, GetTickCount());
+    w_ev_send(EV_W_THROW, b, TH_LEN);
+    g_w_throw_tx++;
+    if (g_w_throw_logs++ < 30)
+        r2_log(W_LOG "THROW sent: my human (slot %d) launched %04x (object %08x, throw %u) from (%.0f,%.0f,%.0f), vectors (%.1f,%.1f,%.1f) (%.1f,%.1f,%.1f) (%.1f,%.1f,%.1f)", g_my_slot, id, proj, seq, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8],
+               v[9], v[10], v[11]);
+}
+
+/* ---- bomb: the explosion of this PC's own thrown bomb (invmirror_logic.h): FUN_009F6EF0(owner, bomb) (thiscall, ret 8) is the Raid sender of message 0x21; the stock
+ * bomb update calls it right when it starts the explosion (action 8) of a bomb whose owner is a local player. After the stock call (a no-op outside a Raid session) the
+ * thrower's PC sends EV_W_BOOM (slot, throw number, item id, the bomb's position +0xE0); the other PC explodes its copy there. */
+typedef void(__attribute__((thiscall)) *boomsend_t)(void *self, unsigned player, unsigned bomb);
+static boomsend_t o_boomsend;
+static __attribute__((thiscall)) void h_boomsend(void *self, unsigned player, unsigned bomb)
+{
+    o_boomsend(self, player, bomb);
+    if (!g_w_on || !g_w_throw || !g_w_boom || g_w_replay || !g_cs || !cs_active(g_cs) || !player || player != player_obj(g_my_slot) || !bomb) return;
+    tb_ent_t *t = tb_by_obj(&g_tb_mine, bomb, GetTickCount());
+    if (!t || t->boomed) return;   /* not a projectile THROW announced, or announced already */
+    t->boomed = 1;
+    float pos[3] = {rdf(bomb + 0xE0), rdf(bomb + 0xE4), rdf(bomb + 0xE8)};
+    unsigned char b[TB_BOOM_LEN];
+    tb_boom_encode(b, g_my_slot, t->seq, t->id, pos);
+    w_ev_send(EV_W_BOOM, b, TB_BOOM_LEN);
+    g_w_boom_tx++;
+    g_tb_mine.n_boom++;
+    if (g_w_boom_logs++ < 30) r2_log(W_LOG "BOOM sent: my thrown %04x (object %08x, throw %u) explodes at (%.0f,%.0f,%.0f)", t->id, bomb, t->seq, pos[0], pos[1], pos[2]);
+}
+
+/* sItem's object list (sItem +0x30 count, +0x3C array: what FUN_009E07E0 searches): is the copy still a live item object? (its lifetime may have ended it) */
+static int w_item_alive(unsigned obj)
+{
+    unsigned si = rd32(0x1562E10);
+    if (!si || !obj) return 0;
+    unsigned n = rd32(si + 0x30), arr = rd32(si + 0x3C);
+    if (!arr || n > 8192) return 0;
+    for (unsigned i = 0; i < n; i++)
+        if (rd32(arr + 4 * i) == obj) return 1;
+    return 0;
+}
+
+static void w_boom_apply(const cp_event *e)
+{
+    int slot = -1;
+    uint8_t seq = 0;
+    uint16_t id = 0;
+    float pos[3];
+    if (!g_w_throw || !g_w_boom || !tb_boom_decode(e->body, e->len, &slot, &seq, &id, pos) || !tb_boom_accept(slot, g_my_slot, g_rem_slot, seq, id)) {
+        g_w_boom_refused++;
+        return;
+    }
+    g_w_boom_rx++;
+    tb_ent_t *t = tb_by_seq(&g_tb_copies, slot, seq, GetTickCount());
+    unsigned obj = t ? t->obj : 0;
+    if (!t || t->boomed || !w_item_alive(obj)) {
+        g_w_boom_gone++;
+        if (g_w_boom_logs++ < 30)
+            r2_log(W_LOG "BOOM from slot %d (%04x, throw %u) at (%.0f,%.0f,%.0f): %s", slot, id, seq, pos[0], pos[1], pos[2], !t ? "no copy of that throw here" : t->boomed ? "that copy exploded already" : "that copy is gone (its lifetime ended)");
+        return;
+    }
+    t->boomed = 1;
+    g_tb_copies.n_boom++;
+    if (!tb_boom_explode(id)) {
+        if (g_w_boom_logs++ < 30) r2_log(W_LOG "BOOM from slot %d (%04x, throw %u): this item takes the stock's other branch, the copy %08x is left to end by itself", slot, id, seq, obj);
+        return;
+    }
+    float old[3] = {rdf(obj + 0x40), rdf(obj + 0x44), rdf(obj + 0x48)};
+    unsigned zero = 0, ctl = obj + 0x1A38, fn = rd32(rd32(ctl) + 0x14);
+    int ok = 0;
+    if (fn > 0x400000 && fn < 0x1400000 && wr(obj + 0x40, pos, 12) && wr(obj + 0x4C, &zero, 4)) {   /* FUN_009E07E0: the copy to the thrower's explosion point, action 8 */
+        typedef void(__attribute__((thiscall)) * setact_t)(unsigned, int, int, int, int, int);
+        g_w_replay++;
+        ((setact_t)fn)(ctl, 8, 0, 0, -1, 0);
+        g_w_replay--;
+        ok = 1;
+        g_w_boom_done++;
+    }
+    if (g_w_boom_logs++ < 30) {
+        float dx = pos[0] - old[0], dy = pos[1] - old[1], dz = pos[2] - old[2];
+        r2_log(W_LOG "BOOM applied: the partner's (slot %d) %04x copy %08x (throw %u) %s at (%.0f,%.0f,%.0f) (the copy was %.0f units from there): for the eye, its blows on enemies are dropped", slot, id, obj, seq,
+               ok ? "explodes" : "could NOT be exploded (no action controller)", pos[0], pos[1], pos[2], sqrtf(dx * dx + dy * dy + dz * dz));
+    }
+}
+
+static void w_throw_apply(const cp_event *e)
+{
+    int slot = -1;
+    uint16_t id = 0;
+    float v[12];
+    if (!g_w_throw || !th_decode(e->body, e->len, &slot, &id, v) || !th_accept(slot, g_my_slot, g_rem_slot, id)) {
+        g_w_throw_refused++;
+        return;
+    }
+    uint8_t seq = e->body[1];   /* bomb: the thrower's throw number (0 from an older peer: its copy is never exploded, P2 still drops its blows) */
+    unsigned pup = player_obj(slot), sitem = rd32(0x1562E10);
+    unsigned a1[1] = {((id & 0xFFFFu) | 0x70000u) << 8};
+    unsigned res = pup && sitem ? do_call(0, 0xB5B4C0, a1, 1) : 0;   /* FUN_00B5B4C0: the projectile's resource */
+    if (!res) {
+        g_w_throw_fail++;
+        r2_log(W_LOG "THROW from slot %d (%04x): no resource / puppet / sItem (puppet %08x sItem %08x)", slot, id, pup, sitem);
+        return;
+    }
+    typedef unsigned(__attribute__((thiscall)) * mk_t)(unsigned, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned);
+    g_w_replay++;
+    unsigned obj = ((mk_t)0x63CC80)(sitem, res, 0xD, 0, 1, 0, 0);   /* sItem FUN_0063CC80(res, 0xd, 0, 1, 0, 0), as the Raid receiver */
+    unsigned a2[2] = {obj, 0x1564F40};
+    unsigned bomb = obj ? do_call(2, 0x43E010, a2, 2) & 0xFF : 0;   /* FUN_0043E010(&DTI_uWpBomb) */
+    if (bomb) {
+        static float vec[4][4] __attribute__((aligned(16)));
+        for (int k = 0; k < 4; k++) vec[k][0] = v[3 * k], vec[k][1] = v[3 * k + 1], vec[k][2] = v[3 * k + 2], vec[k][3] = 0.0f;
+        wr(obj + 0x19C0, &pup, 4);   /* the owner: the thrower's puppet (P2 drops its hit on the host, the client's mh_take ignores it) */
+        typedef void(__attribute__((thiscall)) * launch_t)(unsigned, float *, float *, float *, float *, unsigned);
+        unsigned fn = rd32(rd32(obj) + 0x210);
+        if (fn > 0x400000 && fn < 0x1400000) ((launch_t)fn)(obj, vec[0], vec[1], vec[2], vec[3], 1);
+        else bomb = 0;
+    }
+    g_w_replay--;
+    if (bomb) g_w_throw_rx++, tb_add(&g_tb_copies, obj, slot, seq, id, GetTickCount());
+    else g_w_throw_fail++;
+    if (g_w_throw_logs++ < 30)
+        r2_log(W_LOG "THROW applied: the partner's (slot %d) %04x (throw %u) launched on this PC as %08x (%s, owner = the puppet %08x) from (%.0f,%.0f,%.0f), vectors (%.1f,%.1f,%.1f) (%.1f,%.1f,%.1f) (%.1f,%.1f,%.1f)", slot, id, seq, obj,
+               bomb ? "uWpBomb" : "NOT a uWpBomb / no launch", pup, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11]);
+}
 static __attribute__((thiscall)) void h_intel_update(void *self)
 {
     if (!g_w_replica_ai && g_w_on && g_w_guard && g_cs && cs_active(g_cs) && !cs_is_host(g_cs)) {
         g_w_ai_skipped++;
+        if (g_mh_on) mh_client_scan(rd32((unsigned)self + 0x30));
         return;
+    }
+    if (g_w_on && g_cs && cs_active(g_cs) && cs_is_host(g_cs)) {
+        unsigned en = rd32((unsigned)self + 0x30);
+        if (g_mh_on) w_puppet_blow_guard(en);
+        if (g_mh_on) mh_host_post(en);
     }
     o_intel_upd(self);
 }
@@ -240,6 +459,37 @@ static __attribute__((thiscall)) void h_flagset(void *self, unsigned id, int val
     }
 }
 
+/* ---- bomb: whose blow a DamageInfo is, for the kill credit (invmirror_logic.h bo_credit_slot): a human attacker; a weapon object's owner +0x19C0 (the host's own bomb);
+ * for a burn tick (attacker 0, DI+0x2C bit 27, FUN_0061AC70) the enemy's igniter +0x7378 (the attacker of the burning blow: the puppet when MHIT lit it) */
+static int w_obj_kind(unsigned obj)   /* the DTI class byte (+0x1F: 1 player, 3 enemy, 7 item / weapon) through vtable[4] = `mov eax, DTI; ret`, read only */
+{
+    unsigned vt = 0, fn = 0, dti = 0;
+    unsigned char c[6], k = 0;
+    if (!obj || !r2_safe_read((void *)obj, &vt, 4) || vt < 0x10000 || (vt & 3) || !r2_safe_read((void *)(vt + 16), &fn, 4) || fn < 0x10000 || !r2_safe_read((void *)fn, c, 6)) return -1;
+    if (c[0] != 0xB8 || c[5] != 0xC3) return -1;
+    memcpy(&dti, c + 1, 4);
+    if (!dti || !r2_safe_read((void *)(dti + 0x1F), &k, 1)) return -1;
+    return k;
+}
+static int w_weapon_owner_slot(unsigned obj)
+{
+    if (!obj || w_obj_kind(obj) != 7) return -1;
+    return w_slot_of_player(rd32(obj + MH_OWNER));
+}
+static int w_credit_slot(unsigned enemy, unsigned di)
+{
+    unsigned att = di ? rd32(di + DI_ATT) : 0, fl2c = di ? rd32(di + DI_FL + 4) : 0;
+    int plain = w_slot_of_player(att);
+    if (plain >= 0) return plain;
+    int weapon = att ? w_weapon_owner_slot(att) : -1, ign = -1;
+    if (!att && ((fl2c >> BO_TICK_BIT) & 1u) && enemy) {
+        unsigned g = rd32(enemy + 0x7378);
+        ign = w_slot_of_player(g);
+        if (ign < 0) ign = w_weapon_owner_slot(g);
+    }
+    return bo_credit_slot(plain, weapon, att == 0, fl2c, ign);
+}
+
 /* ---- stats guard: whose profile a kill belongs to (stage 6d) ----
  * FUN_00986230 (thiscall on the story block, `ret 0xC`: enemy, DamageInfo, max hp) is the game's kill report; for every kill it adds to THREE tables of the profile that the achievements read:
  * the global total by kind (FUN_00979580, story+0x20+0x1BC, u32 x 0x51; the record check `goal <= total` of KNIFE_WEAPON_KILL and the others compares against it), the per-slot table (FUN_00972E90,
@@ -260,8 +510,9 @@ static __attribute__((thiscall)) void h_killrep(void *story_p, unsigned enemy, u
     unsigned st = (unsigned)story_p;
     unsigned att = di ? rd32(di + 0xDC) : 0;
     int active = g_w_on && g_w_stat_guard && g_cs && cs_active(g_cs) && st == rd32(0x157D120);
-    int mine = att && att == player_obj(g_my_slot);
-    int theirs = att && att == player_obj(g_rem_slot);
+    int cslot = active ? w_credit_slot(enemy, di) : w_slot_of_player(att);   /* bomb: a weapon's owner, a burn tick's igniter (was: the attacker only) */
+    int mine = cslot >= 0 && cslot == g_my_slot;
+    int theirs = cslot >= 0 && cslot == g_rem_slot;
     /* host: only the remote puppet's kills are rolled back (the host's own and the environment's stay); client: every report that is not the local human's (replicas die by the host's events) */
     int roll = active && !mine && (cs_is_host(g_cs) ? theirs : 1);
     static unsigned char snap[STAT_GLOBAL_LEN + STAT_SLOT_LEN + STAT_HUMAN_LEN];
@@ -277,7 +528,7 @@ static __attribute__((thiscall)) void h_killrep(void *story_p, unsigned enemy, u
         memcpy((void *)STAT_GLOBAL(st), snap, STAT_GLOBAL_LEN);
         memcpy((void *)STAT_SLOT(st), snap + STAT_GLOBAL_LEN, STAT_SLOT_LEN);
         memcpy((void *)STAT_HUMAN(st), snap + STAT_GLOBAL_LEN + STAT_SLOT_LEN, STAT_HUMAN_LEN);
-        if (changed && ++g_w_stat_rolled <= 40) r2_log(W_LOG "kill report of enemy %08x by %s (attacker %08x): stat tables rolled back, the kill is not this profile's", enemy, theirs ? "the partner's puppet" : "someone else", att);
+        if (changed && ++g_w_stat_rolled <= 40) r2_log(W_LOG "kill report of enemy %08x by %s (attacker %08x): stat tables rolled back, the kill is not this profile's", enemy, theirs ? "the partner's blow (its puppet, its bomb or a burn it lit)" : "someone else", att);
     } else if (active && mine) {
         if (++g_w_stat_kept <= 40) r2_log(W_LOG "kill report of enemy %08x by the local human (attacker %08x): credited", enemy, att);
     }
@@ -285,6 +536,7 @@ static __attribute__((thiscall)) void h_killrep(void *story_p, unsigned enemy, u
 
 #include "story.inc"
 #include "door.inc"
+#include "objsync.inc"
 #include "scen.inc"
 
 /* Stage 6i: until now the story sync of stage 6 ran only in lab sessions that set REV2_WORLD=1 and typed `net w sf sync 1` / `net w doors coop 2`: a player who starts a co-op game from the menu got puppets and nothing else (no
@@ -350,7 +602,7 @@ static __attribute__((thiscall)) void h_damage(void *self, void *dmg, int amount
 {
     unsigned obj = (unsigned)self, di = (unsigned)dmg;
     unsigned attacker = di ? rd32(di + 0xDC) : 0;
-    int aslot = w_slot_of_player(attacker);
+    int aslot = w_slot_of_player(attacker);   /* the attacker itself: the client forwards only its own human's blows */
     g_w_n_damage++;
     layout_t l = {0, 0, 0};
     layout_of(obj, &l);
@@ -373,6 +625,7 @@ static __attribute__((thiscall)) void h_damage(void *self, void *dmg, int amount
     int hp0 = (int)rd32(obj + 0x1A08);
     damage_t od = w_orig_for(obj);
     if (!od) return;
+    if (aslot < 0 && di && g_w_on && g_cs && cs_active(g_cs)) aslot = w_credit_slot(obj, di);   /* bomb: the kill credit of a weapon's / a burn tick's blow (DEATH killer slot) */
     story_note_hit(obj, aslot, di ? rd32(di + 0x28) : 0, di ? rd32(di + 0x2C) : 0);
     od(self, dmg, amount);
     int hp1 = (int)rd32(obj + 0x1A08);
@@ -393,6 +646,15 @@ static int w_install(void)
 {
     if (g_w_installed) return 1;
     if (!r2_text_decrypted()) return 0;
+    if (!g_mh_lock_init) {   /* MHIT: the lock is shared by the Intel jobs and the game pass */
+        InitializeCriticalSection(&g_mh_lock);
+        InterlockedExchange(&g_mh_lock_init, 1);
+        char v[8];
+        if (r2_env("REV2_MHIT", v, sizeof v) && v[0] == '0') g_mh_on = 0;
+        if (r2_env("REV2_ALERT", v, sizeof v) && v[0] == '0') g_w_alert = 0;
+        if (r2_env("REV2_PUPBLOW", v, sizeof v) && v[0] == '0') g_w_pupblow = 0;
+        if (r2_env("REV2_MHITPART", v, sizeof v) && v[0] == '0') g_mh_part = 0;
+    }
     static const unsigned char b_add[] = {0x83, 0xEC, 0x24, 0x53, 0x56};
     static const unsigned char b_create[] = {0x83, 0xEC, 0x0C, 0x53, 0x55};
     void *t;
@@ -407,6 +669,15 @@ static int w_install(void)
     if ((t = w_tramp(0x600F50, b_intel, 7))) o_intel_upd = (intel_upd_t)t, ok += w_jmp(0x600F50, 7, (void *)h_intel_update);
     static const unsigned char b_killrep[] = {0x83, 0xEC, 0x10, 0x53, 0x56};   /* sub esp, 0x10; push ebx; push esi */
     if ((t = w_tramp(0x986230, b_killrep, 5))) o_killrep = (killrep_t)t, ok += w_jmp(0x986230, 5, (void *)h_killrep);
+    static const unsigned char b_throw[] = {0x83, 0xEC, 0x3C, 0x57, 0x8B, 0x7C, 0x24, 0x44};   /* combat4: sub esp, 0x3c; push edi; mov edi, [esp+0x44] (FUN_009F7C70) */
+    if ((t = w_tramp(0x9F7C70, b_throw, 8))) o_throwsend = (throwsend_t)t, ok += w_jmp(0x9F7C70, 8, (void *)h_throwsend);
+    static const unsigned char b_boom[] = {0x83, 0xEC, 0x14, 0x56, 0x8B, 0x74, 0x24, 0x1C};   /* bomb: sub esp, 0x14; push esi; mov esi, [esp+0x1c] (FUN_009F6EF0) */
+    if ((t = w_tramp(0x9F6EF0, b_boom, 8))) o_boomsend = (boomsend_t)t, ok += w_jmp(0x9F6EF0, 8, (void *)h_boomsend);
+    {
+        char tv[8];
+        if (r2_env("REV2_THROW", tv, sizeof tv) && tv[0] == '0') g_w_throw = 0;
+        if (r2_env("REV2_BOOM", tv, sizeof tv) && tv[0] == '0') g_w_boom = 0;
+    }
     story_install(&ok);
     scen_install(&ok);
     for (int i = 0; i < W_NVT; i++) {   /* slot 234 of every enemy class vtable (checked against the value read from the image) */
@@ -567,6 +838,7 @@ static void w_command(const char *rest, char *out, int size)
             g_w_barrier = v1 != 0;
             if (v2 > 0) g_w_barrier_ms = v2;
         } else if (sscanf(arg, "grant %d", &v1) == 1) g_w_grant_sync = v1 != 0;
+        else if (sscanf(arg, "hand %d", &v1) == 1) g_w_hand = v1 != 0;
         else if (sscanf(arg, "scene %d %d", &v1, &v2) >= 1) {
             g_w_scene = v1 != 0;
             if (v2 > 0) g_w_scene_len = (unsigned)v2;
@@ -583,6 +855,7 @@ static void w_command(const char *rest, char *out, int size)
             if (e) o2 += snprintf(out + o2, size - o2, " [%u]%04x x%d", i, rd32(e + 4), (int)rd32(e + 0xC));
         }
         if (pl && o2 < size - 80) o2 += snprintf(out + o2, size - o2, "; weapon slots 1..3: %04x %04x %04x, hand slot %u", equipped_item(pl, 1), equipped_item(pl, 2), equipped_item(pl, 3), do_call(3, 0x6FB060, (unsigned[]){pl}, 1) & 0xFF);
+        if (pl && o2 < size - 120) o2 += snprintf(out + o2, size - o2, "; +7340 %08x +7380 %08x +73A0 %08x +73B0 %08x +73C0 %08x", rd32(pl + 0x7340), rd32(pl + 0x7380), rd32(pl + 0x73A0), rd32(pl + 0x73B0), rd32(pl + 0x73C0));
     } else if (!strcmp(sub, "cell")) {   /* net w cell <hex vtable>: the global cells (0x1500000..0x1610000) that hold a pointer to an object with this vtable (finds manager singletons) */
         unsigned vt = (unsigned)strtoul(arg, NULL, 16), o2 = 0, n = 0;
         for (unsigned c = 0x1500000; c < 0x1610000 && o2 < (unsigned)size - 80; c += 4) {
@@ -869,6 +1142,46 @@ static void w_command(const char *rest, char *out, int size)
             if (g_w_trace) fprintf(g_w_trace, "# E,ms,layout,class,x,y,z,hp,act,prev,target slot,pstate | H,ms,slot,type,x,y,z,hp,act,pstate,ctrl,flags7900 | G,ms,object (left the list)\n");
         }
         snprintf(out, size, g_w_trace ? "trace on: %s" : "trace off", arg);
+    } else if (!strcmp(sub, "mhit")) {   /* net w mhit [0|1]: 0.2.0 MHIT, the client's real blows on replicas reach the host's enemy (default on; REV2_MHIT=0 turns it off) */
+        if (!strncmp(arg, "mailbox ", 8)) g_mh_mailbox = atoi(arg + 8) != 0;
+        else if (!strncmp(arg, "part ", 5)) g_mh_part = atoi(arg + 5) != 0;
+        else if (!strncmp(arg, "held ", 5)) g_mh_held = atoi(arg + 5) != 0;
+        else if (arg[0]) g_mh_on = atoi(arg) != 0;
+        mh_status(out, size);
+        int o2 = (int)strlen(out);
+        snprintf(out + o2, size - o2, "; held objects count as the human's %s (%u taken)", g_mh_held ? "on" : "OFF", g_mh_held_n);
+    } else if (!strcmp(sub, "alert")) {   /* net w alert [0|1]: 0.2.0, the replica's alerted bit (+0x37B8 bit 30) follows the host's record (default on; REV2_ALERT=0 turns it off) */
+        if (arg[0]) g_w_alert = atoi(arg) != 0;
+        snprintf(out, size, "alert mirror %s (client: bit set %u, cleared %u; notice byte +0x6F8B changed %u)", g_w_alert ? "on" : "OFF", g_w_alert_set, g_w_alert_clr, g_w_notice_fix);
+    } else if (!strcmp(sub, "throw")) {   /* net w throw [0|1] | boom [0|1]: combat4, the partner's throws shown on this PC (default on; REV2_THROW=0 turns it off); bomb: their explosions (REV2_BOOM=0) */
+        if (!strncmp(arg, "boom", 4)) {
+            const char *v = arg + 4;
+            while (*v == ' ') v++;
+            if (*v) g_w_boom = atoi(v) != 0;
+        } else if (arg[0]) g_w_throw = atoi(arg) != 0;
+        snprintf(out, size, "partner throws %s: sent %u, launched here %u, refused %u, failed %u (hook %s); explosions (BOOM) %s: sent %u, received %u, copies exploded %u, no live copy %u, refused %u (hook %s); "
+                 "copy blows dropped on the host %u; tables: own throws %u, copies %u",
+                 g_w_throw ? "on" : "OFF", g_w_throw_tx, g_w_throw_rx, g_w_throw_refused, g_w_throw_fail, o_throwsend ? "installed" : "NOT installed", g_w_boom ? "on" : "OFF", g_w_boom_tx, g_w_boom_rx, g_w_boom_done,
+                 g_w_boom_gone, g_w_boom_refused, o_boomsend ? "installed" : "NOT installed", g_tb_drop_n, g_tb_mine.n_add, g_tb_copies.n_add);
+    } else if (!strcmp(sub, "invm")) {   /* net w invm [0|1] | [log <n>] | [full]: combat4, the inventory mirror (default on; REV2_INVMIRROR=0 turns it off) */
+        int v1 = 0;
+        unsigned gid = 0;
+        if (sscanf(arg, "log %d", &v1) == 1) g_im_log = v1, g_im_logs = 0;
+        else if (sscanf(arg, "give %x %d", &gid, &v1) >= 1) {   /* LAB: the inventory screen's hand-over calls (story.inc im_lab_give) */
+            if (!lt_on_game_thread()) {
+                char cmd[120];
+                snprintf(cmd, sizeof cmd, "net w invm %s", arg);
+                lt_post(cmd, out, size);
+                return;
+            }
+            im_lab_give(gid, v1, out, size);
+            return;
+        } else if (!strcmp(arg, "full")) g_im_full_tx = 1;
+        else if (arg[0]) g_im_on = atoi(arg) != 0;
+        im_status(out, size);
+    } else if (!strcmp(sub, "pupblow")) {   /* net w pupblow [0|1]: combat2, the host drops the partner's puppet's own blows on its enemies (default on; REV2_PUPBLOW=0 turns it off) */
+        if (arg[0]) g_w_pupblow = atoi(arg) != 0;
+        snprintf(out, size, "puppet blow guard %s (host: dropped %u)", g_w_pupblow ? "on" : "OFF", g_w_pupblow_n);
     } else if (!strcmp(sub, "ai")) {   /* net w ai [0|1]: 0 = replicas on a client do not think (default), 1 = their own AI runs as well */
         if (arg[0]) g_w_replica_ai = atoi(arg) != 0;
         snprintf(out, size, "replica AI %s (Intel update hook %s, updates skipped %u)", g_w_replica_ai ? "RUNNING (as before)" : "off on clients", o_intel_upd ? "installed" : "NOT installed", g_w_ai_skipped);
@@ -897,6 +1210,8 @@ static void w_command(const char *rest, char *out, int size)
                  do_call(3, 0x6FB060, a1, 1) & 0xFF);
     } else if (!strcmp(sub, "doors")) {   /* net w doors [on|off|list|log N]: set model action mirror (door.inc) */
         w_sm_command(arg, out, size);
+    } else if (!strcmp(sub, "props")) {   /* net w props [on|off|list]: transforms of movable set models (objsync.inc, stage 10) */
+        os_command(arg, out, size);
     } else if (!strcmp(sub, "holdact")) {   /* net w holdact [id]: the action the puppet plays while its owner is held by an enemy (0 = none), see coop_game.inc */
         if (arg[0]) g_hold_act = atoi(arg);
         snprintf(out, size, "hold pose action %d (applied %u times)", g_hold_act, g_hold_applied);
@@ -967,11 +1282,12 @@ static void w_command(const char *rest, char *out, int size)
         int hp0 = (int)rd32(en + 0x1A08);
         ((damage_t)fn)((void *)en, di, amount);
         snprintf(out, size, "hit sent through vtable slot 234 (%08x): hp %d -> %d", fn, hp0, (int)rd32(en + 0x1A08));
-    } else if (!strcmp(sub, "give")) {   /* test: AddItem for this PC's own slot as a pickup would (object 0): net w give <hex item> [count] */
+    } else if (!strcmp(sub, "give")) {   /* test: AddItem for this PC's own slot as a pickup would (object 0): net w give <hex item> [count] [put] */
         unsigned item = 0;
         int count = 1;
-        if (sscanf(arg, "%x %d", &item, &count) < 1) {
-            snprintf(out, size, "usage: net w give <hex item id> [count]");
+        char how[8] = "";
+        if (sscanf(arg, "%x %d %7s", &item, &count, how) < 1) {
+            snprintf(out, size, "usage: net w give <hex item id> [count] [put]");
             return;
         }
         if (!lt_on_game_thread()) {
@@ -980,8 +1296,17 @@ static void w_command(const char *rest, char *out, int size)
             lt_post(cmd, out, size);
             return;
         }
+        if (strcmp(how, "add")) {   /* combat4 LAB: PutItem (the story's grant path, which creates a weapon's object itself, as GRANT does) for this PC's human, e.g. Moira's flashlight 0155 x99;
+                                      * the old AddItem path (object 0) crashed the game at exe+5F729B for a herb too (run combat4-a 14:58:48): only with the word `add` */
+            unsigned p = player_obj(g_my_slot);
+            unsigned char res[16];
+            memset(res, 0, sizeof res);
+            if (p && o_putitem) h_putitem((void *)p, res, (int)item, (unsigned)count, 0, 0, 0);   /* through the hook: GRANT and the mirror see it as a story grant */
+            snprintf(out, size, "LAB PutItem(slot %d, %04x, %d) -> ok %u, inventory now %d items", g_my_slot, item, count, res[0], inv_count(g_my_slot));
+            return;
+        }
         if ((item >> 8) == 1) {   /* weapons need the world's item object: AddItem with a null object crashed the game at 0x40ACE3 (6 and 6e); weapons come from the story / `net w equip` of what the slot holds */
-            snprintf(out, size, "refused: %04x is a weapon (AddItem without an item object crashes the game)", item);
+            snprintf(out, size, "refused: %04x is a weapon (AddItem without an item object crashes the game; use `net w give %x %d put`)", item, item, count);
             return;
         }
         unsigned p = player_obj(g_my_slot);
@@ -1003,9 +1328,257 @@ static unsigned w_find_active(unsigned cell, int a, unsigned b, unsigned c)
     return do_call(2, 0xA94550, args, 4);   /* FUN_00A94550: the active object with this LayoutID in the manager's two lists, 0 when none */
 }
 
+/* ---------------------------------------------------------------- 0.2.0 MHIT: the client's real blows on replicas (meleehit_logic.h has the why and the field list)
+ * Game calls (each the stock one): DI constructor FUN_00826ED0 (fastcall ecx = DI), DI copy FUN_005FF220 (thiscall dst, src; the copy FUN_006001D0 makes of a part's DI),
+ * hit handler FUN_0061B050 (thiscall enemy, DI) + last-damage record FUN_00ADD880 (thiscall enemy, DI) = the Raid receiver FUN_009D9D10 without its network decode. */
+typedef void(__attribute__((fastcall)) *mh_dictor_t)(void *di);
+typedef void *(__attribute__((thiscall)) *mh_dicopy_t)(void *dst, const void *src);
+typedef void(__attribute__((thiscall)) *mh_hit_t)(void *enemy, void *di);
+static mh_dedupe_t g_mh_seen;
+/* run M1 (2026-11-07 22:59): a blow posted into the host's mailbox is refused by the stock check FUN_0060DFD0: with enemy+0x6FB8 set it asks FUN_009F3B10(attacker),
+ * which answers 1 for a player of type 2 (+0x7920, the network partner = our puppet) -> no damage (5 posted, 0 ApplyDamage). The game expects a network partner's hit
+ * to come through the Raid receiver, which runs the hit handler directly. So the host applies it directly (inside the enemy's own update, before the stock part of it,
+ * which then picks the reaction from the handler's flags); `net w mhit mailbox 1` keeps the refused way for comparison. */
+static mh_queue_t g_mh_q;
+static volatile LONG g_mh_qn;   /* queued entries (a cheap test in every Intel update of the host) */
+static unsigned g_mh_tx, g_mh_other, g_mh_invalid, g_mh_rx, g_mh_post_fail, g_mh_clamped, g_mh_dead;
+static int g_mh_log = 60;
+static uint32_t g_mh_log_tx[MH_LOG_KINDS], g_mh_log_rx[MH_LOG_KINDS], g_mh_log_ap[MH_LOG_KINDS];   /* bomb: the line budgets per kind (meleehit_logic.h mh_log_take) */
+static unsigned g_mh_obj_tx;   /* MHIT sent for a blow of an object of my human (a thrown bomb, a held weapon) */
+static int mh_lock(void)
+{
+    if (!g_mh_lock_init) return 0;
+    EnterCriticalSection(&g_mh_lock);
+    return 1;
+}
+static void mh_unlock(void) { LeaveCriticalSection(&g_mh_lock); }
+
+static unsigned g_mh_merged;   /* bomb: fresh DIs of the same replica update that were not sent (the stock applies one per update: mh_pick_blow) */
+static void mh_client_scan(unsigned en)
+{
+    if (!en || !g_mh_lock_init) return;
+    unsigned mine = player_obj(g_my_slot), now = GetTickCount();
+    float epos[3] = {rdf(en + 0x40), rdf(en + 0x44), rdf(en + 0x48)};
+    /* pass 1: every valid DI of the replica and its parts: whose blow, fresh or already sent (bomb: the stock applies only one of them per update) */
+    mh_rec_t rec[MH_NPARTS + 1];
+    uint32_t sig[MH_NPARTS + 1], att[MH_NPARTS + 1], attown[MH_NPARTS + 1], objs[MH_NPARTS + 1];
+    int32_t dmg[MH_NPARTS + 1];
+    uint8_t take[MH_NPARTS + 1];
+    int hp_now = (int)rd32(en + 0x1A08), n_take = 0;
+    memset(take, 0, sizeof take);
+    for (int part = 0; part <= MH_NPARTS; part++) {
+        unsigned obj = part ? rd32(en + MH_PARTS + 4 * (part - 1)) : en;
+        objs[part] = obj, dmg[part] = 0;
+        if (!obj) continue;
+        unsigned di = obj + MH_ENEMY_DI;
+        unsigned char valid = 0;
+        r2_safe_read((void *)(di + DI_VALID), &valid, 1);
+        if (!valid) {
+            if (mh_lock()) mh_dedupe_clear(&g_mh_seen, obj, (uint8_t)part, now), mh_unlock();
+            continue;
+        }
+        mh_take_in_t in;
+        memset(&in, 0, sizeof in);
+        in.valid = 1, in.attacker = rd32(di + DI_ATT), in.mine = mine, in.fl0 = rd32(di + DI_FL), in.replica_hp = hp_now;
+        in.attacker_owner = in.attacker ? rd32(in.attacker + MH_OWNER) : 0;
+        int t = mh_take(&in);
+        if (in.attacker && tb_by_obj(&g_tb_copies, in.attacker, now)) t = MH_TAKE_OTHER;   /* bomb: a copy of the partner's throw is never my human's blow */
+        if (t == MH_TAKE_OTHER && g_mh_held && mine && in.attacker) {   /* combat4: an object my human holds (its weapon) made the blow */
+            uint32_t held[HW_N];
+            for (int k = 0; k < HW_N; k++) held[k] = rd32(mine + HW_FIRST + 0x10 * (unsigned)k);
+            if (hw_held(in.attacker, held)) {
+                in.attacker_owner = mine;
+                t = mh_take(&in);
+                if (g_mh_held_n++ < 20) r2_log(W_LOG "MHIT: replica %08x part %d: the attacker %08x is an object my human holds: taken as my blow (flags %08x, %s)", en, part, in.attacker, in.fl0, t == MH_TAKE_MINE ? "sent" : "not a damage DI");
+            }
+        }
+        if (t != MH_TAKE_MINE) {
+            unsigned *c = t == MH_TAKE_OTHER ? &g_mh_other : &g_mh_invalid;
+            if (mh_lock()) {
+                int fresh = mh_dedupe_new(&g_mh_seen, obj, (uint8_t)part, in.attacker ^ in.fl0 ^ (unsigned)in.replica_hp, now);
+                mh_unlock();
+                if (fresh && ++*c <= 20u)
+                    r2_log(W_LOG "MHIT ignored on replica %08x part %d: attacker %08x (owner %08x), mine %08x, flags %08x, replica hp %d: %s", en, part, in.attacker, in.attacker_owner, mine, in.fl0,
+                           in.replica_hp, t == MH_TAKE_OTHER ? "not my human's blow (the host has the real one)" : "not a damage DI");
+            }
+            continue;
+        }
+        unsigned char buf[DI_SIZE];
+        if (!r2_safe_read((void *)di, buf, DI_SIZE)) continue;
+        mh_from_di(buf, epos, part, &rec[part]);
+        sig[part] = mh_sig_di(buf), att[part] = in.attacker, attown[part] = in.attacker_owner, dmg[part] = rec[part].dmg;
+        if (!mh_lock()) continue;
+        int fresh = mh_dedupe_peek(&g_mh_seen, obj, (uint8_t)part, sig[part], now);
+        if (!fresh) g_mh_seen.n_dup++;
+        mh_unlock();
+        if (fresh) take[part] = 1, n_take++;
+    }
+    if (!n_take) return;
+    /* pass 2: the one the stock would apply goes out; every fresh one is marked as sent */
+    int picked = mh_pick_blow(dmg, take);
+    layout_t l;
+    layout_of(en, &l);
+    for (int part = 0; part <= MH_NPARTS; part++) {
+        if (!take[part]) continue;
+        if (!mh_lock()) continue;
+        mh_dedupe_new(&g_mh_seen, objs[part], (uint8_t)part, sig[part], now);
+        mh_unlock();
+        if (!mh_send_this(part, picked)) {
+            if (++g_mh_merged <= 20)
+                r2_log(W_LOG "MHIT: replica (%d,%u,%u) part %d: DI damage %d of the same update NOT sent: the stock applies one blow per update (part %d, DI damage %d, goes out)", l.a, l.b, l.c, part, dmg[part], picked,
+                       picked >= 0 ? dmg[picked] : 0);
+            continue;
+        }
+        mh_rec_t r = rec[part];
+        r.la = l.a, r.lb = (uint16_t)l.b, r.lc = (uint16_t)l.c, r.slot = (uint8_t)g_my_slot;
+        unsigned char b[MH_REC_LEN];
+        mh_pack(&r, b);
+        w_ev_send(EV_W_HITDI, b, MH_REC_LEN);
+        g_mh_tx++;
+        if (r.clamped) g_mh_clamped++;
+        int by_obj = att[part] != mine;   /* bomb: the blow of an object of my human (its owner +0x19C0 or a held weapon): its own log budget */
+        if (by_obj) g_mh_obj_tx++;
+        if (mh_lock()) {
+            int say = mh_log_take(g_mh_log_tx, mh_log_kind(r.dmg, by_obj), (uint32_t)g_mh_log);
+            tb_ent_t *th = by_obj ? tb_by_obj(&g_tb_mine, att[part], now) : 0;
+            char who[96];
+            if (th) snprintf(who, sizeof who, "my thrown %04x (throw %u, object %08x)", th->id, th->seq, att[part]);
+            else if (by_obj) snprintf(who, sizeof who, "an object of my human (%08x, owner %08x)", att[part], attown[part]);
+            else snprintf(who, sizeof who, "my blow");
+            mh_unlock();
+            if (say)
+                r2_log(W_LOG "MHIT sent: %s on replica (%d,%u,%u) part %d: DI damage %d, flags %08x %08x %08x, hit point rel (%.1f,%.1f,%.1f), +114 %u, replica hp %d%s", who, l.a, l.b, l.c, part, r.dmg, r.fl[0],
+                       r.fl[1], r.fl[2], r.rel[0] / MH_REL_SCALE, r.rel[1] / MH_REL_SCALE, r.rel[2] / MH_REL_SCALE, r.f114, hp_now, r.clamped ? " (a field was clamped)" : "");
+        }
+    }
+}
+
+/* flashlive (run c 2026-11-09): the flash stun line read the enemy's hit record (+0x38D0 / +0x38DC) when it saw act 162, after the enemy's own update had cleared it
+ * ("last hit by 00000000 (slot -1), hit flags 00000000 ..."): the last MHIT applied to each enemy is kept here and named in that line instead. Logging only. */
+static struct { unsigned en, t; int slot; uint32_t fl[3]; } g_mh_last[8];
+static unsigned g_mh_last_w;
+static void mh_last_note(unsigned en, const mh_rec_t *r)
+{
+    int k = -1;
+    for (int i = 0; i < 8; i++)
+        if (g_mh_last[i].en == en) k = i;
+    if (k < 0) k = (int)(g_mh_last_w++ % 8);
+    g_mh_last[k].en = en, g_mh_last[k].t = GetTickCount() | 1, g_mh_last[k].slot = r->slot;
+    for (int i = 0; i < 3; i++) g_mh_last[k].fl[i] = r->fl[i];
+}
+
+/* host: build the DI of a queued blow and post it (direct = 0: into the mailbox, the stock update right after handles it; 1: run the hit handler now, the Raid way) */
+static int mh_post(unsigned en, const mh_rec_t *r, int direct)
+{
+    unsigned att = player_obj(r->slot);
+    if (!en || !att || r->slot == g_my_slot) {
+        g_mh_post_fail++;
+        return 0;
+    }
+    unsigned char di[MH_DI_BUF] __attribute__((aligned(16)));
+    memset(di, 0, sizeof di);
+    ((mh_dictor_t)0x826ED0)(di);
+    float epos[3] = {rdf(en + 0x40), rdf(en + 0x44), rdf(en + 0x48)};
+    mh_to_di(r, epos, att, di);
+    int hp0 = (int)rd32(en + 0x1A08);
+    if (!mh_apply_ok(hp0)) {   /* pair run m1: a late blow on an enemy that is already dead (meleehit_logic.h) */
+        g_mh_dead++;
+        if (g_mh_dead <= 20) r2_log(W_LOG "MHIT dropped on the host: layout (%d,%u,%u) is already dead (hp %d), blow of slot %d, DI damage %d", r->la, r->lb, r->lc, hp0, r->slot, r->dmg);
+        return 1;
+    }
+    if (direct) {
+        ((mh_hit_t)0x61B050)((void *)en, di);
+        uint32_t pa[4];
+        unsigned vt = rd32(en), fpart = vt ? rd32(vt + 0x3B0) : 0;
+        if (g_mh_part && mh_part_args(di, pa) && fpart > 0x400000 && fpart < 0x1400000) {   /* combat2: the part damage the Raid receiver adds (meleehit_logic.h mh_part_args) */
+            unsigned args[5] = {en, pa[0], pa[1], pa[2], pa[3]};
+            do_call(2, fpart, args, 5);
+            g_mh_part_n++;
+        }
+        ((mh_hit_t)0xADD880)((void *)en, di);
+    } else {
+        ((mh_dicopy_t)0x5FF220)((void *)(en + MH_ENEMY_DI), di);
+    }
+    mh_last_note(en, r);
+    int say = 0;
+    if (mh_lock()) say = mh_log_take(g_mh_log_ap, mh_log_kind(r->dmg, 0), (uint32_t)g_mh_log), mh_unlock();   /* bomb: a blow with damage has its own budget (the light's damage-0 hits spent the shared one) */
+    if (say)
+        r2_log(W_LOG "MHIT %s on the host: layout (%d,%u,%u) part %d, blow of slot %d (puppet %08x), DI damage %d, flags %08x %08x %08x, hp %d%s%d%s (region %u: part thresholds body %d head %d)", direct ? "applied by the hit handler" : "posted into the mailbox",
+               r->la, r->lb, r->lc, r->part, r->slot, att, r->dmg, r->fl[0], r->fl[1], r->fl[2], hp0, direct ? " -> " : " (the stock update handles it now), mailbox valid ", direct ? (int)rd32(en + 0x1A08) : (int)(rd32(en + MH_ENEMY_DI + DI_VALID) & 0xFF),
+               direct && g_mh_part ? ", part damage +3B0" : "", (unsigned)r->f114, (int)rd32(en + 0x71B0), (int)rd32(en + 0x71B8));
+    return 1;
+}
+
+static void mh_host_post(unsigned en)
+{
+    if (!en || !g_mh_qn || !g_mh_lock_init) return;
+    layout_t l;
+    layout_of(en, &l);
+    unsigned char valid = 0;
+    r2_safe_read((void *)(en + MH_ENEMY_DI + DI_VALID), &valid, 1);
+    mh_rec_t r;
+    int have = 0;
+    if (!mh_lock()) return;
+    mh_qent_t *e = mh_q_take(&g_mh_q, l.a, (uint16_t)l.b, (uint16_t)l.c, g_mh_mailbox && valid != 0, GetTickCount());
+    if (e) r = e->r, have = 1, InterlockedDecrement(&g_mh_qn);
+    mh_unlock();
+    if (have) mh_post(en, &r, g_mh_mailbox ? 0 : 1);
+}
+
+/* host game pass: entries no Intel update took */
+static void mh_tick(void)
+{
+    if (!g_mh_qn || !g_cs || !cs_is_host(g_cs)) return;
+    for (int guard = 0; guard < MH_QMAX; guard++) {
+        mh_rec_t r;
+        int have = 0, dropped = 0;
+        if (!mh_lock()) return;
+        mh_qent_t *e = mh_q_stale(&g_mh_q, GetTickCount(), &dropped);
+        if (e) r = e->r, have = 1;
+        while (dropped-- > 0) InterlockedDecrement(&g_mh_qn);
+        if (have) InterlockedDecrement(&g_mh_qn);
+        mh_unlock();
+        if (!have) break;
+        unsigned en = w_find_active(SENEMY_CELL, r.la, r.lb, r.lc);
+        if (!en) {
+            g_mh_q.n_dropped++;
+            r2_log(W_LOG "MHIT dropped: layout (%d,%u,%u) is not here", r.la, r.lb, r.lc);
+            continue;
+        }
+        mh_post(en, &r, 1);
+    }
+}
+
+static void mh_on_event(const cp_event *e)
+{
+    mh_rec_t r;
+    if (!cs_is_host(g_cs) || !mh_unpack(e->body, e->len, &r) || r.slot == g_my_slot) return;
+    g_mh_rx++;
+    if (!g_mh_on || !mh_lock()) return;
+    mh_q_push(&g_mh_q, &r, GetTickCount());
+    InterlockedExchange(&g_mh_qn, 0);
+    for (int i = 0; i < MH_QMAX; i++)
+        if (g_mh_q.q[i].used) InterlockedIncrement(&g_mh_qn);
+    mh_unlock();
+    int say = 0;
+    if (mh_lock()) say = mh_log_take(g_mh_log_rx, mh_log_kind(r.dmg, 0), (uint32_t)g_mh_log), mh_unlock();
+    if (say) r2_log(W_LOG "MHIT received: blow of slot %d on (%d,%u,%u) part %d, DI damage %d: queued for the enemy's update", r.slot, r.la, r.lb, r.lc, r.part, r.dmg);
+}
+
+static void mh_status(char *out, int size)
+{
+    snprintf(out, size, "MHIT %s%s (client: sent %u (%u of an object of my human), not mine %u, invalid %u, same DI again %u, other DIs of the same update %u, clamped %u; host: received %u, queued now %ld, posted %u, deferred %u, direct %u, dropped %u, over %u, failed %u, dead enemy %u, part damage %s %u)",
+             g_mh_on ? "on" : "OFF", g_mh_mailbox ? ", host via the mailbox (lab)" : "", g_mh_tx, g_mh_obj_tx, g_mh_other, g_mh_invalid, g_mh_seen.n_dup, g_mh_merged, g_mh_clamped, g_mh_rx, (long)g_mh_qn, g_mh_q.n_posted, g_mh_q.n_deferred, g_mh_q.n_direct, g_mh_q.n_dropped,
+             g_mh_q.n_over, g_mh_post_fail, g_mh_dead, g_mh_part ? "on" : "OFF", g_mh_part_n);
+}
+
 static void w_on_event(const cp_event *e)
 {
     if (!g_w_on) return;
+    if (e->kind == EV_W_HITDI) {
+        mh_on_event(e);
+        return;
+    }
     unsigned char b[CP_EVENT_MAX];
     memcpy(b, e->body, e->len);
     int a = 0;
@@ -1131,7 +1704,7 @@ static void w_on_event(const cp_event *e)
             unsigned p = player_obj(g_my_slot);
             if (p && b[0] == g_my_slot && o_psub && amount > 0) {
                 g_w_replay++;
-                o_psub((void *)p, amount);
+                if (!(g_dl_on && downed_hit(p, &amount))) o_psub((void *)p, amount);
                 g_w_replay--;
                 g_w_pdmg_applied++;
                 r2_log(W_LOG "PDMG applied: damage %d to my character (slot %d), hp now %d", amount, g_my_slot, (int)rd32(p + 0x1A08));
@@ -1146,6 +1719,18 @@ static void w_on_event(const cp_event *e)
         break;
     case EV_W_BGL:   /* the other PC's block loader list (scen.inc, 6j) */
         bgl_event(e);
+        break;
+    case EV_W_PROP:   /* the transform of a movable set model the other PC's human pushes / carries (objsync.inc, stage 10) */
+        os_prop_event(e);
+        break;
+    case EV_W_SFD:   /* the other PC's scenario flags at the end of its quiet window (scen.inc, stage 10) */
+        scen_digest_event(e);
+        break;
+    case EV_W_THROW:   /* combat4: the partner launched a projectile */
+        w_throw_apply(e);
+        break;
+    case EV_W_BOOM:   /* bomb: the partner's real bomb exploded: its copy explodes there (for the eye) */
+        w_boom_apply(e);
         break;
     default:
         story_on_event(e);
@@ -1183,6 +1768,52 @@ static unsigned w_live_enemies(unsigned *out, unsigned max)
     return n;
 }
 
+/* combat4 follow-up: the human session's evidence of Moira's flash stun (a host em1100 in act 0xA2 = 162, cEm1100ActDmgFlash) and of the follow-up on it: the host logs
+ * the stun with the last hit's attacker (+0x38D0) and flags (+0x38DC, bit 26 = the light), then the next action changes of that enemy for 15 s; a client logs its
+ * replica taking the host's 162. Logging only. */
+static struct { unsigned obj, t, act; int left; } g_fw[8];
+static unsigned g_w_flash_n, g_w_flash_logs, g_w_flash_rep;
+static void w_flash_watch(unsigned o, const layout_t *l, unsigned act, int hp)
+{
+    unsigned now = GetTickCount();
+    int k = -1, fr = -1;
+    for (int i = 0; i < 8; i++) {
+        if (g_fw[i].obj == o) k = i;
+        else if (fr < 0 && (!g_fw[i].obj || now - g_fw[i].t > 15000)) fr = i;
+    }
+    if (act == 0xA2 && (k < 0 || g_fw[k].act != 0xA2)) {
+        if (k < 0) k = fr >= 0 ? fr : 0;
+        g_fw[k].obj = o, g_fw[k].t = now | 1, g_fw[k].act = act, g_fw[k].left = 8;
+        g_w_flash_n++;
+        unsigned att = rd32(o + 0x38D0);
+        int as = w_slot_of_player(att);
+        uint32_t f0 = rd32(o + 0x38DC), f1 = rd32(o + 0x38E0), f2 = rd32(o + 0x38E4);
+        unsigned ago = 0;
+        if (!att && !f0 && !f1 && !f2)   /* the record is already cleared: the last MHIT on this enemy (a client's light) */
+            for (int i = 0; i < 8; i++)
+                if (g_mh_last[i].en == o && now - g_mh_last[i].t < 3000) {
+                    as = g_mh_last[i].slot, att = player_obj(as), f0 = g_mh_last[i].fl[0], f1 = g_mh_last[i].fl[1], f2 = g_mh_last[i].fl[2], ago = (now - g_mh_last[i].t) | 1;
+                    break;
+                }
+        if (g_w_flash_logs++ < 40) {
+            char via[48] = "";
+            if (ago) snprintf(via, sizeof via, " (its last MHIT, %u ms before)", ago);
+            r2_log(W_LOG "flash stun on the host: enemy (%d,%u,%u) %08x act 162 (DmgFlash), hp %d, last hit by %08x (slot %d%s)%s, hit flags %08x %08x %08x (bit 26 = the light)", l->a, l->b, l->c, o, hp, att,
+                   as, as < 0 ? "" : as == g_my_slot ? ": my human" : ": the partner's puppet (the client's flash via MHIT)", via, f0, f1, f2);
+        }
+        return;
+    }
+    if (k >= 0 && act != g_fw[k].act) {
+        if (g_fw[k].left > 0 && now - g_fw[k].t < 15000 && g_w_flash_logs++ < 40) {
+            unsigned me = player_obj(g_my_slot), pu = player_obj(g_rem_slot);
+            g_fw[k].left--;
+            r2_log(W_LOG "flash-stunned enemy (%d,%u,%u): act %u -> %u, hp %d, %u ms after the stun; my human's action %u, the partner's %u", l->a, l->b, l->c, g_fw[k].act, act, hp, now - g_fw[k].t, me ? rd32(me + 0x1A54) : 0,
+                   pu ? rd32(pu + 0x1A54) : 0);
+        }
+        g_fw[k].act = act;
+    }
+}
+
 static void w_send_enemies(void)
 {
     unsigned now = GetTickCount();
@@ -1203,10 +1834,12 @@ static void w_send_enemies(void)
         short yaw = (short)(player_yaw(o) * 10000.0f), hp = (short)(int)rd32(o + 0x1A08);
         unsigned short act = (unsigned short)rd32(o + 0x1A54), pact = (unsigned short)rd32(o + 0x1A58);
         unsigned ps = rd32(o + 0x37B8);
+        w_flash_watch(o, &l, act, hp);
         unsigned char *p = buf + len;
         memcpy(p, &a16, 2), memcpy(p + 2, &l.b, 2), memcpy(p + 4, &l.c, 2), memcpy(p + 6, pos, 12), memcpy(p + 18, &yaw, 2), memcpy(p + 20, &hp, 2), memcpy(p + 22, &act, 2), memcpy(p + 24, &pact, 2), memcpy(p + 26, &ps, 4);
         int ts = w_slot_of_player(rd32(o + 0x7168));
-        p[30] = (unsigned char)(ts < 0 ? 255 : ts), p[31] = 0;   /* which human the host's enemy chases */
+        p[30] = (unsigned char)(ts < 0 ? 255 : ts);   /* which human the host's enemy chases */
+        p[31] = gp_rec_flags((unsigned char)(rd32(o + 0x6F88) >> 24));   /* 0.2.0: bit 0 = the host's +0x6F8B (grapple_logic.h) */
         len += WREC, recs++;
     }
     if (recs && cs_send_world(g_cs, WK_ENEMIES, buf, len)) g_w_tx_batches++, g_w_tx_records += recs;
@@ -1306,6 +1939,20 @@ static void w_apply_enemy_record(const unsigned char *p)
             g_w_tgt_set++;
         }
     }
+    if (g_w_alert) {   /* 0.2.0: the stock stagger offers a physical attack only on an ALERTED enemy (uEm1100_vf269); the bit comes from the Intel, which a replica does not run */
+        unsigned hps, cur = rd32(en + 0x37B8);
+        memcpy(&hps, p + 26, 4);
+        unsigned want = gp_alert_mirror(cur, hps);
+        if (want != cur && wr(en + 0x37B8, &want, 4)) {
+            if (want & GP_ALERT_BIT) g_w_alert_set++; else g_w_alert_clr++;
+            if (g_w_alert_set + g_w_alert_clr <= 40) r2_log(W_LOG "alert: replica (%d,%u,%u) %08x +37B8 %08x -> %08x (host %08x), action %u", (int)a16, b, c, en, cur, want, hps, act);
+        }
+        unsigned char nb = (unsigned char)(rd32(en + 0x6F88) >> 24), nw = gp_notice_mirror(nb, p[31]);   /* the 'react to a touch / hit' byte: a replica's own update sets it, only an Intel clears it */
+        if (nw != nb && wr(en + GP_NOTICE_OFS, &nw, 1)) {
+            g_w_notice_fix++;
+            if (g_w_notice_fix <= 20) r2_log(W_LOG "alert: replica (%d,%u,%u) %08x +6F8B %u -> %u (host record), action %u", (int)a16, b, c, en, nb, nw, act);
+        }
+    }
     int dying = hp <= 0 && (int)rd32(en + 0x1A08) > 0;   /* the host says dead: the DEATH event kills the replica through ApplyDamage (the killer's PC credits the kill); the record only does it when that event is late */
     if (dying) {
         static unsigned dy_obj[8], dy_t[8];
@@ -1329,6 +1976,7 @@ static void w_apply_enemy_record(const unsigned char *p)
             do_call(2, fn, args, 6);
             g_w_replay--;
             g_w_act_changes++;
+            if (act == 0xA2 && g_w_flash_rep++ < 20) r2_log(W_LOG "flash stun: replica (%d,%u,%u) %08x shows the host's act 162 (DmgFlash), hp %d", (int)a16, b, c, en, hp);
         }
     }
 }
@@ -1411,9 +2059,11 @@ static void w_tick(void)
         }
     }
     if (!g_w_on || !g_cs || !cs_active(g_cs)) return;
-    if (cs_is_host(g_cs)) w_send_enemies(), story_send_digest();
+    if (cs_is_host(g_cs)) w_send_enemies(), story_send_digest(), mh_tick();
     story_send_items();
+    story_inv_tick();   /* combat4: the inventory mirror (both roles) */
     w_sm_tick();
+    os_tick();
     w_recv_world();
 }
 
@@ -1423,5 +2073,10 @@ static void w_status_ext(char *out, int size)
     o += snprintf(out + o, size - o, "world records: sent %u batches / %u records, received %u / %u (no replica for %u), action changes %u, snaps %u, target sets %u, kill reports %u; events applied: spawn %u, hit %u, death %u, pickup %u (unmatched %u), puppet damage sent %u applied %u; replica error at apply: mean %.2f max %.1f (%u records)\n",
                   g_w_tx_batches, g_w_tx_records, g_w_rx_batches, g_w_rx_records, g_w_rx_nomatch, g_w_act_changes, g_w_enemy_snaps, g_w_tgt_set, g_w_kill_reports, g_w_applied_spawn, g_w_applied_hit, g_w_applied_death, g_w_applied_pickup, g_w_unmatched, g_w_pdmg_sent,
                   g_w_pdmg_applied, g_w_err_n ? g_w_err_sum / g_w_err_n : 0.0, g_w_err_max, g_w_err_n);
+    if (o < size - 900) {
+        mh_status(out + o, size - o);
+        o += (int)strlen(out + o);
+        o += snprintf(out + o, size - o, "\n");
+    }
     if (o < size - 500) story_status(out + o, size - o);
 }

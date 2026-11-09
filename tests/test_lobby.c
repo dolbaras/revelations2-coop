@@ -244,8 +244,13 @@ static void test_flow(void)
     CHECK(v.screen == LS_ROOM);
     CHECK(v.nplayers == 2);
     CHECK(!strcmp(view(&A).status, lobby_own_text(LT_PARTNER_JOINED, 0)));
+    CHECK(!strcmp(view(&B).status, lobby_own_text(LT_GUEST_PICK, 0)));   /* not "A partner has joined." on the guest (0.2.0 round 2, live run 5) */
     step(3100);
-    CHECK(!strcmp(view(&A).status, lobby_own_text(LT_NEED_READY, 0)));   /* partner joined, not ready */
+    CHECK(!strcmp(view(&A).status, "Waiting for Bob to get ready..."));   /* partner joined, not ready (0.2.0: the line names him) */
+    CHECK(!strcmp(view(&B).status, lobby_own_text(LT_GUEST_PICK, 0)));     /* the guest is told what to do */
+    CHECK(strstr(view(&A).info, lobby_own_text(LT_EP1_ONLY, 0)) && strstr(view(&A).info, "UDP port 7 must be forwarded"));   /* System Link host: Episode 1 only + port */
+    CHECK(strstr(view(&B).info, lobby_own_text(LT_EP1_ONLY, 0)) && !strstr(view(&B).info, "UDP"));
+    CHECK(row_kind(&A, lobby_own_text(LT_KICK, 0)) == LV_NORMAL && row_kind(&B, lobby_own_text(LT_KICK, 0)) < 0);   /* Remove partner: the host's row only */
     cs_player_info pi;
     CHECK(cs_player(A.s, 0, &pi) && pi.character == CP_CHAR_CLAIRE);
     CHECK(cs_player(A.s, 1, &pi) && pi.character == CP_CHAR_MOIRA);
@@ -283,19 +288,38 @@ static void test_flow(void)
     /* the host cannot even reach the partner's slot with the cursor */
     CHECK(goto_row(&A, "Moira") < 0);
 
-    /* episode and difficulty: left/right on the host's rows, the client sees the values */
+    /* episode: 0.2.0 product rule = Episode 1 only, the row is information (not selectable); the lab switch (REV2_EPISODES=all) brings the 1-4 row back */
+    CHECK(row_kind(&A, "Episode") == LV_INFO && !strcmp(row_value(&A, "Episode"), "1"));
+    CHECK(goto_row(&A, "Episode") < 0);
+    {
+        lobby_settings st;
+        lobby_get_settings(A.l, &st);
+        st.episodes_all = 1;
+        lobby_set_settings(A.l, &st);
+    }
     goto_row(&A, "Episode");
     ev(&A, LE_RIGHT);
     step(300);
     cs_session_get(A.s, &ss);
     CHECK(ss.episode == 2);
     CHECK(!strcmp(row_value(&B, "Episode"), "2"));
+    /* the product guest (B) does not play another episode: Ready greyed, the room says why */
+    CHECK(row_kind(&B, "Ready") == LV_GREY && !strcmp(view(&B).status, lobby_own_text(LT_EP1_ONLY, 0)) && view(&B).status_kind == LSK_ERROR);
     ev(&A, LE_LEFT), ev(&A, LE_LEFT);
     step(300);
     cs_session_get(A.s, &ss);
     CHECK(ss.episode == 4);   /* wraps */
     ev(&A, LE_RIGHT);
     step(300);
+    cs_session_get(A.s, &ss);
+    CHECK(ss.episode == 1 && row_kind(&B, "Ready") == LV_NORMAL);
+    {
+        lobby_settings st;
+        lobby_get_settings(A.l, &st);
+        st.episodes_all = 0;
+        lobby_set_settings(A.l, &st);
+        CHECK(st.episode == 1);
+    }
     goto_row(&A, "Difficulty");
     ev(&A, LE_RIGHT);
     step(300);
@@ -304,6 +328,40 @@ static void test_flow(void)
     CHECK(!strcmp(row_value(&B, "Difficulty"), lobby_own_text(LT_HARD, 0)));
     CHECK(strlen(row_value(&A, "Difficulty")) > 0);
     CHECK(row_kind(&B, "Difficulty") == LV_INFO);
+
+    /* the downed / revive rule: a host row (off by default), the client sees it, the session flag changes with it, the bleed-out preset bits survive */
+    CHECK(row_kind(&A, lobby_own_text(LT_DOWNED, 0)) == LV_NORMAL && row_kind(&B, lobby_own_text(LT_DOWNED, 0)) == LV_INFO);
+    CHECK(!strcmp(row_value(&B, lobby_own_text(LT_DOWNED, 0)), lobby_own_text(LT_NO, 0)));
+    CHECK(!(ss.flags & CP_SESS_DOWNED));
+    goto_row(&A, lobby_own_text(LT_DOWNED, 0));
+    ev(&A, LE_RIGHT);
+    step(300);
+    cs_session_get(A.s, &ss);
+    CHECK((ss.flags & CP_SESS_DOWNED) && ss.difficulty == 2 && ss.episode == 1);
+    CHECK(!strcmp(row_value(&B, lobby_own_text(LT_DOWNED, 0)), lobby_own_text(LT_YES, 0)));
+    CHECK(strstr(row_value(&A, lobby_own_text(LT_DOWNED, 0)), lobby_own_text(LT_YES, 0)) != NULL);
+    {
+        char o[200];
+        cs_command(A.s, "session 1 0 2 7", o, sizeof o);   /* a lab console line: rule on + preset 3 */
+        step(300);
+        cs_session_get(B.s, &ss);
+        CHECK(ss.flags == 7 && ss.difficulty == 2);
+        goto_row(&A, lobby_own_text(LT_DOWNED, 0));
+        ev(&A, LE_LEFT);   /* the toggle flips the rule bit only */
+        step(300);
+        cs_session_get(B.s, &ss);
+        CHECK(ss.flags == 6);
+        ev(&A, LE_LEFT);
+        step(300);
+        cs_session_get(B.s, &ss);
+        CHECK(ss.flags == 7);
+    }
+    /* texts of the downed strings exist in all 12 languages and carry exactly one %s where a number goes */
+    for (int lg = 0; lg < 12; lg++) {
+        CHECK(strlen(lobby_own_text(LT_DOWNED, lg)) > 1);
+        const char *a = lobby_own_text(LT_DOWN_SELF, lg), *b = lobby_own_text(LT_DOWN_PARTNER, lg);
+        CHECK(strstr(a, "%s") && !strstr(strstr(a, "%s") + 2, "%s") && strstr(b, "%s") && !strstr(strstr(b, "%s") + 2, "%s"));
+    }
 
     /* start only when the partner is ready */
     CHECK(row_kind(&A, "Start Game") == LV_GREY);
@@ -391,6 +449,8 @@ static void test_leave_and_errors(void)
     CHECK(view(&B).screen == LS_TOP && !cs_active(B.s));
     step(1500);
     CHECK(view(&A).screen == LS_ROOM && cs_player_count(A.s) == 1);
+    CHECK(!strcmp(view(&A).status, "Bob has left the session."));   /* 0.2.0: the host is told (the stock m09 #143 in the game) */
+    step(5000);
     CHECK(!strcmp(view(&A).status, lobby_own_text(LT_WAITING, 0)));
 
     /* the host leaves: alone, no question */
@@ -474,6 +534,159 @@ static void test_friends_and_steam(void)
     n_nodes = 0;
 }
 
+/* 0.2.0 lobby-must in the room: the guest's progress lines, the waiting lines on both sides, Remove partner, the reasons a guest is back at the top */
+static void test_lobbymust_room(void)
+{
+    Node A, B;
+    node_init(&A, "Alice", 12);
+    node_init(&B, "Player 2", 12);   /* a guest without a Steam name: the default name, shown as "<Player> 2" */
+    nodes[0] = &A, nodes[1] = &B, n_nodes = 2;
+    lobby_open(A.l);
+    lobby_open(B.l);
+    press(&A, "Find a Partner");
+    press(&A, "System Link");
+    step(100);
+    press(&B, "Join a Partner");
+    press(&B, "System Link");
+    retype(&B, "sim:12");
+    ev(&B, LE_OK);
+    /* the guest's progress: "Connecting to <address>...", then "Awaiting reply from <address>..." (RE5 / RE6) */
+    int saw_conn = 0, saw_wait = 0;
+    for (int t = 0; t < 60 && view(&B).screen == LS_CONNECTING; t++) {
+        lobby_view v = view(&B);
+        saw_conn |= !strcmp(v.status, "Connecting to sim:12...");
+        saw_wait |= !strcmp(v.status, "Awaiting reply from sim:12...");
+        vclock += 5, cn_sim_set_time(vclock);
+        cs_poll(B.s), lobby_update(B.l);
+        if (t % 4 == 3) cs_poll(A.s), lobby_update(A.l);
+    }
+    CHECK(saw_conn && saw_wait);
+    step(1500);
+    CHECK(view(&B).screen == LS_ROOM);
+    step(3100);
+    /* the table and the lines name the guest "Player 2" (the stock word "Player" in the game's language) */
+    lobby_view v = view(&A);
+    CHECK(v.nplayers == 2 && !strcmp(v.players[1].name, "Player 2"));
+    CHECK(!strcmp(v.status, "Waiting for Player 2 to get ready..."));
+    CHECK(!strcmp(view(&B).status, lobby_own_text(LT_GUEST_PICK, 0)));
+    press(&B, "Ready");
+    step(300);
+    CHECK(!strcmp(view(&A).status, "Player 2 is ready. You can start the game."));
+    CHECK(!strcmp(view(&B).status, "Waiting for Alice to start the game..."));
+    /* the leave question tells the guest that the session ends for both */
+    ev(&B, LE_BACK);
+    CHECK(view(&B).screen == LS_LEAVE_ASK && !strcmp(view(&B).note, lobby_own_text(LT_LEAVE_HINT, 0)));
+    ev(&B, LE_BACK);
+    CHECK(view(&B).screen == LS_ROOM);
+
+    /* Remove partner: the stock question with the name, the cursor on "No"; No keeps him, Yes removes him */
+    press(&A, lobby_own_text(LT_KICK, 0));
+    v = view(&A);
+    CHECK(v.screen == LS_KICK_ASK && !strcmp(v.prompt, "Do you want to kick Player 2?") && v.sel == 1);
+    ev(&A, LE_OK);   /* "No" */
+    CHECK(view(&A).screen == LS_ROOM && cs_player_count(A.s) == 2);
+    press(&A, lobby_own_text(LT_KICK, 0));
+    ev(&A, LE_BACK);   /* Esc = No */
+    CHECK(view(&A).screen == LS_ROOM && cs_player_count(A.s) == 2);
+    press(&A, lobby_own_text(LT_KICK, 0));
+    press(&A, "Yes");
+    step(300);
+    CHECK(view(&A).screen == LS_ROOM && cs_player_count(A.s) == 1 && row_kind(&A, lobby_own_text(LT_KICK, 0)) < 0);
+    CHECK(!strcmp(view(&A).status, lobby_own_text(LT_WAITING, 0)));   /* (his own removal needs no line on the host) */
+    v = view(&B);
+    CHECK(v.screen == LS_TOP && v.status_kind == LSK_ERROR && !strcmp(v.status, lobby_own_text(LT_REMOVED, 0)) && !cs_active(B.s));
+    /* he tries again: refused, the reason in his language (menu.c gives the stock words; here the lobby gets the session's text) */
+    press(&B, "Join a Partner");
+    press(&B, "System Link");
+    ev(&B, LE_OK);
+    step(600);
+    CHECK(view(&B).screen == LS_JOIN_IP && cs_player_count(A.s) == 1);
+
+    /* the host leaves the room under a joined guest: "Session has been concluded." (not "connection terminated") */
+    cs_leave(A.s, 0);
+    lobby_close(A.l);
+    lobby_open(A.l);
+    press(&A, "Find a Partner");
+    press(&A, "System Link");
+    step(100);
+    Node C;
+    node_init(&C, "Carol", 12);
+    nodes[2] = &C, n_nodes = 3;
+    lobby_open(C.l);
+    press(&C, "Join a Partner");
+    press(&C, "System Link");
+    retype(&C, "sim:12");
+    ev(&C, LE_OK);
+    step(2000);
+    CHECK(view(&C).screen == LS_ROOM);
+    press(&A, "Leave");
+    CHECK(view(&A).screen == LS_LEAVE_ASK);
+    press(&A, "Yes");
+    step(500);
+    v = view(&C);
+    CHECK(v.screen == LS_TOP && !strcmp(v.status, lobby_own_text(LT_SESSION_OVER, 0)));
+    /* the guest's link breaks without a goodbye: the host's room says "<name> has disconnected." */
+    press(&A, "Find a Partner");
+    press(&A, "System Link");
+    step(100);
+    press(&C, "Join a Partner");
+    press(&C, "System Link");
+    ev(&C, LE_OK);
+    step(2000);
+    CHECK(view(&C).screen == LS_ROOM && cs_player_count(A.s) == 2);
+    {
+        cs_player_info pi;
+        CHECK(cs_player(A.s, cs_remote_pid(A.s), &pi));
+        cn_disconnect_peer(cs_transport(A.s), pi.peer, 0);
+    }
+    step(200);
+    CHECK(!strcmp(view(&A).status, "Carol has disconnected."));
+
+    cs_free(A.s), cs_free(B.s), cs_free(C.s);
+    lobby_free(A.l), lobby_free(B.l), lobby_free(C.l);
+    n_nodes = 0;
+}
+
+/* 0.2.0: a product guest does not start another episode than 1 that a (lab) host started anyway */
+static void test_episode_rule(void)
+{
+    Node A, B;
+    node_init(&A, "Alice", 13);
+    node_init(&B, "Bob", 13);
+    nodes[0] = &A, nodes[1] = &B, n_nodes = 2;
+    lobby_settings st;
+    lobby_get_settings(A.l, &st);
+    st.episodes_all = 1, st.episode = 3;
+    lobby_set_settings(A.l, &st);
+    lobby_get_settings(B.l, &st);
+    st.episode = 3;   /* (an old settings file of the guest) */
+    lobby_set_settings(B.l, &st);
+    lobby_get_settings(B.l, &st);
+    CHECK(st.episode == 1);   /* product: clamped to 1 */
+    lobby_open(A.l);
+    lobby_open(B.l);
+    press(&A, "Find a Partner");
+    press(&A, "System Link");
+    step(100);
+    cp_session ss;
+    cs_session_get(A.s, &ss);
+    CHECK(ss.episode == 3);   /* the lab host's session */
+    press(&B, "Join a Partner");
+    press(&B, "System Link");
+    retype(&B, "sim:13");
+    ev(&B, LE_OK);
+    step(2000);
+    CHECK(view(&B).screen == LS_ROOM && row_kind(&B, "Ready") == LV_GREY);
+    char o[100];
+    cs_command(A.s, "start force", o, sizeof o);   /* the lab host starts without the guest's Ready */
+    step(300);
+    CHECK(lobby_take_request(A.l) == LR_START);
+    CHECK(lobby_take_request(B.l) == LR_NONE && view(&B).screen == LS_TOP && !strcmp(view(&B).status, lobby_own_text(LT_EP1_ONLY, 0)) && !cs_active(B.s));
+    cs_free(A.s), cs_free(B.s);
+    lobby_free(A.l), lobby_free(B.l);
+    n_nodes = 0;
+}
+
 static void test_texts(void)
 {
     for (int t = 0; t < LT_COUNT; t++) {
@@ -499,6 +712,92 @@ static void test_texts(void)
     }
 }
 
+/* ready2 (2026-11-09, the owner: "Ready" buttons as in Jericho): the room's ready rules end to end. Jericho's lobby: every seat line shows READY, a client
+ * marks ready / takes it back, the host's Start waits for the seats, a character change takes the ready back, a player who leaves frees the seat. Here: the
+ * players table shows each player's state on BOTH PCs (the host is the one who starts: always ready), the guest's Ready toggles, Start is grey until the guest
+ * is ready and greys again on un-ready, the host's choice of the other story half moves the guest's character and takes its Ready back, a guest who leaves
+ * after Ready leaves the host's room unstartable with "<name> has left the session.", and a new guest starts not ready. (Tests only: the 0.2.0 code already
+ * did all of this; nothing tested the un-ready, the reset by the half switch or the leave after Ready.) */
+static void test_ready_rules(void)
+{
+    Node A, B;
+    node_init(&A, "Alice", 9);
+    node_init(&B, "Bob", 9);
+    nodes[0] = &A, nodes[1] = &B, n_nodes = 2;
+    lobby_open(A.l);
+    lobby_open(B.l);
+    press(&A, "Find a Partner");
+    press(&A, "System Link");
+    step(200);
+    press(&B, "Join a Partner");
+    press(&B, "System Link");
+    type(&B, "sim:9");
+    ev(&B, LE_OK);
+    step(1500);
+    step(3100);
+    lobby_view va = view(&A), vb = view(&B);
+    CHECK(va.screen == LS_ROOM && vb.screen == LS_ROOM && va.nplayers == 2 && vb.nplayers == 2);
+    /* the table on both PCs: the host (the one who starts) ready, the guest not yet */
+    CHECK(va.players[0].host && va.players[0].ready && !va.players[1].ready && !strcmp(va.players[1].name, "Bob"));
+    CHECK(vb.players[0].host && vb.players[0].ready && !vb.players[1].ready && vb.players[1].me);
+    CHECK(!strcmp(va.t_ready, lobby_own_text(LT_PARTNER_READY, 0)) && !strcmp(va.t_not_ready, lobby_own_text(LT_NOT_READY, 0)));
+    CHECK(row_kind(&A, "Start Game") == LV_GREY && !strcmp(va.status, "Waiting for Bob to get ready..."));
+    CHECK(row_kind(&B, "Ready") == LV_NORMAL && !strcmp(row_value(&B, "Ready"), "[  ]") && row_kind(&A, "Ready") < 0);   /* the guest's row; the host starts instead */
+    /* Ready: both tables say so, Start opens, the lines change on both PCs */
+    press(&B, "Ready");
+    step(300);
+    va = view(&A), vb = view(&B);
+    CHECK(va.players[1].ready && vb.players[1].ready && !strcmp(row_value(&B, "Ready"), "[X]"));
+    CHECK(row_kind(&A, "Start Game") == LV_NORMAL && !strcmp(va.status, "Bob is ready. You can start the game.") && !strcmp(vb.status, "Waiting for Alice to start the game..."));
+    /* un-ready: back to grey and the waiting line, on both PCs */
+    press(&B, "Ready");
+    step(300);
+    va = view(&A), vb = view(&B);
+    CHECK(!va.players[1].ready && !vb.players[1].ready && !strcmp(row_value(&B, "Ready"), "[  ]"));
+    CHECK(row_kind(&A, "Start Game") == LV_GREY && !strcmp(va.status, "Waiting for Bob to get ready...") && !strcmp(vb.status, lobby_own_text(LT_GUEST_PICK, 0)));
+    CHECK(goto_row(&A, "Start Game") < 0);   /* a grey Start cannot even be reached with the cursor */
+    step(300);
+    CHECK(cs_phase(A.s) == CP_PHASE_LOBBY && cs_phase(B.s) == CP_PHASE_LOBBY);
+    /* the host switches the story half: the guest's character follows (Moira -> Natalia) and its Ready is taken back: it confirms again */
+    press(&B, "Ready");
+    step(300);
+    CHECK(row_kind(&A, "Start Game") == LV_NORMAL);
+    press(&A, "Barry");
+    step(1500);
+    cs_player_info pi;
+    CHECK(cs_player(A.s, 1, &pi) && pi.character == CP_CHAR_NATALIA && !pi.ready);
+    CHECK(row_kind(&A, "Start Game") == LV_GREY && !strcmp(row_value(&B, "Ready"), "[  ]") && !view(&A).players[1].ready);
+    press(&A, "Claire");
+    step(1500);
+    press(&B, "Ready");
+    step(300);
+    CHECK(cs_player(A.s, 1, &pi) && pi.character == CP_CHAR_MOIRA && pi.ready && row_kind(&A, "Start Game") == LV_NORMAL);
+    /* the guest leaves after Ready: the host's room cannot start, says who left, and waits again */
+    ev(&B, LE_BACK);
+    CHECK(view(&B).screen == LS_LEAVE_ASK);
+    press(&B, "Yes");
+    step(1500);
+    va = view(&A);
+    CHECK(va.screen == LS_ROOM && va.nplayers == 1 && cs_player_count(A.s) == 1 && row_kind(&A, "Start Game") == LV_GREY);
+    CHECK(!strcmp(va.status, "Bob has left the session."));
+    if (strcmp(va.status, "Bob has left the session.")) printf("  (after the leave: %s)\n", va.status);
+    CHECK(view(&B).screen == LS_TOP && !cs_active(B.s));
+    step(5200);
+    CHECK(!strcmp(view(&A).status, lobby_own_text(LT_WAITING, 0)));
+    /* a new guest: not ready, Start grey again */
+    press(&B, "Join a Partner");
+    press(&B, "System Link");
+    retype(&B, "sim:9");
+    ev(&B, LE_OK);
+    step(1500);
+    step(3100);
+    va = view(&A);
+    CHECK(va.nplayers == 2 && !va.players[1].ready && row_kind(&A, "Start Game") == LV_GREY);
+    cs_free(A.s), cs_free(B.s);
+    lobby_free(A.l), lobby_free(B.l);
+    n_nodes = 0;
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -506,6 +805,9 @@ int main(void)
     test_flow();
     test_leave_and_errors();
     test_friends_and_steam();
+    test_lobbymust_room();
+    test_episode_rule();
+    test_ready_rules();
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

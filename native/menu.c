@@ -51,8 +51,16 @@ enum {
     A_CALL_HIDE_COOP = 0x44687D,  /* cDemoCampaignMenu_Build: call SetItemState(0x14, 2) */
     A_PAUSE_VIS = 0x8B9A60,
     A_PAUSE_SELECT = 0x8B85D0,
-    A_POPUP_SETMSG = 0x436CE0
+    A_POPUP_SETMSG = 0x436CE0,
+    A_PAUSE_RESULT = 0x9564F0,    /* FUN_009564F0 (thiscall sGUI, code): the pause menu's result (1 resume, 2 retry, 3 quit, 4 split), read by sBioMain_vf6 when the pause closes */
+    A_ROW_3D = 0x1394388,         /* page 8 (pause) row id 0x3D "Give Up" (Raid only): the host's "End Co-Op" in a net game */
+    A_CALL_EP_NEXT = 0x431279,    /* FUN_00431190 (the stock episode-end menu): call FUN_0084B740(unlock table, episode): 0 = no "next" item */
+    A_UNLOCK_GET = 0x84B740
 };
+#define PAUSE_ROW_ENDCOOP 0x3D
+#define MSG_OWN_ENDCOOP 0x2100        /* private ids of table 6 (m09_sys_cockpit has 160 entries): served by h_msg_get in the game's language */
+#define MSG_OWN_ENDCOOP_HELP 0x2101
+#define POPUP_END_SESSION 95          /* m40 #95 "End the session you created?" (all 12 languages) */
 #define MENU_ID_LOBBY 0x18
 #define MENU_ID_CAMPAIGN 0xA
 
@@ -90,6 +98,10 @@ static int g_armed, g_gate_on;
 static unsigned char g_gate_prev;
 static int g_cm_hidden;
 static int g_leave_msg;                           /* the pause select handler of "Leave" is running: its popup says "Quit session?" */
+static int g_endcoop_msg, g_endcoop_armed;        /* 0.2.0: "End Co-Op" was selected: its popup asks m40 #95; a confirmed quit result becomes "resume" + End Co-Op */
+static volatile LONG g_endcoop_go;
+static unsigned g_row3d_stock[9];                 /* the stock row 0x3D, put back whenever no End Co-Op is offered (Raid) */
+static int g_row3d_ours;
 static unsigned g_out_frames;
 static int g_autoopen = 1;
 static unsigned g_start_count;
@@ -97,7 +109,7 @@ static CRITICAL_SECTION g_lock;                   /* scene snapshot, note queue 
 static ov_scene g_scene;
 static int g_scene_valid;
 static unsigned g_scene_tick;
-static struct { int what, pid, a, b; char text[160]; } g_notes[8];
+static struct { int what, pid, a, b; char text[160]; char mod[24]; } g_notes[8];   /* mod: cs_note.peer_mod (the host's mod version of a refusal) */
 static unsigned g_note_w, g_note_r;
 
 /* ------------------------------------------------------------------ settings file (the game's config folder, not the install) */
@@ -119,11 +131,13 @@ static void ini_path(void)
 }
 
 static const char *const char_words[4] = {"claire", "moira", "barry", "natalia"};
+const char *menu_player_name(void) { return g_set.name; }
 
 static void settings_defaults(lobby_settings *s)
 {
     memset(s, 0, sizeof *s);
     s->character = CP_CHAR_CLAIRE, s->port = 28410, s->transport = 0, s->episode = 1, s->difficulty = 1;
+    s->sflags = 1;   /* 0.2.0 (lead, decision D2): the downed / revive rule is ON by default (bleed-out preset 0 = 60 s); a settings file with downed=0 turns it off */
 }
 
 static void settings_load(void)
@@ -150,6 +164,8 @@ static void settings_load(void)
         else if (!_stricmp(k, "episode")) g_set.episode = atoi(v);
         else if (!_stricmp(k, "difficulty")) g_set.difficulty = atoi(v);
         else if (!_stricmp(k, "solo")) g_set.solo = atoi(v) != 0;
+        else if (!_stricmp(k, "downed")) g_set.sflags = (g_set.sflags & ~1) | (atoi(v) != 0 ? 1 : 0);   /* the host's default of the downed / revive rule (on unless downed=0) */
+        else if (!_stricmp(k, "downed_bleed")) g_set.sflags = (g_set.sflags & ~6) | ((atoi(v) & 3) << 1);   /* bleed-out preset 0 60 s, 1 30 s, 2 120 s, 3 never */
         else if (!_stricmp(k, "autoopen")) g_autoopen = atoi(v) != 0;
         else if (!_stricmp(k, "hide_menu")) g_hide_cm = atoi(v) != 0;
         else if (!_stricmp(k, "input_gate")) g_gate = atoi(v) != 0;
@@ -172,6 +188,7 @@ static void settings_save(const lobby_settings *s)
             s->transport ? "direct" : "steam", s->episode, s->difficulty);
     fprintf(f, "; switches: enabled=1 (0 removes the Co-Op entry), autoopen=1 (open the lobby when a friend's invitation joins), hide_menu=1, input_gate=1, solo=0 (1: the host may start alone)\r\n");
     fprintf(f, "enabled=%d\r\nautoopen=%d\r\nhide_menu=%d\r\ninput_gate=%d\r\nsolo=%d\r\n", g_enabled, g_autoopen, g_hide_cm, g_gate, s->solo);
+    fprintf(f, "; the host's downed / revive rule (also a row in the room): downed=1 on, downed_bleed=0..3 (60 s, 30 s, 120 s, never)\r\ndowned=%d\r\ndowned_bleed=%d\r\n", s->sflags & 1, (s->sflags >> 1) & 3);
     fclose(f);
 }
 
@@ -262,7 +279,22 @@ static void strip_markup(char *s)
     while (w > s && w[-1] == ' ') *--w = 0;
 }
 
-static const char *game_text(int table, int id)
+/* (0.2.0) the game's name tags <USER> / <SWAP> become one %s (the lobby fills in the partner's name); used for the texts lobby_text_args says take one */
+static void tags_to_format(char *s, size_t size)
+{
+    static const char *const tags[2] = {"<USER>", "<SWAP>"};
+    for (int t = 0; t < 2; t++) {
+        char *p = strstr(s, tags[t]);
+        if (!p) continue;
+        size_t tl = strlen(tags[t]);
+        p[0] = '%', p[1] = 's';
+        memmove(p + 2, p + tl, strlen(p + tl) + 1);
+        (void)size;
+        return;   /* one value only */
+    }
+}
+
+static const char *game_text_ex(int table, int id, int fmt)
 {
     static char buf[8][400];
     static unsigned n;
@@ -277,6 +309,7 @@ static const char *game_text(int table, int id)
         dst[i] = 0;
     }
     dst[399] = 0;
+    if (fmt) tags_to_format(dst, 400);
     strip_markup(dst);
     {   /* (a leading button icon tag leaves a space behind) */
         char *t = dst;
@@ -284,8 +317,10 @@ static const char *game_text(int table, int id)
         if (t != dst) memmove(dst, t, strlen(t) + 1);
     }
     if (!dst[0] || !strncmp(dst, "Invalid Message", 15) || strstr(dst, "_comment") || strstr(dst, "_guide_")) return NULL;
+    if (fmt && !strstr(dst, "%s")) return NULL;   /* (a translation without the name tag: our own fallback carries the name) */
     return dst;
 }
+static const char *game_text(int table, int id) { return game_text_ex(table, id, 0); }
 
 /* stock strings are looked up once per language (the view asks for dozens of them every frame) */
 static struct {
@@ -304,7 +339,7 @@ static const char *env_text(void *u, int id)
     unsigned now = GetTickCount();
     if (g_tcache[id].lang != glang + 1 || (g_tcache[id].state == 2 && now - g_tcache[id].tick > 4000)) g_tcache[id].state = 0;
     if (g_tcache[id].state == 0) {
-        const char *s = game_text(lobby_stock_ids[id].table, lobby_stock_ids[id].id);
+        const char *s = game_text_ex(lobby_stock_ids[id].table, lobby_stock_ids[id].id, lobby_text_args(id) > 0);
         if (s && lang >= 8) {   /* Japanese / Korean / Chinese: some stock entries are English in the game's own table (Difficulty, Start Game ...): our word when we have one */
             const char *own = lobby_own_text(id, lang);
             int ascii = 1;
@@ -590,10 +625,20 @@ static void publish_scene(int visible)
 static int g_banner_kind;
 static unsigned g_banner_until;
 static char g_banner_who[48];
+/* 0.2.0: the partner's game sends nothing (CS_N_SILENT, coop_session.c): the same kind of strip while no lobby and no other strip is shown; the seconds count on
+ * between the notes (every 10 s), the strip goes 15 s after the last one, at once when the partner is heard again or gone */
+static unsigned g_sil_tick;   /* GetTickCount of the last note with a > 0, 0 = no strip */
+static int g_sil_secs;
+static char g_sil_who[48];
+static char g_player_word[64];   /* the game's "Player" in its language (default names "Player 1" / "Player 2"), refreshed on the game thread */
 void menu_banner(int kind, const char *who, unsigned ms)
 {
     if (!g_installed) return;
     EnterCriticalSection(&g_lock);
+    if (kind < MB_PARTNER_LEFT && g_banner_kind >= MB_PARTNER_LEFT && (int)(g_banner_until - GetTickCount()) > 0) {   /* 0.2.0: a loss strip stays up its time (a GO / wait / downed strip after it) */
+        LeaveCriticalSection(&g_lock);
+        return;
+    }
     g_banner_kind = kind;
     g_banner_until = GetTickCount() + ms;
     snprintf(g_banner_who, sizeof g_banner_who, "%s", who && who[0] ? who : "...");
@@ -610,14 +655,32 @@ void menu_present(void *dev)
     int bk = g_banner_kind;
     char who[48];
     snprintf(who, sizeof who, "%s", g_banner_who);
+    unsigned sil_age = g_sil_tick ? GetTickCount() - g_sil_tick : 0;
+    int sil = g_sil_tick && sil_age < 15000, sil_s = g_sil_secs + (int)(sil_age / 1000u);
+    char sil_who[48];
+    snprintf(sil_who, sizeof sil_who, "%s", g_sil_who);
     if (bk && (int)(g_banner_until - GetTickCount()) <= 0) bk = g_banner_kind = 0;
     LeaveCriticalSection(&g_lock);
+    if (!ok && !bk && sil) {   /* no lobby, no other strip: "No answer from <name> for N s ..." */
+        int lang = lobby_lang_from_game(game_lang());
+        char line[200];
+        overlay_banner(dev, lobby_silent_text(sil_who, sil_s, lang, line, sizeof line), lang);
+        return;
+    }
     if (!ok) {
-        if (bk == MB_WAIT) {   /* no lobby on the screen: only the strip */
+        if (bk == MB_WAIT || bk == MB_DOWN_SELF || bk == MB_DOWN_PARTNER) {   /* no lobby on the screen: only the strip */
             int lang = lobby_lang_from_game(game_lang());
             char line[200];
-            snprintf(line, sizeof line, lobby_own_text(LT_WAIT_LOAD, lang), who);
+            snprintf(line, sizeof line, lobby_own_text(bk == MB_WAIT ? LT_WAIT_LOAD : bk == MB_DOWN_SELF ? LT_DOWN_SELF : LT_DOWN_PARTNER, lang), who);
             overlay_banner(dev, line, lang);
+        } else if (bk >= MB_PARTNER_LEFT && bk <= MB_EP_END) {   /* 0.2.0: partner left / lost, host ended / lost, the end of Episode 1 */
+            static const int lt[5] = {LT_PARTNER_LEFT, LT_PARTNER_LOST, LT_HOST_ENDED, LT_HOST_LOST, LT_EP1_END};
+            int lang = lobby_lang_from_game(game_lang());
+            char line[200], word[64];
+            EnterCriticalSection(&g_lock);
+            snprintf(word, sizeof word, "%s", g_player_word);
+            LeaveCriticalSection(&g_lock);
+            overlay_banner(dev, lobby_loss_line(lt[bk - MB_PARTNER_LEFT], who, word, lang, line, sizeof line), lang);
         }
         return;
     }
@@ -638,7 +701,13 @@ void menu_on_note(const cs_note *n)
     unsigned i = g_note_w++ & 7;
     g_notes[i].what = n->what, g_notes[i].pid = n->pid, g_notes[i].a = n->a, g_notes[i].b = n->b;
     snprintf(g_notes[i].text, sizeof g_notes[i].text, "%s", n->text ? n->text : "");
+    snprintf(g_notes[i].mod, sizeof g_notes[i].mod, "%s", n->peer_mod ? n->peer_mod : "");
     if (g_note_w - g_note_r > 8) g_note_r = g_note_w - 8;
+    if (n->what == CS_N_SILENT && n->a > 0) {
+        g_sil_tick = GetTickCount() | 1u, g_sil_secs = n->a;
+        snprintf(g_sil_who, sizeof g_sil_who, "%s", n->text ? n->text : "");
+    } else if (n->what == CS_N_SILENT || n->what == CS_N_PEER_LEAVE || n->what == CS_N_LOST || n->what == CS_N_REFUSED || n->what == CS_N_START)
+        g_sil_tick = 0;
     LeaveCriticalSection(&g_lock);
 }
 
@@ -646,16 +715,28 @@ static void drain_notes(void)
 {
     for (;;) {
         int what, pid, a, b;
-        char text[160];
+        char text[160], mod[24];
         EnterCriticalSection(&g_lock);
         int have = g_note_r != g_note_w;
         if (have) {
             unsigned i = g_note_r++ & 7;
             what = g_notes[i].what, pid = g_notes[i].pid, a = g_notes[i].a, b = g_notes[i].b;
             snprintf(text, sizeof text, "%s", g_notes[i].text);
+            snprintf(mod, sizeof mod, "%s", g_notes[i].mod);
         }
         LeaveCriticalSection(&g_lock);
         if (!have) break;
+        if (what == CS_N_REFUSED) {   /* 0.2.0: the reason in the player's language (the session's text is English); BUILD / REMOVED: the game's own words */
+            char own[160];
+            int lang = lobby_lang_from_game(game_lang());
+            if (a == CP_REF_BUILD || a == CP_REF_REMOVED) lobby_format(env_text(NULL, a == CP_REF_BUILD ? LT_REF_BUILD : LT_REMOVED), NULL, NULL, text, sizeof text);
+            else if (lobby_refusal_text(a, mod, R2_VERSION, lang, own, sizeof own)) snprintf(text, sizeof text, "%s", own);
+            else {   /* lang: a backend's own reason (Steam, a = 0) or a code this version does not know: our words, or none, but never the English text */
+                int lt = lobby_backend_reason(text);
+                MLOG("refusal %d: \"%s\" -> %s", a, text, lt >= 0 ? "an own text" : "no reason shown");
+                snprintf(text, sizeof text, "%s", lt >= 0 ? lobby_own_text(lt, lang) : "");
+            }
+        }
         if (g_lobby) lobby_note(g_lobby, what, pid, a, b, text);
     }
 }
@@ -821,32 +902,94 @@ static int net_game_running(void)
     return s && lobby_session_running(s);
 }
 
+/* 0.2.0: End Co-Op is offered to the host of a running net game while the partner is still there (and the hooks it needs are in) */
+static int endcoop_offered(void)
+{
+    cs_t *s = coop_net_session_peek();
+    return g_enabled && (g_hooks & (64 | 128)) == (64 | 128) && g_row3d_stock[0] && s && lobby_session_running(s) && cs_is_host(s) && cs_remote_pid(s) >= 0;
+}
+
+/* the row 0x3D shows our label / help ids while End Co-Op is offered and the stock "Give Up" otherwise */
+static void row3d_label(int ours)
+{
+    if (!g_row3d_stock[0] || ours == g_row3d_ours) return;
+    unsigned row[9];
+    memcpy(row, g_row3d_stock, sizeof row);
+    if (ours) row[1] = 6, row[2] = MSG_OWN_ENDCOOP, row[4] = 6, row[5] = MSG_OWN_ENDCOOP_HELP, row[6] = 6, row[7] = MSG_OWN_ENDCOOP_HELP;
+    if (wr_data(A_ROW_3D, row, sizeof row)) g_row3d_ours = ours;
+}
+
 static void THISCALL h_pause_vis(void *self)
 {
     orig_pause_vis(self);
+    int offer = endcoop_offered();
+    row3d_label(offer);
     if (!g_enabled || !net_game_running()) return;
     unsigned proc = (unsigned)self, a = rd32(proc + 8), cm = a ? rd32(a + 0x30) : 0;
     if (!cm) return;
     ((setitem_t)A_COMMON_SETITEM)((void *)cm, 0x36, 2);   /* the local split screen join / end rows would break the session */
     ((setitem_t)A_COMMON_SETITEM)((void *)cm, 0x37, 2);
     ((setitem_t)A_COMMON_SETITEM)((void *)cm, 0x3B, 0);   /* "Leave" */
+    /* 0.2.0 (R4): the stock "Quit" (0x38, m09 #2) does exactly what "Leave" does in a net game (the stock quit to the title, then the session ends at the title for
+     * both), and in Russian both rows read "Выйти": one row only, "Leave" with its "Quit session?" question */
+    ((setitem_t)A_COMMON_SETITEM)((void *)cm, 0x38, 2);
+    ((setitem_t)A_COMMON_SETITEM)((void *)cm, PAUSE_ROW_ENDCOOP, offer ? 0 : 2);   /* "End Co-Op" (host): the partner leaves, the host plays on with the AI partner */
 }
 
 static void THISCALL h_pause_select(void *self)
 {
     unsigned proc = (unsigned)self, a = rd32(proc + 8), cm = a ? rd32(a + 0x30) : 0;
     int leave = g_enabled && cm && rd32(cm + 0x2C4) == 0x3B && net_game_running();
+    int endcoop = g_enabled && cm && rd32(cm + 0x2C4) == PAUSE_ROW_ENDCOOP && endcoop_offered();
     if (leave) {
         g_leave_msg = 1;
         MLOG("pause menu: Leave session selected");
     }
+    g_endcoop_armed = endcoop, g_endcoop_msg = endcoop;   /* (any other row disarms it) */
+    if (endcoop) MLOG("pause menu: End Co-Op selected (the stock quit popup asks m40 #%d; Yes = End Co-Op, not a quit)", POPUP_END_SESSION);
     orig_pause_select(self);
-    g_leave_msg = 0;
+    g_leave_msg = 0, g_endcoop_msg = 0;
+}
+
+/* the pause menu's result: a confirmed quit of the End Co-Op row becomes "resume" (the pause closes, the game goes on) and the End Co-Op runs on the game thread */
+extern void coop_pause_retry(void);   /* warp.inc: the partner retries too (the retry coupling of a session) */
+static void (THISCALL *orig_pause_result)(void *, int);
+static void THISCALL h_pause_result(void *sg, int code)
+{
+    if (code == 2 && g_enabled && net_game_running()) coop_pause_retry();   /* the Retry row: the stock restart of this PC alone would split the pair */
+    if (g_endcoop_armed && code == 3) {
+        code = 1;
+        InterlockedExchange(&g_endcoop_go, 1);
+        MLOG("pause menu: End Co-Op confirmed: the pause closes (result 3 -> 1), the partner is told to leave");
+    }
+    g_endcoop_armed = 0;
+    orig_pause_result(sg, code);
+}
+
+/* Msg_GetString: our two private ids of table 6 (the End Co-Op row) in the game's language; everything else is the game's */
+static const char *(THISCALL *orig_msg_get)(void *, int, int);
+static const char *THISCALL h_msg_get(void *sg, int table, int id)
+{
+    if (table == 6 && (id == MSG_OWN_ENDCOOP || id == MSG_OWN_ENDCOOP_HELP)) return lobby_own_text(id == MSG_OWN_ENDCOOP ? LT_END_COOP : LT_END_COOP_HELP, lobby_lang_from_game(game_lang()));
+    return orig_msg_get(sg, table, id);
+}
+
+/* the stock episode-end menu (FUN_00431190): at the co-op end of Episode 1 (lobbymust.inc) it offers no "next episode" item, so both players leave it by the
+ * stock "Return to title" (the clear, the records and the rewards are the stock flow's, on each PC) */
+static unsigned char THISCALL h_ep_next_ok(void *tab, unsigned ep)
+{
+    unsigned st = rd32(A_STORY);
+    if (coop_ep_end_active() && st && rd32(st + 0x140378) == 1 && rd32(st + 0x15C4A8) == 1) {
+        MLOG("episode-end menu: co-op Episode 1 is over: no next-episode item");   /* (the EP1 strip comes with this menu: lobbymust_logic.h end_menu) */
+        return 0;
+    }
+    return ((unsigned char (THISCALL *)(void *, unsigned))A_UNLOCK_GET)(tab, ep);
 }
 
 static void THISCALL h_popup_setmsg(void *p, int table, int id)
 {
     if (g_leave_msg && table == 58 && id == 0xD) id = 116;   /* "Quit session?" instead of "If you quit any unsaved progress will be lost." */
+    if (g_endcoop_msg && table == 58 && id == 0xD) id = POPUP_END_SESSION;   /* End Co-Op: "End the session you created?" */
     orig_popup_setmsg(p, table, id);
 }
 
@@ -865,6 +1008,7 @@ void menu_install(void)
     if (r2_env("REV2_MENU_GATE", v, sizeof v)) g_gate = v[0] == '1';
     if (r2_env("REV2_OVERLAY_MODE", v, sizeof v)) overlay_set_mode(atoi(v));
     if (r2_env("REV2_OVERLAY_TRACE", v, sizeof v)) overlay_set_trace(atoi(v));
+    if (r2_env("REV2_EPISODES", v, sizeof v) && !_stricmp(v, "all")) g_set.episodes_all = 1;   /* lab: the host's Episode row offers 1-4 (0.2.0 product: Episode 1 only) */
     g_installed = 1;
     MLOG("settings %s: name '%s' character %s transport %s port %d; entry %s, autoopen %d", g_ini_path[0] ? g_ini_path : "(no path)", g_set.name, char_words[g_set.character & 3],
          g_set.transport ? "direct" : "steam", g_set.port, g_enabled ? "on" : "OFF", g_autoopen);
@@ -912,8 +1056,29 @@ void menu_install(void)
     if (hook_entry(A_PAUSE_VIS, b_vis, 5, (void *)h_pause_vis, &o)) orig_pause_vis = o, g_hooks |= 8;
     if (hook_entry(A_PAUSE_SELECT, b_sel, 5, (void *)h_pause_select, &o)) orig_pause_select = o, g_hooks |= 16;
     if (hook_entry(A_POPUP_SETMSG, b_msg, 10, (void *)h_popup_setmsg, &o)) orig_popup_setmsg = o, g_hooks |= 32;
-    MLOG("installed: campaign row %s, hide-call %s, lobby object %s, pause rows %s, pause select %s, popup text %s", g_hooks & 1 ? "ok" : "NO", g_hooks & 2 ? "ok" : "NO",
-         g_hooks & 4 ? "ok" : "NO", g_hooks & 8 ? "ok" : "NO", g_hooks & 16 ? "ok" : "NO", g_hooks & 32 ? "ok" : "NO");
+    /* 0.2.0 (lobby-must): End Co-Op in the host's pause menu (row 0x3D with our label, the pause result), the episode-end menu without "next" at the co-op end */
+    static const unsigned char b_get[] = {0x56, 0x8B, 0x74, 0x24, 0x08};   /* push esi; mov esi,[esp+8] */
+    static const unsigned char b_res[] = {0x8B, 0x44, 0x24, 0x04, 0x53};   /* mov eax,[esp+4]; push ebx */
+    if (hook_entry(A_MSG_GETSTRING, b_get, 5, (void *)h_msg_get, &o)) orig_msg_get = o, g_hooks |= 64;
+    if (hook_entry(A_PAUSE_RESULT, b_res, 5, (void *)h_pause_result, &o)) orig_pause_result = o, g_hooks |= 128;
+    if (rd32(A_ROW_3D) == PAUSE_ROW_ENDCOOP && rd32(A_ROW_3D + 4) == 6 && rd32(A_ROW_3D + 8) == 111) r2_safe_read((void *)A_ROW_3D, g_row3d_stock, sizeof g_row3d_stock);
+    else MLOG("pause row 0x3D differs: no End Co-Op row");
+    {
+        unsigned char c[5];
+        if (r2_safe_read((void *)A_CALL_EP_NEXT, c, 5) && c[0] == 0xE8 && (unsigned)(A_CALL_EP_NEXT + 5 + *(int *)(c + 1)) == A_UNLOCK_GET) {
+            DWORD old;
+            if (VirtualProtect((void *)A_CALL_EP_NEXT, 5, PAGE_EXECUTE_READWRITE, &old)) {
+                *(int *)(A_CALL_EP_NEXT + 1) = (int)((unsigned)h_ep_next_ok - (A_CALL_EP_NEXT + 5));
+                VirtualProtect((void *)A_CALL_EP_NEXT, 5, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), (void *)A_CALL_EP_NEXT, 5);
+                g_hooks |= 256;
+            }
+        } else
+            MLOG("the call at %08x is not the expected unlock check: the episode-end menu keeps its next-episode item", A_CALL_EP_NEXT);
+    }
+    MLOG("installed: campaign row %s, hide-call %s, lobby object %s, pause rows %s, pause select %s, popup text %s, own texts %s, pause result %s, episode-end menu %s",
+         g_hooks & 1 ? "ok" : "NO", g_hooks & 2 ? "ok" : "NO", g_hooks & 4 ? "ok" : "NO", g_hooks & 8 ? "ok" : "NO", g_hooks & 16 ? "ok" : "NO", g_hooks & 32 ? "ok" : "NO",
+         g_hooks & 64 ? "ok" : "NO", g_hooks & 128 ? "ok" : "NO", g_hooks & 256 ? "ok" : "NO");
 }
 
 /* ------------------------------------------------------------------ per pass of the game loop */
@@ -921,6 +1086,21 @@ void menu_frame(void)
 {
     if (!g_installed || !g_enabled) return;
     unsigned now = GetTickCount();
+    {   /* 0.2.0: the game's "Player" for the strips (the default names), and the End Co-Op the pause menu confirmed */
+        static unsigned word_tick;
+        if (!word_tick || now - word_tick > 2000) {
+            const char *w = env_text(NULL, LT_PLAYER);
+            word_tick = now | 1u;
+            EnterCriticalSection(&g_lock);
+            snprintf(g_player_word, sizeof g_player_word, "%s", w);
+            LeaveCriticalSection(&g_lock);
+        }
+        if (InterlockedExchange(&g_endcoop_go, 0)) {
+            char out[200];
+            coop_net_command("endcoop", out, sizeof out);
+            MLOG("%s", out);
+        }
+    }
     /* the lobby object vanished without telling us (a hook failed to see the destruction): give the stock menu its input back */
     if ((g_obj || g_gate_on) && now - g_last_update > 1500) {
         MLOG("lobby: no update for %u ms, closing", now - g_last_update);
@@ -1017,7 +1197,7 @@ void menu_command(const char *arg, char *out, int size)
         overlay_stats(ov, sizeof ov);
         unsigned g = gm();
         snprintf(out, (size_t)size,
-                 "menu: %s, hooks %02x (1 row, 2 hide-call, 4 lobby object, 8 pause rows, 16 pause select, 32 popup text), lobby %s, scene %d, menu id %d, aDemo %08x, common menu %08x (hidden %d), gate %d (BC0=%d), "
+                 "menu: %s, hooks %03x (1 row, 2 hide-call, 4 lobby object, 8 pause rows, 16 pause select, 32 popup text, 64 own texts, 128 pause result, 256 episode-end menu), lobby %s, scene %d, menu id %d, aDemo %08x, common menu %08x (hidden %d), gate %d (BC0=%d), "
                  "armed %d, starts %u, autoopen %d\nsettings file %s\n%s",
                  g_enabled ? "on" : "OFF", g_hooks, g_obj ? "OPEN" : "closed", g_scene_valid, g ? (int)rd32(g + 0x20) : -1, demo_area(), common_menu(), g_cm_hidden, g_gate_on,
                  rd32(A_BIOPAD) ? (int)(rd32(rd32(A_BIOPAD) + 0xBC0) & 0xFF) : -1, g_armed, g_start_count, g_autoopen, g_ini_path, ov);
@@ -1068,7 +1248,7 @@ void menu_command(const char *arg, char *out, int size)
     } else if (!strcmp(w, "set")) {   /* menu set name=<n> | ip=<a> | character=<c> | solo=0|1 */
         lobby_settings s = g_set;
         char *eq = strchr(rest, '=');
-        if (!eq) snprintf(out, (size_t)size, "usage: menu set name=|ip=|port=|character=|solo=|episode=|difficulty=<value>");
+        if (!eq) snprintf(out, (size_t)size, "usage: menu set name=|ip=|port=|character=|solo=|episode=|difficulty=|episodes=all|1 <value>");
         else {
             *eq = 0;
             const char *val = eq + 1;
@@ -1079,6 +1259,7 @@ void menu_command(const char *arg, char *out, int size)
             else if (!strcmp(rest, "solo")) s.solo = atoi(val) != 0;
             else if (!strcmp(rest, "episode")) s.episode = atoi(val);
             else if (!strcmp(rest, "difficulty")) s.difficulty = atoi(val);
+            else if (!strcmp(rest, "episodes")) s.episodes_all = !_stricmp(val, "all");   /* lab: menu set episodes=all|1 (not written to the file) */
             settings_save(&s);
             if (g_lobby) lobby_set_settings(g_lobby, &s);
             snprintf(out, (size_t)size, "saved: name '%s' ip '%s' port %d character %s solo %d episode %d difficulty %d", s.name, s.ip, s.port, char_words[s.character & 3], s.solo, s.episode, s.difficulty);
@@ -1110,12 +1291,19 @@ void menu_command(const char *arg, char *out, int size)
     } else if (!strcmp(w, "lang")) {   /* menu lang <0-11|off>: test only, see g_lang_override */
         g_lang_override = !strcmp(rest, "off") || !rest[0] ? -1 : atoi(rest);
         snprintf(out, (size_t)size, "lobby language %s (%d)", g_lang_override < 0 ? "= the game's" : lobby_lang_names[g_lang_override % 12], g_lang_override);
+    } else if (!strcmp(w, "banner")) {   /* menu banner <kind 1-8> [who] [ms]: show a strip (test / screenshots; 0 clears) */
+        int kind = 0, ms = 8000;
+        char who[48] = "";
+        sscanf(rest, "%d %47s %d", &kind, who, &ms);
+        if (kind < MB_PARTNER_LEFT) EnterCriticalSection(&g_lock), g_banner_until = 0, LeaveCriticalSection(&g_lock);   /* (a test may replace a loss strip) */
+        menu_banner(kind, who, (unsigned)ms);
+        snprintf(out, (size_t)size, "strip %d '%s' for %d ms", kind, who, ms);
     } else if (!strcmp(w, "text0")) {   /* menu text0 <table> <id>: a string of the game in the current language */
         int t = 0, id = 0;
         sscanf(rest, "%d %d", &t, &id);
         const char *s = game_text(t, id);
         snprintf(out, (size_t)size, "language %d: %s", game_lang(), s ? s : "(none)");
     } else {
-        snprintf(out, (size_t)size, "menu: status | open | close | view | ev <k> | text <s> | start <ep> <part> <diff> | set k=v | gate 0|1 | hidecm 0|1 | enabled 0|1 | autoopen 0|1 | ov <mode> | pad | text0 <table> <id> | lang <0-11|off>");
+        snprintf(out, (size_t)size, "menu: status | open | close | view | ev <k> | text <s> | start <ep> <part> <diff> | set k=v | gate 0|1 | hidecm 0|1 | enabled 0|1 | autoopen 0|1 | ov <mode> | pad | text0 <table> <id> | lang <0-11|off> | banner <kind> [who] [ms]");
     }
 }

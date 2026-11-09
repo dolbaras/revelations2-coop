@@ -49,6 +49,9 @@ typedef struct cn_ops {
 typedef struct {
     uint32_t pk_in[2], pk_out[2], by_in[2], by_out[2];   /* per channel */
     uint32_t connects, disconnects;
+    /* (steamgap, 2026-11-08) unreliable messages that ARRIVED but were dropped from the inbox because the game thread did not collect them (a level load, a lost
+     * display device, a paused or hung game: the inbox keeps the newest 256), and how many of them were STATE messages. Not network loss. */
+    uint32_t expired, expired_state;
 } cn_stats;
 
 cn_t *cn_new(void);
@@ -72,6 +75,9 @@ int cn_failed(cn_t *c, char *why, size_t size);                  /* the backend 
 int cn_rtt(cn_t *c, int peer);                                   /* ms or -1 */
 uint32_t cn_peer_idle_ms(cn_t *c, int peer);                      /* since anything arrived from the peer (counted on the network thread) */
 void cn_get_stats(cn_t *c, cn_stats *s);
+/* (steamgap) the session asks how many STATE messages of player `pid` in level instance `epoch` expired in the inbox (see cn_stats.expired): it takes at most `max`
+ * of them (the size of the sequence jump it is looking at) and they are no longer counted; states of another epoch are never returned. */
+uint32_t cn_take_expired_states(cn_t *c, int pid, unsigned epoch, uint32_t max);
 const char *cn_backend_name(cn_t *c);
 void cn_set_clock(cn_t *c, uint32_t (*fn)(void *), void *user);   /* tests: virtual time for idle counting */
 

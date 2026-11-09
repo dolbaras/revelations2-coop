@@ -22,11 +22,14 @@ void menu_before_reset(void);
 void menu_command(const char *arg, char *out, int size);
 void menu_on_note(const cs_note *n);
 /* stage 6i: a one-line strip at the top of the screen (any thread). MB_WAIT = "Waiting for <who> to finish loading..." for `ms` milliseconds; MB_NONE clears it */
-enum { MB_NONE = 0, MB_WAIT = 1 };
+enum { MB_NONE = 0, MB_WAIT = 1, MB_DOWN_SELF = 2, MB_DOWN_PARTNER = 3,   /* stage 9: the downed / revive strips; `who` carries the seconds left as text */
+       MB_PARTNER_LEFT = 4, MB_PARTNER_LOST = 5, MB_HOST_ENDED = 6, MB_HOST_LOST = 7, MB_EP_END = 8 };   /* 0.2.0 (lobbymust_logic.h LM_S_*): who = the partner's name */
 void menu_banner(int kind, const char *who, unsigned ms);
+const char *menu_player_name(void);  /* the name of the lobby settings (the Steam persona name once the lobby asked Steam), "" when none */
 
 /* supplied by coop_game.inc */
 int coop_net_command(const char *arg, char *out, int size);
+int coop_ep_end_active(void);        /* lobbymust.inc: the co-op end of Episode 1 was reached (the stock episode-end menu then offers no next episode) */
 cs_t *coop_net_session(void);        /* creates the session object on first use */
 cs_t *coop_net_session_peek(void);   /* NULL until something created it */
 

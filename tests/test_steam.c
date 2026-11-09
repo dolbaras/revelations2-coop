@@ -467,6 +467,50 @@ static void test_stream_under_faults(const char *label, int loss, int dup, int r
     CHECK(cs_phase(h->s) == CP_PHASE_PLAYING && cs_phase(c->s) == CP_PHASE_PLAYING);
 }
 
+/* steamgap (notes\steamgap.md, Steam run M3 2026-11-08: m3d way a "rx=558 gap=1384" with 99 % of the host's packets received): the guest's game loop is away 60 s (its
+ * D3D device was lost) while its network thread goes on pumping the Steam backend (pings keep the link, messages go into the inbox); no loss on the way */
+static void test_loop_away_over_steam(void)
+{
+    printf("-- steamgap: the guest's game loop away 60 s over the Steam backend, its network thread still pumping: gap 0, the drops are 'expired', the link stays\n");
+    world();
+    mock_set_faults(0, 0, 0, 10, 0, 7);
+    Node *h = mk("HostPC"), *c = mk("GuestPC");
+    mock_befriend(h->u, c->u);
+    CHECK(connected_pair(h, c, CST_LOBBY_FRIENDS));
+    start_game(h, c);
+    CHECK(cs_phase(h->s) == CP_PHASE_PLAYING && cs_phase(c->s) == CP_PHASE_PLAYING);
+    for (int t = 0; t < 60000 + 3000 + 2000; t += 5) {
+        int away = t >= 2000 && t < 62000;   /* 2 s both play, 60 s the guest's loop is away, 3 s both play */
+        if (t % 50 == 0) {
+            cp_state s = path_state(0, cs_now(h->s));
+            cs_submit_state(h->s, &s);
+            if (!away) {
+                cp_state s2 = path_state(1, cs_now(c->s));
+                cs_submit_state(c->s, &s2);
+            }
+        }
+        c->dead = away;   /* step() polls only the nodes that are not "dead": the guest's session is not polled ... */
+        step(5);
+        if (away) cn_pump(cs_transport(c->s));   /* ... but its network thread is */
+    }
+    c->dead = 0;
+    step(300);
+    cs_stats hs, st;
+    cs_get_stats(h->s, &hs);
+    cs_get_stats(c->s, &st);
+    cs_player_info pi;
+    CHECK(cs_player(c->s, 0, &pi));
+    cn_stats ns;
+    cn_get_stats(cs_transport(c->s), &ns);
+    printf("   host sent %u, guest accepted %u, gap %u, expired %u (transport expired %u, %u states), loop away %u x longest %u ms; transport in %u+%u\n", hs.tx_state, pi.rx, pi.gap,
+           pi.expired, ns.expired, ns.expired_state, st.away_n, st.away_max_ms, ns.pk_in[0], ns.pk_in[1]);
+    CHECK(pi.gap == 0 && pi.expired >= 900 && pi.rx + pi.expired == hs.tx_state);
+    CHECK(st.away_n == 1 && st.away_max_ms >= 60000 && st.away_max_ms <= 60100);
+    CHECK(h->count[CS_N_PEER_LEAVE] == 0 && c->count[CS_N_LOST] == 0 && cs_phase(c->s) == CP_PHASE_PLAYING && cs_player_count(h->s) == 2);
+    cp_state o;
+    CHECK(cs_remote_sample(c->s, 0, cs_now(c->s), &o) != CS_SAMPLE_NONE);
+}
+
 static char runner_line[200];
 static int runner_calls;
 static int runner(const char *line, char *out, int size)
@@ -475,6 +519,23 @@ static int runner(const char *line, char *out, int size)
     runner_calls++;
     snprintf(out, (size_t)size, "ok");
     return 1;
+}
+
+/* (ported from Revelations 1 rel010 0d7c918) the game tick asks for the callback objects (Join game, invites) at the first READY hub, also when its first try
+ * failed because the game had not created its Steam context yet (the retry comes 3 s later). Before the fix only an untried hub did it. */
+static void test_callbacks_after_a_late_context(void)
+{
+    printf("-- the callback objects are asked for when the game's Steam context comes late\n");
+    world();
+    Node *c = mk("Late");
+    plat(c);
+    mock_set_init_fail(c->u, "the game has not created its Steam context yet");
+    cst_game_tick();
+    CHECK(!cst_callbacks_wanted());
+    mock_set_init_fail(c->u, NULL);
+    Sleep(3100);   /* hub_ready retries a failed hub after 3 s of real time */
+    cst_game_tick();
+    CHECK(cst_callbacks_wanted());
 }
 
 static void test_join_requests_and_filter(void)
@@ -606,7 +667,9 @@ int main(void)
     test_stream_under_faults("clean", 0, 0, 0, 20, 0, 1.0, 0.5);
     test_stream_under_faults("loss 15%", 15, 0, 0, 40, 10, 6.0, 1.5);
     test_stream_under_faults("bad wifi", 25, 5, 15, 80, 40, 20.0, 4.0);
+    test_loop_away_over_steam();
     test_join_requests_and_filter();
+    test_callbacks_after_a_late_context();
     test_commands();
     test_transport_registered();
     world();

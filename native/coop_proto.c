@@ -76,6 +76,16 @@ static void rstr(R *r, char *out, size_t cap)   /* cap includes the NUL; longer 
     out[keep] = 0;
     r->pos += n;
 }
+/* an optional string at the end of a message (a field added later, see the forward rule in coop_proto.h): missing or cut = "", never an error, so an
+ * older sender's message (without it) still decodes; whatever follows a complete one is ignored as usual */
+static void ropt_str(R *r, char *out, size_t cap)
+{
+    out[0] = 0;
+    if (r->err || r->pos >= r->len) return;
+    size_t n = r->p[r->pos];
+    if (r->pos + 1 + n > r->len) return;
+    rstr(r, out, cap);
+}
 
 /* ---- blocks ---- */
 static void w_session(W *w, const cp_session *s)
@@ -174,10 +184,12 @@ size_t cp_encode(const cp_msg *m, uint8_t *buf, size_t cap)
         w8(&w, m->u.welcome.phase), w8(&w, m->u.welcome.epoch);
         w_session(&w, &m->u.welcome.session);
         w_lobby(&w, &m->u.welcome.lobby);
+        wstr(&w, m->u.welcome.mod);   /* tail (0.2.0) */
         break;
     case CP_REFUSE:
     case CP_NOTICE:
         w8(&w, m->type), w8(&w, m->u.refuse.code), wstr(&w, m->u.refuse.text);
+        if (m->type == CP_REFUSE) wstr(&w, m->u.refuse.mod);   /* tail (0.2.0) */
         break;
     case CP_SESSION:
         w8(&w, CP_SESSION), w_session(&w, &m->u.session);
@@ -256,11 +268,13 @@ int cp_decode(const uint8_t *buf, size_t len, cp_msg *m)
         m->u.welcome.phase = (uint8_t)r8(&r), m->u.welcome.epoch = (uint8_t)r8(&r);
         r_session(&r, &m->u.welcome.session);
         r_lobby(&r, &m->u.welcome.lobby);
+        ropt_str(&r, m->u.welcome.mod, sizeof m->u.welcome.mod);
         break;
     case CP_REFUSE:
     case CP_NOTICE:
         m->u.refuse.code = (uint8_t)r8(&r);
         rstr(&r, m->u.refuse.text, sizeof m->u.refuse.text);
+        if (type == CP_REFUSE) ropt_str(&r, m->u.refuse.mod, sizeof m->u.refuse.mod);
         break;
     case CP_SESSION:
         r_session(&r, &m->u.session);
@@ -379,7 +393,8 @@ const char *cp_refuse_text(unsigned code)
     case CP_REF_FULL: return "session is full";
     case CP_REF_STARTED: return "the game already started";
     case CP_REF_BAD: return "bad request";
-    case CP_REF_MODVER: return "different mod build";
+    case CP_REF_MODVER: return "different co-op mod version";
+    case CP_REF_REMOVED: return "removed from this session by the host";
     default: return "refused";
     }
 }

@@ -15,6 +15,7 @@
 #define DEVRESET_OK        0L
 #define DEVRESET_LOST      ((long)0x88760868)  /* D3DERR_DEVICELOST */
 #define DEVRESET_NOTRESET  ((long)0x88760869)  /* D3DERR_DEVICENOTRESET */
+#define DEVRESET_INTERNAL  ((long)0x88760827)  /* D3DERR_DRIVERINTERNALERROR */
 
 typedef long (*devreset_call_t)(void *ctx);            /* returns an HRESULT */
 typedef void (*devreset_sleep_t)(void *ctx, unsigned ms);
@@ -30,6 +31,9 @@ static inline int devreset_is_lost(long hr)
  * coop:     TestCooperativeLevel of the same device.
  * reset:    Reset of the same device with the same parameters.
  * Returns the first result that is not "lost", or the last "lost" result when budget_ms has run out.
+ * TestCooperativeLevel of a Direct3D 9 device answers OK, DEVICELOST, DEVICENOTRESET or D3DERR_DRIVERINTERNALERROR; any answer other than the first three
+ * ends the wait at once with that answer (the device cannot come back: waiting out the budget would only freeze the window before the game's error box).
+ * The clock may wrap (GetTickCount): only differences are used.
  * *tries (may be NULL) counts the Reset calls made here (not the first one).
  */
 static inline long devreset_wait(long hr_reset, devreset_call_t coop, devreset_call_t reset,
@@ -53,7 +57,8 @@ static inline long devreset_wait(long hr_reset, devreset_call_t coop, devreset_c
                 ++*tries;
             if (!devreset_is_lost(hr))
                 return hr;
-        }
+        } else if (c != DEVRESET_LOST)
+            return c;   /* D3DERR_DRIVERINTERNALERROR (or anything unknown): no Reset can succeed any more */
         if ((unsigned)(now_fn(ctx) - t0) >= budget_ms)
             return hr;
     }

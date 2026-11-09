@@ -182,6 +182,8 @@ static cst_hub *default_hub(int create)
     return hub_get(p, g_plat ? g_pctx : NULL, create);
 }
 
+static int g_cb_wanted;   /* the callback objects were asked for (once per process, at the first ready hub of the game tick) */
+
 void cst_reset(void)
 {
     LOCK();
@@ -190,6 +192,7 @@ void cst_reset(void)
     g_plat = NULL, g_pctx = NULL;
     g_policy = 0, g_n_allow = 0, g_opt_type = CST_LOBBY_FRIENDS, g_opt_max = 4, g_threaded = 1;
     g_last_err[0] = 0;
+    g_cb_wanted = 0;
     UNLOCK();
 }
 void cst_set_runner(int (*run)(const char *line, char *out, int size)) { g_run_line = run; }
@@ -970,6 +973,8 @@ uint64_t cst_take_pending_lobby(void)
 }
 
 /* +connect_lobby <id> on the command line (Steam starts the game that way from "Join game" / an invite when it is not running) */
+int cst_callbacks_wanted(void) { return g_cb_wanted; }
+
 static void parse_cmdline(cst_hub *h)
 {
     const char *cl = GetCommandLineA();
@@ -995,9 +1000,12 @@ void cst_game_tick(void)
     cst_hub *h = default_hub(1);
     if (h) {
         char e[160];
-        int first = h->state == 0;
         if (hub_ready(h, e, sizeof e)) {   /* a failed attempt is retried only every 3 s */
-            if (first) {
+            /* (ported from Revelations 1 rel010 0d7c918, b11a live) once, when the hub is ready the first time, whoever made it ready. Before, only a hub that
+             * was still untried here (state 0) asked for the callback objects: on a PC where the game creates its Steam context after the first tick (state 2,
+             * "not created yet") the retry 3 s later succeeded with first = 0, and Join game / invites (callback 333) never reached the mod. */
+            if (!g_cb_wanted) {
+                g_cb_wanted = 1;
                 cst_real_want_callbacks();
                 parse_cmdline(h);
             }

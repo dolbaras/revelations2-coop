@@ -13,6 +13,8 @@
 #include "coop_session.h"
 #include "menu.h"
 #include "glue_logic.h"
+#include "grapple_logic.h"   /* combat2: the puppet's default animation mask (GP_PUPPET_ANIM_W0/W1) */
+#include "pad_logic.h"       /* flashlive R2-6: pad_seat_writes / pad_cpad_fix (the seats after a load) */
 
 #define NETLOG_PREFIX "net: "
 
@@ -40,9 +42,23 @@ static void w_puppet_catchup(int remote_area);   /* 6m (scen.inc): the partner's
 static void session_defaults(void);   /* 6i (world.inc): what the lab switched on by hand is the default of a real session */
 static int g_defaults_off;            /* REV2_WORLD_DEFAULTS=0 / `net w defaults 0`: a lab run keeps its own switches */
 static void ach_frame(void);        /* stage 8b (ach.inc): hooks of the achievement gate, installed once a session is active */
+static void aim_frame(void);        /* LAB (aim.inc): `net aim` target tracking; nothing unless the console turned it on */
+static void aim_command(const char *arg, char *out, int size);
 static void ach_on_event(const cp_event *e);
 static void ach_command(const char *rest, char *out, int size);
+static void downed_frame(unsigned now);   /* downed.inc: the downed / revive rule (off unless the session flag / `net downed on`) */
+static void downed_probe(void);           /* downed.inc: the live probe (test instances, armed by `net downed probe on`): every frame, session or not */
+static void downed_on_event(const cp_event *e);
+static void downed_on_sample(const cp_state *o);
+static int downed_my_flag(void);
+static int g_dl_on;                      /* the rule is active this pass (downed.inc); read by the damage gate in world.inc */
+static int downed_hit(unsigned p, int *amount);
+static void downed_command(const char *rest, char *out, int size);
 static int g_w_on, g_w_env, g_w_replica_ai;   /* g_w_replica_ai: 1 = replicas on a client keep their own AI (world.inc) */
+static void lm_glue_init(int no_rejoin);   /* lobbymust.inc (0.2.0): a lost partner / host, End Co-Op, the end of Episode 1 */
+static void lm_note(const gnote_t *n);
+static void lm_frame(void);
+static int lm_command(const char *cmd, const char *rest, char *out, int size);
 
 enum { G_OFF = 0, G_LOBBY, G_SETUP, G_WAITGO, G_RUN, G_LOAD };
 static const char *const g_state_names[] = {"off", "lobby", "setup", "wait-go", "running", "loading"};
@@ -59,9 +75,14 @@ static int g_qte_fwd = 1, g_rem_held_prev;
 static unsigned g_qte_force_until, g_qte_releases, g_qte_writes;
 static unsigned g_pup_orphan_since, g_pup_orphan_last, g_pup_frees;   /* 6g: puppet held while its owner is free */
 static unsigned g_pup_script_since;   /* 6f: tick since the puppet has stood in the scripted action INT_MIN (0 = it does not) */
-static unsigned g_anim_bits[8] = {0x62207C, 0, 0, 0, 0, 0, 0, 0};   /* stage 6b: 256-bit mask (bit n = id n), `net anim add <id> ...` / `net anim list`; 6c adds 13, 17, 21 (aim, seen with LT on Barry) and 22 (fire, RT while aiming): the puppet shows aiming and firing (unverified) */
+static unsigned g_anim_bits[8] = {PA_ANIM_W0, PA_ANIM_W1, PA_ANIM_W2, PA_ANIM_W3, PA_ANIM_W4, PA_ANIM_W5, PA_ANIM_W6, PA_ANIM_W7};   /* combat3: pupanim_logic.h (knife, throws, dodge, crouch, flashlight, reload, heal, hit reactions); stage 6b: 256-bit mask (bit n = id n), `net anim add <id> ...` / `net anim list`; 6c adds 13, 17, 21 (aim, seen with LT on Barry) and 22 (fire, RT while aiming): the puppet shows aiming and firing (unverified); combat2 adds the grapple ids 43..54 (the partner's physical attack / follow-up, grapple_logic.h) */
 static unsigned g_anim_mask = 0x7C;  /* action ids the puppet may be switched to with ChangeAction: bit n = id n. 2 idle and 3 walk/run are seen; 4-6 are the next ids of the same family (FUN_00723630 puts ids 1-3 in the on-foot
                                       * class and 4-6 in the crouched one; the Raid net code replays all of them on its remote players) - unverified, they do not occur in the first rooms of Episode 1 */
+/* combat3 (pupanim_logic.h pa_decide): an action the puppet drops at once on this PC is not switched again until its owner's action changes; `net anim guard 0|1`, REV2_PUPGUARD=0 */
+static int g_pa_on = 1;
+static pa_guard_t g_pa;
+static unsigned g_pa_pup, g_pa_logs;
+static unsigned char g_pa_shown[256];   /* ids the mirror has switched the puppet to (first time logged) */
 static unsigned g_t_state, g_t_join, g_t_spoof;   /* GetTickCount of state entry / last join request / pad spoof */
 static unsigned g_obj0, g_obj1, g_area_id, g_stable;
 static unsigned g_simload_until;
@@ -153,12 +174,9 @@ static cs_t *net_session(void)
     cs_config c;
     memset(&c, 0, sizeof c);
     char env[64] = "", sha[80];
-    if (!g_name[0]) {
+    if (!g_name[0]) {   /* the lab's REV2_NAME, else the Steam persona name of the lobby settings; none: "Player 1" / "Player 2" (never the Windows user or computer name) */
         if (r2_env("REV2_NAME", env, sizeof env)) snprintf(g_name, sizeof g_name, "%s", env);
-        else {
-            DWORD n = sizeof g_name;
-            if (!GetUserNameA(g_name, &n)) snprintf(g_name, sizeof g_name, "player");
-        }
+        else snprintf(g_name, sizeof g_name, "%s", menu_player_name());
     }
     c.name = g_name;
     c.want_char = CP_CHAR_NONE;
@@ -171,6 +189,8 @@ static cs_t *net_session(void)
     c.on_note = note_cb;
     if (r2_env("REV2_NET_INTERP", env, sizeof env)) c.interp_delay_ms = atoi(env);
     if (r2_env("REV2_GATE", env, sizeof env)) g_gate_on = atoi(env) != 0;   /* 6f: REV2_GATE=1 switches the scene gate on */
+    c.no_rejoin = !(r2_env("REV2_REJOIN", env, sizeof env) && env[0] == '1');   /* 0.2.0: nobody joins a running game; the lab keeps the rejoin with REV2_REJOIN=1 */
+    lm_glue_init(c.no_rejoin);
     g_cs = cs_new(&c);
     return g_cs;
 }
@@ -253,6 +273,7 @@ static int sample_local(cp_state *st)
         unsigned why = glue_dead_reasons(&dd);
         static unsigned last_why;
         if (why) st->flags |= CP_SF_DEAD;
+        else if (downed_my_flag()) st->flags |= CP_SF_DOWN;   /* stage 9: lying and bleeding, the partner may raise me */
         if (why != last_why) {
             r2_log(NETLOG_PREFIX "dead state of my character %s: reasons %x [hp %d, engine predicate %d, dead mask %d, game-over screen state %d, old void shape %d] hp %d act %d pstate %08x ctrl %08x f7904 %08x aGame state %u", why ? "ON" : "off", why, (why & GLUE_DR_HP) != 0,
                    (why & GLUE_DR_ENGINE_PRED) != 0, (why & GLUE_DR_MASK) != 0, (why & GLUE_DR_SCREEN) != 0, (why & GLUE_DR_OLD_VOID) != 0, dd.hp, (int)dd.action, dd.pstate, dd.ctrl, dd.f7904, dd.agame_state);
@@ -366,12 +387,21 @@ static void apply_remote(const cp_state *o)
     } else
         g_pup_script_since = 0;
     if (g_anim && !pup_scripted) {
-        unsigned act = o->action;
-        if (act != pup_cur && act < 256 && (g_anim_bits[act >> 5] & (1u << (act & 31)))) {
+        unsigned act = o->action, tnow = GetTickCount();
+        if (p != g_pa_pup) pa_guard_reset(&g_pa), g_pa_pup = p;   /* a new puppet object (level, roles): a fresh guard */
+        int d = g_pa_on ? pa_decide(&g_pa, g_anim_bits, act, pup_cur, tnow) : (act != pup_cur && gp_puppet_anim_allowed(g_anim_bits, act));
+        if (d == 2 && g_pa_logs++ < 40)
+            r2_log(NETLOG_PREFIX "puppet (slot %d) left action %u (%s) %u ms after the switch (now %u): not switched again until its owner's action changes", g_rem_slot, g_pa.last_refused, pa_family(g_pa.last_refused),
+                   g_pa.last_refused_ms, pup_cur);
+        if (d == 1) {
             unsigned vt = rd32(p), fn = rd32(vt + 0xB8);
             if (fn > 0x400000 && fn < 0x1400000) {
                 unsigned args[6] = {p, act, 1, 0, 0xFFFFFFFFu, 0};
                 do_call(2, fn, args, 6);
+                if (act < 256 && !g_pa_shown[act]) {
+                    g_pa_shown[act] = 1;
+                    r2_log(NETLOG_PREFIX "puppet (slot %d) shows its owner's action %u (%s) for the first time (it was in %u; now %u)", g_rem_slot, act, pa_family(act), pup_cur, rd32(p + 0x1A54));
+                }
             }
         }
     }
@@ -563,6 +593,84 @@ static void gate_step(unsigned now)
     }
 }
 
+/* R2-6 (pad_logic.h pad_seat_writes / pad_cpad_fix, noteslashlive.md section 1): every level load the game's spawn swapped the seats of a PC whose human is slot 1
+ * (the glue's partner is type 1 at the load), so the human's cPad read logical pad 0, a neutral pad, and this PC's gamepad did nothing until the next load. Put the
+ * seats back (slot k = seat k, GameMan_SetSlotSeat 0x8880E0 + sPlayer_RefreshSlotFromGameMan 0x6E6110) before the role set-up changes the slot types (a type change
+ * makes the human's uPlIntel re-read its seat into the cPad), and in the running game twice a second; a pad that still reads another pad number gets its slot
+ * (FUN_00B429B0 on the embedded cPad: its +0xC = n, button state cleared). The pad number is NOT the cPadEx's own +0xC (the game rewrites that every frame):
+ * cPadEx +0x858 is an embedded cPad ("mPad", vtbl_cPad 0x13E6754; +0x85C enabled, +0x860 mode, +0x864 = the pad number; FUN_006EB460 writes +0x860 / +0x864),
+ * pair run flashlive-a 22:42: Moira's +0x864 = 0 after one load, `w32` 1 into it -> the pretended pad on game user 1 moved her 317 units at once.
+ * `net padseat 0|1` (default 1) is the lab switch; REV2_PADSEAT=0 starts with it off. */
+#define PADSEAT_CPADEX_VT 0x13C9268u   /* vtbl_cPadEx */
+#define PADSEAT_CPAD_VT 0x13E6754u     /* vtbl_cPad (the cPadEx's embedded pad at +0x858) */
+static int g_padseat = 1, g_padseat_env;
+static unsigned g_padseat_t, g_padseat_seat_fixes, g_padseat_cpad_fixes, g_padseat_logs;
+static int g_padseat_last[2] = {-9, -9}, g_padseat_cpad_last = -9;
+
+static int padseat_cpad_no(unsigned *cpad)   /* the local human's pad number (cPadEx +0x858 = the embedded cPad, its +0xC), or -1 */
+{
+    *cpad = 0;
+    unsigned p = player_obj(g_my_slot), in = p ? rd32(p + 0x78E0) : 0, pd = in ? rd32(in + 0x4C0) : 0;
+    if (!pd || rd32(pd) != PADSEAT_CPADEX_VT || rd32(pd + 0x858) != PADSEAT_CPAD_VT) return -1;
+    *cpad = pd + 0x858;
+    return (int)rd32(pd + 0x858 + 0xC);
+}
+
+static void padseat_apply(const char *when)
+{
+    if (!g_padseat_env) {
+        char e[8];
+        g_padseat_env = 1;
+        if (r2_env("REV2_PADSEAT", e, sizeof e) && e[0] == '0') g_padseat = 0;
+    }
+    unsigned gm = rd32(0x157AE00);
+    if (!gm || g_my_slot < 0 || g_my_slot > 1) return;
+    int seat[2] = {(int)rd32(gm + 0x7D4), (int)rd32(gm + 0x7D8)};
+    g_padseat_last[0] = seat[0], g_padseat_last[1] = seat[1];
+    if (!g_padseat) return;
+    int m = pad_seat_writes(seat);
+    if (m) {
+        for (int k = 0; k < 2; k++)
+            if (m & (1 << k)) {
+                unsigned a[3] = {gm, (unsigned)k, (unsigned)k};
+                do_call(2, 0x8880E0, a, 3);   /* GameMan_SetSlotSeat(k, k) */
+            }
+        for (int k = 0; k < 2; k++)
+            if (player_obj(k)) {
+                unsigned b[2] = {rd32(0x1567EAC), (unsigned)k};
+                do_call(2, 0x6E6110, b, 2);   /* sPlayer_RefreshSlotFromGameMan: +0x7920 type, +0x7924 seat */
+            }
+        g_padseat_seat_fixes++;
+        if (g_padseat_logs < 30) {
+            g_padseat_logs++;
+            r2_log(NETLOG_PREFIX "pads: the seats were %d,%d %s (the game's spawn swaps them while slot 0 is the AI partner): set back to 0,1 (my human slot %d)", seat[0], seat[1], when,
+                   g_my_slot);
+        }
+    }
+    unsigned pd;
+    int no = padseat_cpad_no(&pd);
+    g_padseat_cpad_last = no;
+    if (no < 0) return;
+    int fix = pad_cpad_fix(g_my_slot, no);
+    if (fix < 0) return;
+    unsigned c[2] = {pd, (unsigned)fix};
+    do_call(2, 0xB429B0, c, 2);   /* the embedded cPad: pad number +0xC (= cPadEx +0x864) = fix, its button state cleared */
+    g_padseat_cpad_fixes++;
+    g_padseat_cpad_last = (int)rd32(pd + 0xC);
+    if (g_padseat_logs < 30) {
+        g_padseat_logs++;
+        r2_log(NETLOG_PREFIX "pads: my human (slot %d) read pad number %d %s: set to %d (cPad %08x; this PC's real pad is game user %d)", g_my_slot, no, when, g_padseat_cpad_last, pd,
+               g_my_slot);
+    }
+}
+
+static void padseat_tick(unsigned now)   /* G_RUN: twice a second */
+{
+    if (now - g_padseat_t < 500) return;
+    g_padseat_t = now;
+    padseat_apply("in the running game");
+}
+
 /* One step of the role set-up; returns 1 when both humans exist and the types / view are final. */
 static int setup_roles_step(void)
 {
@@ -587,6 +695,7 @@ static int setup_roles_step(void)
         return 0;
     }
     char c[64];
+    padseat_apply("after the load");   /* R2-6: before the types change (the human's uPlIntel re-reads its seat at a type change) */
     for (int slot = 0; slot < 2; slot++) set_slot_type(slot, slot == g_my_slot ? 0 : g_gate_on ? 1 : 2);   /* 6f: the partner is a puppet only once the scene gate has opened (gate_step) */
     snprintf(c, sizeof c, "vp 0 %d", g_my_slot);
     run_cmd(c);
@@ -638,6 +747,7 @@ static int game_tuple_changed(void)
 }
 
 /* ---------------------------------------------------------------- per pass */
+static void retry_on_event(const cp_event *e);   /* warp.inc: the retry coupling (the pause menu's Retry, the lab warp) */
 static void handle_notes(void)
 {
     for (;;) {   /* world events first (they are cheap and independent of the lobby state) */
@@ -647,8 +757,10 @@ static void handle_notes(void)
         if (have) ev = g_evq[g_evq_r++ % 32];
         LeaveCriticalSection(&g_nlock);
         if (!have) break;
+        if (ev.kind == CP_EV_USER + 0x70) { retry_on_event(&ev); continue; }   /* RETRY: in any glue state (see warp.inc) */
         if (g_state == G_RUN) {
-            if (ev.kind >= CP_EV_USER + 0x50 && ev.kind <= CP_EV_USER + 0x5F) ach_on_event(&ev);   /* stage 8b: forwarded achievement causes */
+            if (ev.kind >= CP_EV_USER + 0x60 && ev.kind <= CP_EV_USER + 0x6F) downed_on_event(&ev);   /* stage 9: downed / revive */
+            else if (ev.kind >= CP_EV_USER + 0x50 && ev.kind <= CP_EV_USER + 0x5F) ach_on_event(&ev);   /* stage 8b: forwarded achievement causes */
             else w_on_event(&ev);
         }
     }
@@ -659,6 +771,7 @@ static void handle_notes(void)
         if (have) n = g_notes[g_note_r++ % 64];
         LeaveCriticalSection(&g_nlock);
         if (!have) break;
+        lm_note(&n);   /* lobbymust.inc: the strips and the solo / quit steps of 0.2.0 (before the glue changes its state) */
         switch (n.what) {
         case CS_N_CONNECTED:
             roles_from_session();
@@ -737,8 +850,11 @@ static void coop_game_frame(void)
     net_env_autostart();
     if (g_w_env && !g_w_on && w_install()) g_w_on = 1;
     scen_tick();
+    downed_probe();   /* reads only; nothing happens unless a test instance armed it */
     if (!g_cs) return;
+    lm_frame();   /* lobbymust.inc: the end of Episode 1, the host's solo step, the guest's way back to the title (also after its session ended) */
     ach_frame();
+    aim_frame();
     cs_poll(g_cs);
     handle_notes();
     if (!cs_active(g_cs)) {
@@ -843,6 +959,8 @@ static void coop_game_frame(void)
         cp_state st;
         if (g_scene_gate) gate_step(now);
         hold_watch(now);   /* 6g: holds of the local human (logged, freed when the holder is gone) */
+        padseat_tick(now);   /* R2-6: the seats / the human's pad number (twice a second) */
+        downed_frame(now);   /* stage 9: the downed / revive rule (nothing happens while it is off) */
         if (sample_local(&st)) {
             if (g_scene_gate) st.flags |= CP_SF_CUTSCENE;   /* 6f: until the gate opens the partner's copy of me is not driven from my samples either */
             if (cs_submit_state(g_cs, &st)) g_local_sent++;
@@ -864,6 +982,7 @@ static void coop_game_frame(void)
                     g_died_with++;
                     r2_log(NETLOG_PREFIX "the partner is dead: my character dies with it (game over for both)");
                 }
+                downed_on_sample(&o);
                 if (!g_scene_gate) qte_puppet_step(&o, now);
                 if (!g_scene_gate && !(o.flags & (CP_SF_CUTSCENE | CP_SF_LOADING)) && !(o.flags & CP_SF_DEAD)) apply_remote(&o);   /* the puppet is held while the partner is in a cutscene, loading or dead */
             }
@@ -962,6 +1081,8 @@ int coop_net_command(const char *arg, char *out, int size)
             g_drive = d != 0, g_drive_frames = f < 2 ? 2 : f > 30 ? 30 : f, g_drive_tele = t < 50 ? 50 : t;
         }
         snprintf(out, size, "puppet drive %s, frames %d, snap beyond %.0f", g_drive ? "engine" : "teleport", g_drive_frames, g_drive_tele);
+    } else if (!strcmp(cmd, "downed")) {   /* net downed [on|off|auto] [bleed <s>] [hold <ms>] [range <u>] [pct <n>] [mode engine|mod|both] [hit <n>] [engine] [slots] [probe on|off|reset] [pkt <state> <from> <to>] (test instances only): stage 9, docs/downed-revive.md */
+        downed_command(rest, out, size);
     } else if (!strcmp(cmd, "dying")) {   /* net dying [die_with 0|1] [auto_retry 0|1]: partner death / retry coupling */
         int a = g_die_with, b = g_auto_retry;
         sscanf(rest, "%d %d", &a, &b);
@@ -1028,11 +1149,16 @@ int coop_net_command(const char *arg, char *out, int size)
             const char *q = rest + 3;
             char *end;
             for (unsigned long v = strtoul(q, &end, 0); end != q && v < 256; v = strtoul(q, &end, 0)) g_anim_bits[v >> 5] &= ~(1u << (v & 31)), q = end;
+        } else if (!strncmp(rest, "guard", 5)) {   /* net anim guard [0|1]: combat3, the refusal guard of the mirror (pupanim_logic.h) */
+            if (rest[5]) g_pa_on = atoi(rest + 5) != 0;
+            snprintf(out, size, "puppet replay guard %s: switches %u, again after a finished run %u, refusals %u, held passes %u, applied %u, held %u", g_pa_on ? "on" : "OFF", g_pa.n_apply, g_pa.n_reapply,
+                     g_pa.n_refused, g_pa.n_held, g_pa.applied, g_pa.held);
+            return 1;
         } else if (strncmp(rest, "list", 4)) {
             g_anim = atoi(rest), g_anim_mask = 0x62207C;
-            memset(g_anim_bits, 0, sizeof g_anim_bits), g_anim_bits[0] = 0x62207C;
+            gp_puppet_anim_defaults(g_anim_bits);
         }
-        int ao = snprintf(out, size, "puppet animation %d, ids:", g_anim);
+        int ao = snprintf(out, size, "puppet animation %d (guard %s, refusals %u), ids:", g_anim, g_pa_on ? "on" : "OFF", g_pa.n_refused);
         for (int i = 0; i < 256 && ao < size - 8; i++)
             if (g_anim_bits[i >> 5] & (1u << (i & 31))) ao += snprintf(out + ao, size - ao, " %d", i);
     } else if (!strcmp(cmd, "w")) {   /* net w on|off|observe|guard|log|status|obj|spawn: stage 6 world sync (world.inc) */
@@ -1045,6 +1171,14 @@ int coop_net_command(const char *arg, char *out, int size)
             return 1;
         }
         ach_command(rest, out, size);
+    } else if (!strcmp(cmd, "aim")) {   /* net aim at|watch|pos|joints|off|status: LAB aim aid for this PC's human's shots (aim.inc); game thread */
+        if (!lt_on_game_thread()) {
+            char c[400];
+            snprintf(c, sizeof c, "net aim %s", rest);
+            lt_post(c, out, size);
+            return 1;
+        }
+        aim_command(rest, out, size);
     } else if (!strcmp(cmd, "bot")) {   /* net bot go|stop|status|...: stage 6c waypoint walker (bot.inc); game thread */
         if (!lt_on_game_thread()) {
             char c[400];
@@ -1065,6 +1199,10 @@ int coop_net_command(const char *arg, char *out, int size)
     } else if (!strcmp(cmd, "input")) {   /* net input [auto|pad|kbm]: which device the local human uses (default auto) */
         if (rest[0]) g_input_pref = !strncmp(rest, "pad", 3) ? 0 : !strncmp(rest, "kbm", 3) || !strncmp(rest, "key", 3) ? 1 : 2;
         snprintf(out, size, "input preference %s", g_input_pref == 0 ? "pad" : g_input_pref == 1 ? "kbm" : "auto");
+    } else if (!strcmp(cmd, "padseat")) {   /* net padseat [0|1]: R2-6, the seats after a load (default 1) */
+        if (rest[0]) g_padseat = atoi(rest) != 0, g_padseat_env = 1;
+        snprintf(out, size, "padseat %s: seat fixes %u, pad number fixes %u; last seats %d,%d, my human (slot %d) pad number %d", g_padseat ? "on" : "off", g_padseat_seat_fixes,
+                 g_padseat_cpad_fixes, g_padseat_last[0], g_padseat_last[1], g_my_slot, g_padseat_cpad_last);
     } else if (!strcmp(cmd, "pads")) {
         g_pads_both = strncmp(rest, "1", 1) != 0;
         snprintf(out, size, "spoofed pads: %s", g_pads_both ? "0 and 1" : "1 only");
@@ -1082,6 +1220,7 @@ int coop_net_command(const char *arg, char *out, int size)
             g_cs = NULL;
             snprintf(out, size, "name '%s'", g_name);
         }
+    } else if (lm_command(cmd, rest, out, size)) {   /* lm | endcoop | solo | quittitle (lobbymust.inc) */
     } else if (!strcmp(cmd, "simload")) {   /* barrier test without a real load: this PC reports a load of `ms` milliseconds */
         unsigned ms = (unsigned)atoi(rest);
         if (!ms) ms = 3000;
@@ -1125,6 +1264,7 @@ static void net_env_autostart(void)
     if (r2_env("REV2_WORLD", v, sizeof v) && v[0] == '1') g_w_env = 1;   /* stage 6: hooks + world sync from the start (tests) */
     if (r2_env("REV2_WORLD_DEFAULTS", v, sizeof v) && v[0] == '0') g_defaults_off = 1;
     if (r2_env("REV2_REPLICA_AI", v, sizeof v) && v[0] == '1') g_w_replica_ai = 1;   /* stage 6c: keep the replicas' own AI on a client */
+    if (r2_env("REV2_PUPGUARD", v, sizeof v) && v[0] == '0') g_pa_on = 0;   /* combat3: the old replay rule (pupanim_logic.h) */
     if (r2_env("REV2_INPUT", v, sizeof v)) g_input_pref = !strncmp(v, "pad", 3) ? 0 : !strncmp(v, "kbm", 3) || !strncmp(v, "key", 3) ? 1 : 2;
     if (!r2_env("REV2_NET", v, sizeof v)) return;
     if (!strncmp(v, "host", 4)) {

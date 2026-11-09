@@ -91,6 +91,52 @@ int main(void)
         CHECK(pad_pick_update(&w, 0x00000400u, c2, e0) == 1);   /* pad 1 used 2.0 s ago across the wrap: stays */
         CHECK(pad_pick_update(&w, 0x00001800u, c2, e0) == 0);   /* idle 6 s across the wrap: moves */
     }
+    /* R2-6 (flashlive, notes\flashlive.md section 1): the seats after a load. A model of the game (GameMan types / seats, sPlayer_SpawnAll's swap, the player's
+     * +0x7920 / +0x7924 copies, the cPad pad number re-read from the seat at a slot-type change) and of the glue (the partner to type 1 at the load begin, the role
+     * set-up after it, the running game's tick). The human must read the logical pad its PC's real pad is passed through as (game user = its slot; sBioPad's
+     * tables are straight: logical n = physical n = XInput game user n), after any number of loads, in both roles, and the seats stay the stock join's 0 / 1. */
+    for (int my = 0; my < 2; my++) {
+        struct { int type[2], seat[2], ptype[2], pseat[2], cpad[2]; } g;
+        int rem = 1 - my, bad_pad = 0, bad_seat = 0;
+#define R26_REFRESH(k) do { int t_ = g.type[k]; if (g.ptype[k] != t_) g.cpad[k] = g.seat[k]; g.ptype[k] = t_, g.pseat[k] = g.seat[k]; } while (0)   /* set_slot_type: SetSlotType + RefreshSlotFromGameMan; a type change re-reads the seat into the cPad (vf19 -> vf44 -> vf51) */
+#define R26_FIX() do { int m_ = pad_seat_writes(g.seat); for (int k_ = 0; k_ < 2; k_++) if (m_ & (1 << k_)) g.seat[k_] = k_; if (m_) for (int k_ = 0; k_ < 2; k_++) g.pseat[k_] = g.seat[k_]; \
+                         int f_ = pad_cpad_fix(my, g.cpad[my]); if (f_ >= 0) g.cpad[my] = f_; } while (0)
+        /* the session start: single player (slot 0 human seat 0, slot 1 AI seat -1), the stock join (the other slot human, seat 1), the glue's types */
+        g.type[0] = 0, g.type[1] = 1, g.seat[0] = 0, g.seat[1] = -1;
+        for (int k = 0; k < 2; k++) g.ptype[k] = g.type[k], g.pseat[k] = g.seat[k], g.cpad[k] = g.seat[k];
+        g.type[1] = 0, g.seat[1] = 1; R26_REFRESH(1);                          /* Coop_ApplyJoinLeave(join) */
+        R26_FIX();
+        g.type[my] = 0; R26_REFRESH(my);
+        g.type[rem] = 2; R26_REFRESH(rem);
+        CHECK(g.cpad[my] == my);
+        for (int load = 1; load <= 5; load++) {
+            g.type[rem] = 1; R26_REFRESH(rem);                                 /* the glue at the load begin: "a type-2 slot would stall the load" */
+            if (g.type[0] == 1 && g.type[1] == 0) {                            /* sPlayer_SpawnAll: types and seats swapped */
+                int t = g.seat[0];
+                g.type[0] = 0, g.type[1] = 1, g.seat[0] = g.seat[1], g.seat[1] = t;
+            }
+            for (int k = 0; k < 2; k++) g.ptype[k] = g.type[k], g.pseat[k] = g.seat[k], g.cpad[k] = g.type[k] == 0 ? g.seat[k] : -1;   /* new players (sPlayer_SpawnForSlot) */
+            R26_FIX();                                                         /* setup_roles_step: padseat_apply("after the load") */
+            for (int k = 0; k < 2; k++) { g.type[k] = k == my ? 0 : 2; R26_REFRESH(k); }
+            R26_FIX();                                                         /* the running game's tick */
+            if (g.cpad[my] != my) bad_pad++;
+            if (g.seat[0] != 0 || g.seat[1] != 1 || g.pseat[my] != my) bad_seat++;
+        }
+        CHECK(bad_pad == 0);    /* 6b40a90: the slot-1 human read pad 0 after loads 1, 3, 5 */
+        CHECK(bad_seat == 0);
+#undef R26_REFRESH
+#undef R26_FIX
+    }
+    {   /* the pure parts */
+        int s01[2] = {0, 1}, s10[2] = {1, 0}, sm[2] = {0, -1};
+        CHECK(pad_seat_writes(s01) == 0);
+        CHECK(pad_seat_writes(s10) == 3);
+        CHECK(pad_seat_writes(sm) == 2);
+        CHECK(pad_cpad_fix(1, 1) == -1);
+        CHECK(pad_cpad_fix(1, 0) == 1);
+        CHECK(pad_cpad_fix(0, 0) == -1);
+        CHECK(pad_cpad_fix(-1, 0) == -1);
+    }
     printf("test_pad: %d checks, %d failed\n", g_checks, g_fail);
     return g_fail != 0;
 }
