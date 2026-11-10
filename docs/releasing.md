@@ -298,6 +298,10 @@ Tools: `gh` is the portable one at `<workspace>\tools\gh\bin\gh.exe` with `$env:
 Public packages so far: **pre-release 1 (0.1.0)** and **pre-release 2 (0.1.1)** (GitHub pre-releases), the first full release **0.2.0** (tag `v0.2.0`, `--latest`,
 published 2026-11-09 from the public commit `f15ce38`; zip `ce157026...`, setup exe `cb29cff4...`; the 0.1.1 launcher updated a copy to it through the real feed) and
 **0.2.1** (tag `v0.2.1`, `--latest`, published 2026-11-10 from the public commit `8f43c08`; zip `3f230f1f...`, setup exe `053bb404...`).
+Checked after the publication (2026-11-10, throw-away copies, no window): `tests\test_installer.ps1 -Online` 241 of 241; the 0.2.0 launcher of a copy with 0.2.0 installed,
+through the real feed (`-NoStart -NoWindow`, no `-Feed`): `installed 0.2.0, latest v0.2.1`, `downloaded 616868 bytes from https://release-assets.githubusercontent.com`,
+`checksum ok 3F230F1F...BA51`, `installer exit 0`, `version.txt` 0.2.1, the uninstall byte for byte back to the copy before 0.2.0; the setup exe from the release page with
+`-Quiet`: exit 0, the launcher then says `installed 0.2.1, latest v0.2.1`. Not checked: the player's window path, a start through Steam, SmartScreen on a browser download.
 
 0.2.1: a co-op game keeps its own save (`notes\coopsave.md` in the lab repo): the game's save calls (ISteamRemoteStorage, "DATA0.DAT") go to
 `%LOCALAPPDATA%\CAPCOM\RESIDENT EVIL REVELATIONS2\rev2_coop_save_<hash>.dat` while a co-op game runs, the solo save in memory comes back at the title, and the room's
