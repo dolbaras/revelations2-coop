@@ -52,6 +52,9 @@ enum lobby_text {
     LT_END_COOP, LT_END_COOP_HELP,                                          /* the host's pause menu row and its help line (drawn by the GAME's GUI font) */
     LT_REF_GONE, LT_REF_DENIED, LT_REF_NOLOBBY, LT_REF_NOTCOOP, LT_REF_STEAM_NOANSWER,   /* lang: the reason of a failed Steam join (lobby_backend_reason) */
     LT_MS,                                                                  /* lang: the room table's ping, one %s = milliseconds ("%s ms", "%s мс") */
+    /* ---- 0.2.1 coopsave ---- */
+    LT_CONTINUE,    /* stock m03 #87 "Continue": the host's row (value Yes / No) */
+    LT_CONT_NEED,   /* own: Continue needs a co-op save of this half on both PCs */
     LT_COUNT
 };
 /* the own text for a backend's English failure reason (coop_steam.c "Steam: ..."; CS_N_REFUSED a = 0), -1 when none fits (the caller then shows no reason) */
@@ -110,6 +113,7 @@ typedef struct lobby_env {
     void (*save)(void *user, const lobby_settings *s);                   /* settings changed: persist */
     int (*clipboard)(void *user, char *out, int size);                   /* text on the clipboard (Ctrl+V), 1 = got some */
     int (*local_address)(void *user, char *out, int size);               /* "192.168.1.5" or "" */
+    int (*coop_save)(void *user, int *part, int *difficulty);            /* 0.2.1: this PC's co-op save can continue an Episode 1 checkpoint of that half (1); NULL / 0 = none */
 } lobby_env;
 
 /* ---- input ---- */

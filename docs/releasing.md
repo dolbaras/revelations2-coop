@@ -117,7 +117,8 @@ the literal profile path of drive C.)
 - The shortcut starts the game through Steam (`steam://rungameid/287290`, found from the library's `appmanifest_*.acf`; a copy outside a Steam library starts `rerev2.exe`). Raid
   Mode is not separated by the launcher: the mod itself does nothing outside a co-op game started from the lobby (the lobby row is on the campaign page only).
 - Removal (`Uninstall Co-op.bat`, or the installer again with "Remove co-op"): deletes what the record lists, puts the backed-up files back, removes the shortcuts, `coop`
-  and `coop-backup`. The game's saves and `rev2_coop.ini` (the lobby's settings, `%LOCALAPPDATA%\CAPCOM\RESIDENT EVIL REVELATIONS2`) are not touched.
+  and `coop-backup`. The game's saves, `rev2_coop.ini` (the lobby's settings) and the co-op save (0.2.1: `rev2_coop_save_<hash>.dat` + `.rec`) in
+  `%LOCALAPPDATA%\CAPCOM\RESIDENT EVIL REVELATIONS2` are not touched: the player's progress survives a removal and a reinstall (the readme says so and how to delete them).
 - Texts in 12 languages, chosen by Windows' language, `-Lang` or the list in the window (Windows in Portuguese from Portugal gets Brazilian Portuguese; a language the game does not
   have gets English).
 
@@ -273,7 +274,8 @@ Tools: `gh` is the portable one at `<workspace>\tools\gh\bin\gh.exe` with `$env:
 `<v>` is the version (`0.2.0` for the first full release), `<dist>` the output folder (`work\dist-020`).
 
 1. Freeze: `git -C mod status --short` empty; `R2_VERSION` in `native/r2.h` is `<v>` and committed; `CP_PROTO_VERSION` bumped if a message layout changed since the last
-   release; the nine suites and `tests\test_installer.ps1 -OldZip work\dist-pre2\revelations2-coop-0.1.1.zip -Online` green on that commit.
+   release; the nine suites and `tests\test_installer.ps1 -OldZip work\dist-pre2\revelations2-coop-0.1.1.zip -Online` green on that commit, and (0.2.1 on) the same with
+   `-OldZip work\dist-020\revelations2-coop-0.2.0.zip` (the update from the published full release).
 2. Sanitized public tree and the release DLL, dry run: `DRYRUN=1 PUB=<scratch folder> DLL=<dist>\dinput8.dll ZIG=<zig.exe> ENET=<enet folder> sh lab/export_public.sh` (exports the
    committed HEAD of `mod/` (`SRC=work/wt-<x>` for a worktree), strips the lab-only switches, drops `notes/` (the agents' resume files and lab notes), names the lab's
    folder of static-query outputs that some comments cite without its drive path, puts `lab/pub-README.md` in as `README.md`, greps for private paths, names, account ids,
@@ -293,7 +295,13 @@ Tools: `gh` is the portable one at `<workspace>\tools\gh\bin\gh.exe` with `$env:
 
 ## Release status
 
-Public packages so far: **pre-release 1 (0.1.0)** and **pre-release 2 (0.1.1)**, both GitHub pre-releases; `releases/latest` answers 404 (2026-11-06). The first full release is `0.2.0`.
+Public packages so far: **pre-release 1 (0.1.0)** and **pre-release 2 (0.1.1)** (GitHub pre-releases), and the first full release **0.2.0** (tag `v0.2.0`, `--latest`,
+published 2026-11-09 from the public commit `f15ce38`; zip `ce157026...`, setup exe `cb29cff4...`; the 0.1.1 launcher updated a copy to it through the real feed).
+
+Next: **0.2.1** (branch `coopsave`): a co-op game keeps its own save (`notes\coopsave.md`): the game's save calls (ISteamRemoteStorage, "DATA0.DAT") go to
+`%LOCALAPPDATA%\CAPCOM\RESIDENT EVIL REVELATIONS2\rev2_coop_save_<hash>.dat` while a co-op game runs, the solo save in memory comes back at the title, and the room's
+Continue starts from the co-op checkpoint (the guest follows the host's record, session events 0x180). No message layout changed (new session flag bit 8, player flag
+bits 32 / 64, a new event kind): `CP_PROTO_VERSION` stays 2; both PCs need 0.2.1 anyway (the package version gate).
 
 Verified offline (no game started, no window shown):
 - `tests\test_installer.ps1`: 188 of 188 (2026-11-06), 193 with `-OldZip` (the 0.1.1 launcher to 0.2.0), 193 with `-Online`.

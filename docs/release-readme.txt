@@ -1,4 +1,4 @@
-Resident Evil Revelations 2 Co-op  -  version 0.2.0
+Resident Evil Revelations 2 Co-op  -  version 0.2.1
 ===================================================
 
 Network co-op for Episode 1 of the story campaign of Resident Evil Revelations 2 (PC, Steam build 3658995): two players on two PCs, each PC with its own copy of
@@ -22,6 +22,8 @@ What it does
   episode: both players go back to the title with its title row.
 - When a player leaves or the connection is lost, the host reads it on screen and plays on with the game's AI partner; a guest whose host is gone reads it
   and goes back to the title by itself. A partner who does not answer for 8 seconds (game in the background, a long load, a stall) is named on screen.
+- A co-op game keeps its own save (new in 0.2.1): your campaign save is never changed by a co-op game. In the room the host can choose "Continue" to go on
+  from the last checkpoint of the co-op save; the guest then follows the host's checkpoint. See "Saves" below.
 - Raid Mode and the game's online services are not touched; the mod does nothing outside a co-op game started from the lobby.
 
 Install
@@ -31,22 +33,28 @@ Install
    version of the mod from GitHub first, if there is one (no internet: the game starts as it is). A new version is installed only when its download matches the
    checksum GitHub gives for it.
 3. In the game choose Campaign, then "Co-Op Play". Both players need the same version of the mod: a player with another version is refused and told so.
-If you had a pre-release (0.1.0 or 0.1.1): the shortcut updates it to this version by itself at the next start.
+If you had an earlier version (0.1.0, 0.1.1 or 0.2.0): the shortcut updates it to this version by itself at the next start.
 
 Remove: run "Uninstall Co-op.bat" in the game folder (or the installer again and choose "Remove co-op"). It deletes what it installed (also the mod's log
-files next to rerev2.exe), puts the backed-up files back and removes the shortcuts. Your saves are not touched; the settings file stays in
-%LOCALAPPDATA%\CAPCOM\RESIDENT EVIL REVELATIONS2 (rev2_coop.ini, a few lines); screenshots you took with the mod stay in rev2_coop\shots.
+files next to rerev2.exe), puts the backed-up files back and removes the shortcuts. Your saves are not touched: the game's own save stays where Steam keeps
+it, and the co-op save and the settings file stay in %LOCALAPPDATA%\CAPCOM\RESIDENT EVIL REVELATIONS2 (rev2_coop_save_<number>.dat and .rec, rev2_coop.ini;
+delete them by hand if you want them gone); screenshots you took with the mod stay in rev2_coop\shots.
 
 Needs: the Steam version of Resident Evil Revelations 2, build 3658995 (the installer checks rerev2.exe and refuses any other one), Windows 10 or 11,
 PowerShell 5.1 (part of Windows). Direct connection by IP: the host needs inbound UDP port 28410 (Windows asks once to allow the game through its firewall).
 
 Limits
 - Episode 1 only: Episodes 2 to 4, the bonus episodes, Survival, Invisible and Raid are not offered by the lobby.
-- A co-op game always starts at the beginning of the half the host picks (Claire's half or Barry's half); joining a running game is not possible. If one
-  player's game closes or the connection is lost, start a new co-op game of that half from the lobby.
+- A co-op game starts at the beginning of the half the host picks (Claire's half or Barry's half), or with Continue at the last checkpoint of the co-op save;
+  joining a running game is not possible. If one player's game closes or the connection is lost, start a new co-op game from the lobby (Continue takes you
+  back to the last checkpoint).
 - The end of a half: both players must stand at the radio together (there is no timeout while one of them stays away).
-- Saves: a co-op game uses the normal campaign save slot of your Steam account, and its checkpoints overwrite that slot exactly as "New Game" would. BACK UP YOUR SAVE FIRST
-  if it matters. After a game over, Retry takes both players back to the same checkpoint.
+- Saves: a co-op game has its own save, on each PC in %LOCALAPPDATA%\CAPCOM\RESIDENT EVIL REVELATIONS2\rev2_coop_save_<number>.dat (one per Steam account; the
+  .rec file next to it is the checkpoint the room shows). Your campaign save (the one Steam keeps and Steam Cloud carries) is not opened by a co-op game and
+  is exactly as before when you leave co-op; the co-op save is not in Steam Cloud, so it stays on that PC. The first co-op game starts its save from a copy of
+  your campaign save's settings and unlocks; after that the two saves are separate. "Continue" in the room starts at the last checkpoint of the host's co-op
+  save; both players need a co-op save of that half (they played it together before), and the guest follows the host's checkpoint. To start the co-op story
+  over, choose Continue "No" (a new game of the half), or delete the two files. After a game over, Retry takes both players back to the same checkpoint.
 - Achievements: Steam achievements are NOT blocked in your game. What you earn in a co-op game is really unlocked on your Steam account (and cannot be taken back by this mod);
   each PC credits only what its own player did, through the game's own record path.
 - Japanese text in the co-op screens uses a Windows font, not the game's own.

@@ -66,6 +66,7 @@ typedef struct {
     int interp_delay_ms;              /* 0 = default 100 */
     int no_rejoin;                    /* 0.2.0 product rule (1): nobody joins after the start, not even a known name (no seat take-over, REFUSE(STARTED)); a client that
                                          is welcomed into a running game leaves at once. 0 = the lab's rejoin (a known name gets its seat back) */
+    unsigned pflags;                  /* 0.2.1: player flags this PC advertises (CP_PF_SAVE0 / CP_PF_SAVE1 only): in HELLO, and the host's own row; cs_set_pflags changes them */
 } cs_config;
 
 typedef struct {
@@ -98,6 +99,8 @@ void cs_leave(cs_t *s, int reason);                    /* LEAVE + close the tran
  * CP_LEAVE_END_COOP after the start: the host plays on alone). PEER_LEAVE b = CS_GONE_REMOVED follows at once. 1 = done */
 int cs_kick(cs_t *s, int pid, int reason);
 int cs_join_stage(cs_t *s);                            /* client: 0 not joining, 1 the transport connects, 2 HELLO sent (awaiting the host's reply) */
+/* 0.2.1 coopsave: the CP_PF_SAVE* bits this PC advertises from now on (a client: in its next HELLO; a host: its row of the lobby table at once) */
+void cs_set_pflags(cs_t *s, unsigned flags);
 
 void cs_poll(cs_t *s);                                 /* drain the transport, run timers (heartbeat, deadlines, barrier timeout) */
 

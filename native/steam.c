@@ -32,6 +32,7 @@
 #include "r2.h"
 #include "coop_steam.h"
 #include "ach_logic.h"
+#include "coopsave.h"
 
 #define THISCALL __attribute__((thiscall))
 
@@ -497,6 +498,7 @@ static void *__cdecl hook_ContextInit(void *data)
 {
     void *r = real_ContextInit(data);
     if (r) cst_note_context(r);   /* the CSteamAPIContext of the game: the co-op transport uses the interfaces the game itself holds */
+    if (r) coopsave_on_context(r);   /* 0.2.1: the save calls of a co-op game go to the co-op save (coopsave.c) */
     static int n;
     if (++n <= 4) {
         unsigned d[8];

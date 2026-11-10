@@ -23,6 +23,7 @@
 #include "menu.h"
 #include "overlay.h"
 #include "r2.h"
+#include "coopsave.h"
 
 #define THISCALL __attribute__((thiscall))
 #define MLOG(...) r2_log("menu: " __VA_ARGS__)
@@ -370,6 +371,13 @@ static uint32_t env_now(void *u)
     (void)u;
     return GetTickCount();
 }
+/* 0.2.1: the checkpoint this PC's co-op save can continue (the lobby's Continue row) */
+static int env_coop_save(void *u, int *part, int *difficulty)
+{
+    (void)u;
+    return coopsave_summary(part, difficulty, NULL, NULL);
+}
+
 static void env_save(void *u, const lobby_settings *s)
 {
     (void)u;
@@ -742,13 +750,28 @@ static void drain_notes(void)
 }
 
 /* ------------------------------------------------------------------ the stock start sequence of a new campaign game */
-static int g_start_cont;   /* 6h, console only (`menu start <ep> <part> <diff> 1`): the stock Continue (the checkpoint of the save) instead of a new game */
-static void game_start(int episode, int part, int difficulty)
+static int g_start_cont;   /* console `menu start <ep> <part> <diff> 1` and the lobby's Continue (0.2.1): the stock title Continue of the campaign slot instead of a new game */
+static int g_start_follow; /* 0.2.1: the guest follows the host's checkpoint record (coopsave.c) */
+static int g_start_pending;   /* 0.2.1: the lobby's start waits for the game's save manager to be idle (coopsave_enter answered 0) */
+static unsigned g_start_tick;
+/* 0.2.1: returns 1 = started, 0 = not yet (the save manager is busy: call again next frame), -1 = refused */
+static int game_start(int episode, int part, int difficulty)
 {
     unsigned g = gm(), st = rd32(A_STORY), area = demo_area();
     if (!g || !st || !area) {
         MLOG("start: game not ready (gm %08x story %08x aDemo %08x)", g, st, area);
-        return;
+        return -1;
+    }
+    cs_t *cs = coop_net_session_peek();
+    if (cs && cs_active(cs)) {   /* 0.2.1: a co-op game: its own save (the solo save is kept aside in memory and never written by it) */
+        int r = coopsave_enter(g_start_cont ? "a co-op Continue" : "a co-op new game");
+        if (r == 0) return 0;
+    }
+    if (g_start_cont) {
+        MLOG("start: the stock Continue of the campaign slot (%s)", g_start_follow ? "following the host's checkpoint" : "this PC's checkpoint");
+        if (!coopsave_continue_start(g_start_follow)) return -1;
+        g_start_count++;
+        return 1;
     }
     MLOG("start: episode %d part %d difficulty %d", episode, part, difficulty);
     ((void(THISCALL *)(void *, int))A_SET_GAMETYPE)((void *)g, 0);
@@ -760,6 +783,23 @@ static void game_start(int episode, int part, int difficulty)
     ((void(THISCALL *)(void *, int))A_SET_CONTINUE)((void *)st, g_start_cont ? 1 : 0);
     ((void(THISCALL *)(void *))A_GOTO_EPISODE_START)((void *)area);
     g_start_count++;
+    return 1;
+}
+
+/* 0.2.1: the lobby's start: a new game of the half, or (the host's Continue) the checkpoint of the co-op save; the guest follows the host's record */
+static int lobby_game_start(void)
+{
+    int ep, part, df, ch, gt;
+    lobby_start_params(g_lobby, &ep, &part, &df, &ch, &gt);
+    cs_t *cs = coop_net_session_peek();
+    cp_session ss;
+    memset(&ss, 0, sizeof ss);
+    if (cs) cs_session_get(cs, &ss);
+    g_start_cont = (ss.flags & CP_SESS_CONT) != 0;
+    g_start_follow = g_start_cont && cs && !cs_is_host(cs);
+    int r = game_start(ep, part, df);
+    g_start_cont = g_start_follow = 0;
+    return r;
 }
 
 /* ------------------------------------------------------------------ lobby life cycle */
@@ -770,6 +810,7 @@ static lobby_t *lobby_get(void)
     memset(&e, 0, sizeof e);
     e.command = env_command, e.session = env_session, e.now = env_now, e.text = env_text, e.async_start = env_async_start, e.async_poll = env_async_poll,
     e.save = env_save, e.clipboard = env_clipboard, e.local_address = env_local_address;
+    e.coop_save = env_coop_save;   /* 0.2.1: the Continue row */
     g_lobby = lobby_new(&e);
     if (g_lobby) lobby_set_settings(g_lobby, &g_set);
     return g_lobby;
@@ -828,10 +869,24 @@ static void THISCALL h_session_update(void *self)
         lobby_end(1);
         return;
     }
-    if (req == LR_START) {
-        int ep, part, df, ch, gt;
-        lobby_start_params(g_lobby, &ep, &part, &df, &ch, &gt);
-        game_start(ep, part, df);
+    if (req == LR_START) g_start_pending = 1, g_start_tick = GetTickCount();
+    if (g_start_pending) {
+        int r = lobby_game_start();
+        if (r == 0) {   /* 0.2.1: the game's save manager is still busy (a save in flight): "Starting the game..." stays up, the start is tried again next frame */
+            if (GetTickCount() - g_start_tick < 20000) {
+                publish_scene(1);
+                return;
+            }
+            /* never start a co-op game on the solo save: give the start up (the partner reads that this PC left) */
+            char out[100];
+            MLOG("start: the game's save manager stayed busy for 20 s: the co-op start is given up (the solo save is not used for a co-op game)");
+            g_start_pending = 0;
+            coop_net_command("stop", out, sizeof out);
+            set_menu_id(MENU_ID_CAMPAIGN);
+            lobby_end(1);
+            return;
+        }
+        g_start_pending = 0;
         publish_scene(1);   /* "Starting the game..." stays up until the menu object goes away */
         lobby_end(0);
         return;
@@ -1128,6 +1183,11 @@ void menu_frame(void)
         lobby_end(1);
     }
     cs_t *s = coop_net_session_peek();
+    if (coopsave_active()) {   /* 0.2.1: back at the title menus after a co-op game (whether its session still runs or not): the solo save comes back */
+        unsigned da = demo_area();
+        int id = menu_id();
+        coopsave_frame(da != 0, da && (id == 8 || id == 9 || id == MENU_ID_CAMPAIGN || id == 0xC), s && lobby_session_running(s));
+    }
     if (!s) return;
     int active = cs_active(s);
     unsigned area = active || g_obj ? demo_area() : 0;
@@ -1240,11 +1300,14 @@ void menu_command(const char *arg, char *out, int size)
         sscanf(rest, "%d %d %d %d", &ep, &part, &df, &cont);
         if (!demo_area()) snprintf(out, (size_t)size, "not in the menus (no aDemo)");
         else {
-            g_start_cont = cont != 0;
-            game_start(ep, part, df);
-            g_start_cont = 0;
-            snprintf(out, (size_t)size, "start sequence done: menu id now 0x%x", menu_id());
+            /* cont 1: the stock title Continue of the campaign slot (0.2.1; in a session the co-op save); cont 2: the same, following the host's record (a guest) */
+            g_start_cont = cont != 0, g_start_follow = cont == 2;
+            int r = game_start(ep, part, df);
+            g_start_cont = g_start_follow = 0;
+            snprintf(out, (size_t)size, r > 0 ? "start sequence done: menu id now 0x%x" : r == 0 ? "not started: the game's save manager is busy (menu id 0x%x), try again" : "not started (menu id 0x%x)", menu_id());
         }
+    } else if (!strcmp(w, "coopsave")) {   /* 0.2.1: the co-op save (coopsave.c) */
+        coopsave_status(out, size);
     } else if (!strcmp(w, "set")) {   /* menu set name=<n> | ip=<a> | character=<c> | solo=0|1 */
         lobby_settings s = g_set;
         char *eq = strchr(rest, '=');

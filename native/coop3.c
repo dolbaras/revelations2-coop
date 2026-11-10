@@ -17,6 +17,7 @@
 #include <math.h>
 
 #include "r2.h"
+#include "coopsave.h"
 
 #define LOOP_PATCH 0xC75578u
 

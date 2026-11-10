@@ -25,6 +25,7 @@ typedef struct {
     int saves;
     char clip[200];
     char local_name[24];
+    int save_part, save_diff;   /* 0.2.1: this node's co-op save (-1 none) */
 } Node;
 
 static void on_note(void *u, const cs_note *n)
@@ -94,10 +95,19 @@ static int env_async_poll(void *u, char *out, int size)
 static void env_save(void *u, const lobby_settings *s) { (void)s; ((Node *)u)->saves++; }
 static int env_clip(void *u, char *out, int size) { snprintf(out, (size_t)size, "%s", ((Node *)u)->clip); return ((Node *)u)->clip[0] != 0; }
 static int env_addr(void *u, char *out, int size) { (void)u; snprintf(out, (size_t)size, "192.168.1.5"); return 1; }
+static int env_coop_save(void *u, int *part, int *diff)
+{
+    Node *nd = (Node *)u;
+    if (nd->save_part < 0) return 0;
+    if (part) *part = nd->save_part;
+    if (diff) *diff = nd->save_diff;
+    return 1;
+}
 
 static void node_init(Node *nd, const char *name, int port)
 {
     memset(nd, 0, sizeof *nd);
+    nd->save_part = -1;
     snprintf(nd->name, sizeof nd->name, "%s", name);
     cs_config c;
     memset(&c, 0, sizeof c);
@@ -106,7 +116,7 @@ static void node_init(Node *nd, const char *name, int port)
     lobby_env e;
     memset(&e, 0, sizeof e);
     e.user = nd, e.command = env_command, e.session = env_session, e.now = env_now, e.text = env_text, e.async_start = env_async_start, e.async_poll = env_async_poll,
-    e.save = env_save, e.clipboard = env_clip, e.local_address = env_addr;
+    e.save = env_save, e.clipboard = env_clip, e.local_address = env_addr, e.coop_save = env_coop_save;
     nd->l = lobby_new(&e);
     lobby_settings st;
     lobby_get_settings(nd->l, &st);
@@ -687,6 +697,109 @@ static void test_episode_rule(void)
     n_nodes = 0;
 }
 
+/* 0.2.1 coopsave: the host's Continue row (its co-op save's half and difficulty), the guest's save bit, the rule that both PCs need a co-op save of that half */
+static void test_continue_rule(void)
+{
+    Node A, B;
+    node_init(&A, "Alice", 14);
+    node_init(&B, "Bob", 14);
+    nodes[0] = &A, nodes[1] = &B, n_nodes = 2;
+    A.save_part = 1, A.save_diff = 2;   /* the host's co-op save: Barry's half, Hard */
+    B.save_part = 1, B.save_diff = 1;
+    cs_set_pflags(B.s, CP_PF_SAVE1);    /* (the glue sets it from the co-op save record) */
+    lobby_open(A.l);
+    lobby_open(B.l);
+    press(&A, "Find a Partner");
+    press(&A, "System Link");
+    step(100);
+    CHECK(view(&A).screen == LS_ROOM);
+    CHECK(row_value(&A, "Continue") && strstr(row_value(&A, "Continue"), "No"));
+    CHECK(row_kind(&A, "Difficulty") == LV_NORMAL);
+    press(&B, "Join a Partner");
+    press(&B, "System Link");
+    retype(&B, "sim:14");
+    ev(&B, LE_OK);
+    step(2000);
+    CHECK(view(&B).screen == LS_ROOM);
+    CHECK(row_value(&B, "Continue") == NULL);   /* a new game: the guest's room has no Continue row (the 0.2.0 layout) */
+    cs_player_info pi;
+    CHECK(cs_player(A.s, cs_pid(B.s), &pi) && (pi.flags & CP_PF_SAVE1) && !(pi.flags & CP_PF_SAVE0));   /* the guest's save bit reached the host's table */
+    press(&A, "Continue");
+    step(300);
+    cp_session ss;
+    cs_session_get(A.s, &ss);
+    CHECK((ss.flags & CP_SESS_CONT) && ss.part == 1 && ss.difficulty == 2 && ss.episode == 1);   /* the half and the difficulty of the co-op save */
+    CHECK(cs_local_character(A.s) == CP_CHAR_BARRY);   /* Claire -> the same slot of Barry's half */
+    CHECK(row_kind(&A, "Difficulty") == LV_INFO && row_value(&A, "Continue") && strstr(row_value(&A, "Continue"), "Yes"));
+    step(1500);
+    CHECK(cs_local_character(B.s) == CP_CHAR_NATALIA);   /* the guest follows the half */
+    CHECK(row_value(&B, "Continue") && !strcmp(row_value(&B, "Continue"), "Yes"));
+    press(&B, "Ready");
+    step(300);
+    CHECK(row_kind(&A, "Start Game") == LV_NORMAL);
+    press(&A, "Start Game");
+    step(300);
+    CHECK(lobby_take_request(A.l) == LR_START && lobby_take_request(B.l) == LR_START);
+    cs_session_get(B.s, &ss);
+    CHECK((ss.flags & CP_SESS_CONT) && ss.part == 1);   /* the guest's start sees the Continue (menu.c: the stock Continue, following the host's record) */
+    cs_free(A.s), cs_free(B.s);
+    lobby_free(A.l), lobby_free(B.l);
+
+    /* the guest has no co-op save of that half: no start with Continue; a new game is fine */
+    Node C, D;
+    node_init(&C, "Carol", 15);
+    node_init(&D, "Dave", 15);
+    nodes[0] = &C, nodes[1] = &D, n_nodes = 2;
+    C.save_part = 0, C.save_diff = 1;
+    lobby_open(C.l);
+    lobby_open(D.l);
+    press(&C, "Find a Partner");
+    press(&C, "System Link");
+    step(100);
+    press(&D, "Join a Partner");
+    press(&D, "System Link");
+    retype(&D, "sim:15");
+    ev(&D, LE_OK);
+    step(2000);
+    press(&C, "Continue");
+    step(1500);
+    cs_session_get(C.s, &ss);
+    CHECK((ss.flags & CP_SESS_CONT) && ss.part == 0);
+    press(&D, "Ready");
+    step(300);
+    CHECK(row_kind(&C, "Start Game") == LV_GREY);
+    CHECK(!strcmp(view(&C).status, lobby_own_text(LT_CONT_NEED, 0)));
+    CHECK(!strcmp(view(&D).status, lobby_own_text(LT_CONT_NEED, 0)));
+    step(300);
+    CHECK(lobby_take_request(C.l) == LR_NONE && cs_phase(C.s) == CP_PHASE_LOBBY);   /* (Start is grey: not selectable) */
+    /* the host picks Barry: Continue ends, a new game of Barry's half */
+    press(&C, "Barry");
+    step(1500);
+    cs_session_get(C.s, &ss);
+    CHECK(!(ss.flags & CP_SESS_CONT) && ss.part == 1);
+    CHECK(row_value(&C, "Continue") && strstr(row_value(&C, "Continue"), "No") && row_kind(&C, "Difficulty") == LV_NORMAL);
+    CHECK(strcmp(view(&C).status, lobby_own_text(LT_CONT_NEED, 0)) != 0);
+    /* Continue again, then off by its own row: the host's difficulty comes back */
+    press(&C, "Continue");
+    step(300);
+    cs_session_get(C.s, &ss);
+    CHECK((ss.flags & CP_SESS_CONT) && ss.part == 0 && cs_local_character(C.s) == CP_CHAR_CLAIRE);
+    press(&C, "Continue");
+    step(300);
+    cs_session_get(C.s, &ss);
+    CHECK(!(ss.flags & CP_SESS_CONT));
+    /* the downed row keeps the Continue bit (its toggle masks the persisted flags) */
+    press(&C, "Continue");
+    step(300);
+    press(&C, "Downed / revive");
+    step(300);
+    cs_session_get(C.s, &ss);
+    CHECK((ss.flags & CP_SESS_CONT) && (ss.flags & CP_SESS_DOWNED));
+    cs_free(C.s), cs_free(D.s);
+    lobby_free(C.l), lobby_free(D.l);
+    n_nodes = 0;
+}
+
 static void test_texts(void)
 {
     for (int t = 0; t < LT_COUNT; t++) {
@@ -695,7 +808,7 @@ static void test_texts(void)
         if (lobby_stock_ids[t].table < 0) {   /* own strings are translated into all 11 other languages */
             int same = 0;
             for (int lang = 1; lang < 12; lang++) same += !strcmp(lobby_own_text(t, lang), lobby_own_text(t, 0));
-            if (t != LT_PING && same > 3) {
+            if (t != LT_PING && t != LT_MS && same > 3) {   /* (LT_MS: "%s ms" is the same in the Latin languages; the base 09ccc15 already failed here) */
                 printf("text %d: %d languages still English\n", t, same);
                 fails++;
             }
@@ -808,6 +921,7 @@ int main(void)
     test_lobbymust_room();
     test_episode_rule();
     test_ready_rules();
+    test_continue_rule();
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

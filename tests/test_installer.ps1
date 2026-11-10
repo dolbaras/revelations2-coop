@@ -448,7 +448,8 @@ try {
     Check ($script:exit -eq 0 -and $script:llog -match "installed 0\.0\.2, latest v0\.0\.2" -and -not ($script:reqs -match "\.zip")) "launcher with nothing new: exit 0, nothing downloaded"
 
     # 4b. -OldZip <a released zip, e.g. work\dist-pre2\revelations2-coop-0.1.1.zip>: that release installed into its own stand-in game, then ITS launcher (the one the
-    #     players have) updates it to a 0.2.0 package of this tree through the local feed; the record, the collector files and the uninstall of the result.
+    #     players have) updates it to a package of this tree's version (R2_VERSION of native/r2.h: 0.2.1, so the published 0.2.0 zip is an old release too) through the local feed;
+    #     the record, the collector files and the uninstall of the result.
     if ($OldZip) {
         $ox = Join-Path $base "old"; [IO.Compression.ZipFile]::ExtractToDirectory($OldZip, $ox)
         $oldVer = Get-Content (Join-Path $ox "files\coop\version.txt") -TotalCount 1
@@ -456,17 +457,19 @@ try {
         $cleanO = Snap $go
         Run-PS (Join-Path $ox "coop-installer.ps1") @("-Quiet", "-Game", "`"$go`"", "-ShortcutDir", "`"$(Join-Path $base 'links old')`"")
         Check ($script:exit -eq 0 -and (Ver $go) -eq $oldVer) "old release $oldVer installed from $([IO.Path]::GetFileName($OldZip))"
-        $distN = Join-Path $base "dist-next"; Package "0.2.0" $distN
-        $zipN = Join-Path $distN "revelations2-coop-0.2.0.zip"; Copy-Item $zipN $feedDir
-        Write-Feed "next.json" "$u/redirect/revelations2-coop-0.2.0.zip" ("sha256:" + (Sha $zipN)) -tag "v0.2.0"
+        $nv = "0.2.0"; $r2text = Get-Content (Join-Path $root "native\r2.h") -Raw; if ($r2text -match '#define R2_VERSION "(\d+\.\d+\.\d+)"') { $nv = $Matches[1] }
+        if ([version]$nv -le [version]$oldVer) { throw "-OldZip: the old release $oldVer is not older than this tree's version $nv" }
+        $distN = Join-Path $base "dist-next"; Package $nv $distN
+        $zipN = Join-Path $distN "revelations2-coop-$nv.zip"; Copy-Item $zipN $feedDir
+        Write-Feed "next.json" "$u/redirect/revelations2-coop-$nv.zip" ("sha256:" + (Sha $zipN)) -tag "v$nv"
         Run-PS (Join-Path $go "coop\coop-launcher.ps1") @("-NoStart", "-NoWindow", "-Feed", "$u/next.json")
         $orec = Get-Content (Join-Path $go "coop\install.txt")
         $olog = (Get-Content (Join-Path $go "coop\launcher-log.txt") -Encoding UTF8) -join " | "
-        Check ((Ver $go) -eq "0.2.0" -and ($orec -contains "version=0.2.0") -and ($orec -contains "file=coop\collect-logs.ps1")) "the $oldVer launcher updates to 0.2.0: record and the collector files ($olog)"
-        Check ((Sha (Join-Path $go "coop\coop-launcher.ps1")) -eq (Sha (Join-Path $tools "launcher.ps1"))) "after the $oldVer -> 0.2.0 update the game folder has this tree's launcher"
-        Check ((Get-Content (Join-Path $go "coop-backup\dinput8.dll") -Raw) -eq "ASI LOADER of somebody else") "the $oldVer -> 0.2.0 update keeps the foreign DLL as the backup"
+        Check ((Ver $go) -eq $nv -and ($orec -contains "version=$nv") -and ($orec -contains "file=coop\collect-logs.ps1")) "the $oldVer launcher updates to ${nv}: record and the collector files ($olog)"
+        Check ((Sha (Join-Path $go "coop\coop-launcher.ps1")) -eq (Sha (Join-Path $tools "launcher.ps1"))) "after the $oldVer -> $nv update the game folder has this tree's launcher"
+        Check ((Get-Content (Join-Path $go "coop-backup\dinput8.dll") -Raw) -eq "ASI LOADER of somebody else") "the $oldVer -> $nv update keeps the foreign DLL as the backup"
         Run-PS (Join-Path $go "coop\coop-installer.ps1") @("-Quiet", "-Uninstall", "-Game", "`"$go`"")
-        Check ($script:exit -eq 0 -and (Same $cleanO (Snap $go))) "uninstall after the $oldVer -> 0.2.0 update: the game folder is the clean one"
+        Check ($script:exit -eq 0 -and (Same $cleanO (Snap $go))) "uninstall after the $oldVer -> $nv update: the game folder is the clean one"
         # a player of the old release with an Ultimate ASI Loader (kept off in coop-backup by that release): the update by the shortcut makes it run on as winmm.dll
         $goa = New-UalGame "old release asi"
         $cleanOA = Snap $goa
@@ -476,7 +479,7 @@ try {
         Check ($script:exit -eq 0 -and (Test-Path -LiteralPath (Join-Path $goa "winmm.dll")) -eq $oldChains -and (Sha (Join-Path $goa "coop-backup\dinput8.dll")) -eq $cleanOA["dinput8.dll"]) "old release $oldVer over an ASI loader: kept in coop-backup, winmm.dll made: $oldChains (as released)"
         Run-PS (Join-Path $goa "coop\coop-launcher.ps1") @("-NoStart", "-NoWindow", "-Feed", "$u/next.json")
         $oarec = @(Get-Content (Join-Path $goa "coop\install.txt"))
-        Check ((Ver $goa) -eq "0.2.0" -and (Sha (Join-Path $goa "winmm.dll")) -eq $cleanOA["dinput8.dll"] -and ($oarec -contains "chain=winmm.dll") -and ($oarec -contains "file=winmm.dll")) "the $oldVer launcher's update to 0.2.0 makes the kept ASI loader run on as winmm.dll"
+        Check ((Ver $goa) -eq $nv -and (Sha (Join-Path $goa "winmm.dll")) -eq $cleanOA["dinput8.dll"] -and ($oarec -contains "chain=winmm.dll") -and ($oarec -contains "file=winmm.dll")) "the $oldVer launcher's update to $nv makes the kept ASI loader run on as winmm.dll"
         Run-PS (Join-Path $goa "coop\coop-installer.ps1") @("-Quiet", "-Uninstall", "-Game", "`"$goa`"")
         Check ($script:exit -eq 0 -and (Same $cleanOA (Snap $goa))) "uninstall after that update: the folder is byte for byte the one with the loader as dinput8.dll"
     }

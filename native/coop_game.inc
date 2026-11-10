@@ -151,6 +151,10 @@ static void note_cb(void *user, const cs_note *n)
 {
     (void)user;
     menu_on_note(n);   /* the lobby screen (stage 8) */
+    if (n->what == CS_N_EVENT && n->ev && n->ev->kind == COOPSAVE_EV_KIND) {   /* 0.2.1: the host's checkpoint record (before START of a Continue) */
+        if (g_cs && !cs_is_host(g_cs)) coopsave_on_event(n->ev->body, n->ev->len);
+        return;
+    }
     if (!g_nlock_init) return;
     EnterCriticalSection(&g_nlock);
     if (n->what == CS_N_EVENT && n->ev && n->ev->kind >= CP_EV_USER + 0x20) {
@@ -845,6 +849,27 @@ static void handle_notes(void)
 static void net_env_autostart(void);
 int coop_net_command(const char *arg, char *out, int size);
 
+/* 0.2.1: the host's START; for a Continue (CP_SESS_CONT) the checkpoint record of its co-op save goes out first (the guest follows it), and only when the
+ * start can happen (everybody ready), so that a refused start sends nothing */
+static int glue_start(int force, char *err, size_t esz)
+{
+    cp_session ss;
+    cs_session_get(g_cs, &ss);
+    if ((ss.flags & CP_SESS_CONT) && cs_is_host(g_cs) && cs_phase(g_cs) == CP_PHASE_LOBBY) {
+        int n = 0, ready = 0;
+        for (int i = 0; i < CP_MAX_PLAYERS; i++) {
+            cs_player_info pi;
+            if (cs_player(g_cs, i, &pi) && pi.connected) n++, ready += pi.ready || i == 0;
+        }
+        if (!force && (n < 2 || ready < n)) {
+            snprintf(err, esz, n < 2 ? "no other player yet" : "not everybody is ready");
+            return 0;
+        }
+        if (!coopsave_send_record(g_cs, err, (int)esz)) return 0;
+    }
+    return cs_start(g_cs, force, err, esz);
+}
+
 static void coop_game_frame(void)
 {
     net_env_autostart();
@@ -852,6 +877,7 @@ static void coop_game_frame(void)
     scen_tick();
     downed_probe();   /* reads only; nothing happens unless a test instance armed it */
     if (!g_cs) return;
+    cs_set_pflags(g_cs, coopsave_pflags());   /* 0.2.1: the co-op save bits this PC advertises (a guest's HELLO, the host's row) */
     lm_frame();   /* lobbymust.inc: the end of Episode 1, the host's solo step, the guest's way back to the title (also after its session ended) */
     ach_frame();
     aim_frame();
@@ -879,7 +905,7 @@ static void coop_game_frame(void)
                 char err[100];
                 if (now - last_try > 1000) {
                     last_try = now;
-                    cs_start(g_cs, 0, err, sizeof err);
+                    glue_start(0, err, sizeof err);
                 }
             }
         }
@@ -1232,6 +1258,10 @@ int coop_net_command(const char *arg, char *out, int size)
             glue_set_state(G_LOAD);
             snprintf(out, size, "simulated load of %u ms started", ms);
         }
+    } else if (!strcmp(cmd, "start")) {   /* 0.2.1: the session's start through glue_start (the Continue record first) */
+        char err[160];
+        if (glue_start(!strncmp(rest, "force", 5), err, sizeof err)) snprintf(out, size, "START sent");
+        else snprintf(out, size, "not started: %s", err);
     } else {
         int handled = cs_command(s, arg, out, (size_t)size);
         if (!handled) {

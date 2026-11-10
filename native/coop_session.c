@@ -408,7 +408,7 @@ static void init_local_player(cs_t *s, int pid, int host)
     pl_t *p = &s->pl[pid];
     memset(p, 0, sizeof *p);
     p->used = 1, p->connected = 1, p->hello_done = 1, p->peer = -1;
-    p->flags = (uint8_t)((host ? CP_PF_HOST : 0) | (s->cfg.is_bot ? CP_PF_BOT : 0) | CP_PF_CONNECTED);
+    p->flags = (uint8_t)((host ? CP_PF_HOST : 0) | (s->cfg.is_bot ? CP_PF_BOT : 0) | CP_PF_CONNECTED | (s->cfg.pflags & (CP_PF_SAVE0 | CP_PF_SAVE1)));
     memcpy(p->name, s->name, sizeof p->name);
     p->character = CP_CHAR_NONE;
 }
@@ -598,7 +598,7 @@ static void host_hello(cs_t *s, int peer, const cp_hello *h)
     if (!rejoin) memset(p, 0, sizeof *p);
     p->used = 1, p->connected = 1, p->hello_done = 1, p->peer = peer;
     if (!rejoin) copy_name(p->name, h->name);
-    p->flags = (uint8_t)((h->flags & CP_PF_BOT) | CP_PF_CONNECTED);
+    p->flags = (uint8_t)((h->flags & (CP_PF_BOT | CP_PF_SAVE0 | CP_PF_SAVE1)) | CP_PF_CONNECTED);   /* 0.2.1: the guest's co-op save bits travel with it */
     p->character = rejoin ? keep_char : (uint8_t)free_character(s, pid, h->want_char);
     p->ready = rejoin ? 1 : 0, p->loaded = 0;
     p->heard = now_of(s), p->silent_on = 0;
@@ -890,7 +890,7 @@ static void send_hello(cs_t *s)
     h->version = CP_PROTO_VERSION, h->min_version = CP_PROTO_MIN;
     memcpy(h->exe_tag, s->cfg.exe_tag, 8);
     h->want_char = (uint8_t)(s->cfg.want_char >= 0 && s->cfg.want_char <= 3 ? s->cfg.want_char : CP_CHAR_NONE);
-    h->flags = s->cfg.is_bot ? CP_PF_BOT : 0;
+    h->flags = (uint8_t)((s->cfg.is_bot ? CP_PF_BOT : 0) | (s->cfg.pflags & (CP_PF_SAVE0 | CP_PF_SAVE1)));
     memcpy(h->name, s->name, sizeof h->name);
     snprintf(h->mod, sizeof h->mod, "%s", s->mod);
     send_msg(s, 0, CP_CH_CONTROL, 1, &m);
@@ -1375,6 +1375,20 @@ int cs_remote_pid(cs_t *s)
     LeaveCriticalSection(&s->lock);
     return r;
 }
+void cs_set_pflags(cs_t *s, unsigned flags)
+{
+    EnterCriticalSection(&s->lock);
+    flags &= CP_PF_SAVE0 | CP_PF_SAVE1;
+    if (s->cfg.pflags != flags) {
+        s->cfg.pflags = flags;
+        if (s->role == CN_ROLE_HOST && s->pid >= 0 && s->pid < CP_MAX_PLAYERS && s->pl[s->pid].used) {
+            s->pl[s->pid].flags = (uint8_t)((s->pl[s->pid].flags & ~(CP_PF_SAVE0 | CP_PF_SAVE1)) | flags);
+            lobby_changed(s);
+        }
+    }
+    LeaveCriticalSection(&s->lock);
+}
+
 int cs_player(cs_t *s, int pid, cs_player_info *out)
 {
     int ok = 0;
@@ -1404,12 +1418,14 @@ void cs_status(cs_t *s, char *out, size_t size)
     }
     int o = snprintf(out, size, "net: %s via %s, %s, pid %d, epoch %u, session %08x ep%u part%u diff%u max%u", s->role == CN_ROLE_HOST ? "HOST" : "CLIENT", cn_backend_name(s->net),
                      s->joining ? "joining" : phases[s->phase & 3], s->pid, (unsigned)s->epoch, s->session.id, s->session.episode, s->session.part, s->session.difficulty, s->session.max_players);
+    o += snprintf(out + o, size - o, " flags%u", (unsigned)s->session.flags);   /* 0.2.1: 1 downed, 8 Continue (coopsave) */
     for (int i = 0; i < CP_MAX_PLAYERS && o < (int)size - 160; i++) {
         const pl_t *p = &s->pl[i];
         if (!p->used) continue;
         o += snprintf(out + o, size - o, "\n  p%d %-7s \"%s\"%s%s%s%s", i, cp_char_name(p->character), p->name, i == 0 ? " HOST" : "", i == s->pid ? " (me)" : "",
                       p->connected ? "" : " DISCONNECTED", p->ready ? " ready" : "");
         if (p->loaded) o += snprintf(out + o, size - o, " loaded");
+        if (p->flags & (CP_PF_SAVE0 | CP_PF_SAVE1)) o += snprintf(out + o, size - o, " co-op-save:%s", (p->flags & CP_PF_SAVE1) ? "barry-half" : "claire-half");   /* 0.2.1 */
         if (i != s->pid && p->connected) {
             o += snprintf(out + o, size - o, " rtt=");
             if (p->have_rtt) o += snprintf(out + o, size - o, "%dms", (int)(p->srtt + 0.5f));

@@ -82,7 +82,7 @@ Offsets are within the message, type byte = offset 0.
 | 0x51 | WORLD | 1 U | any -> all | stage 6, additive (no version change: an older peer drops an unknown type): `u8 pid` `u8 kind` `u16 seq` `u32 t_ms` `u8 epoch` `u16 len` `u8[len] body` (len <= 400); newer sequence only, other epochs dropped, relayed by the host. Bodies and the world events (kinds `0x120..0x12A`: SPAWN HIT DEATH PICKUP PDMG FLAG SCENE GRANT BARRIER; WORLD kinds 1 enemy records, 2 flag table digest, 3 item liveness digest): `world.md` |
 
 Blocks: **session** = `u32 id` `u8 game_type` `u8 episode` `u8 part` `u8 difficulty` `u8 max_players` `u8 flags` `u32 area_id` `u32 seed` (16 bytes).
-**lobby** = `u32 rev` `u8 count` then per player `u8 pid` `u8 character` `u8 ready` `u8 flags` `str name`; flags: 1 host, 2 connected, 4 in game, 8 loaded, 16 bot.
+**lobby** = `u32 rev` `u8 count` then per player `u8 pid` `u8 character` `u8 ready` `u8 flags` `str name`; flags: 1 host, 2 connected, 4 in game, 8 loaded, 16 bot, 32 / 64 a co-op save of Claire's / Barry's half (0.2.1).
 
 ### 4.1 PLAYER_STATE (0x50), 20 Hz, 60 bytes (version 2; version 1 was the first 40)
 
@@ -137,6 +137,15 @@ from the console. Planned kinds and bodies (all little endian; ids are the game'
 Downed / revive events (stage 9, `downed-revive.md`, reliable, only while the session flag `CP_SESS_DOWNED` = bit 0 of `session.flags` is set; bits 1..2 of the same byte are the bleed-out preset): kinds `0x160` DOWN, `0x161` DEAD, `0x162` BEGIN,
 `0x163` KEEPALIVE, `0x164` CANCEL, `0x165` DONE (`CP_EV_USER + 0x60..0x65`); body `u8 sender slot` `u8 target slot (255 = none)`. `STATE` flag bit 128 (`CP_SF_DOWN`, reserved since version 2) is set while the sender lies. An older peer drops the unknown kinds
 and ignores the flag: no version change.
+
+Co-op save (0.2.1, `native/coopsave_logic.h`, `lobby.md` "Continue"): `session.flags` bit 3 (`CP_SESS_CONT` = 8): the host continues the checkpoint of its co-op save.
+The lobby table's player `flags` 32 (`CP_PF_SAVE0`) / 64 (`CP_PF_SAVE1`): that player's co-op save holds an Episode 1 checkpoint of Claire's / Barry's half (a client
+sends them in `HELLO.flags`, the host keeps them in its table). Kind `0x180` CPREC (`CP_EV_USER + 0x80`, host -> client, reliable, sent just before `START` of a
+Continue, in order): `HEAD` `u8 0` `u8 version 1` `u16 pairs` `u32 crc` `u32 difficulty` `u32 episode` `u32 +0x2C` `u32 stage` `u32 start position` `u32 scene`
+(32 bytes); then `WORDS` `u8 1` `u8 n (<= 15)` `u16 first pair number` + n x (`u16 word index` `u32 value`), only the words that are not 0 of the flag block
+(cGameInfo+0x123740, 0x59C4 bytes = 5745 words) followed by the 16 EpisodeFlags words; then `END` `u8 2` `u8 version` `u16 pairs` `u32 crc`. The crc (CRC-32) covers the
+six fields, the flag block and the EpisodeFlags; a record with a lost, reordered or damaged event is not complete and is never applied (the guest then continues from
+its own co-op checkpoint, its log says so). Older peers drop the unknown kind; both PCs need 0.2.1 anyway (the package version gate).
 
 ## 5. Lobby, start, barrier
 

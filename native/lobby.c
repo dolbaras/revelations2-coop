@@ -12,6 +12,7 @@
 
 enum {
     A_NONE = 0, A_HOST, A_JOIN, A_BACK, A_FRIEND, A_LINK, A_REFRESH, A_EPISODE, A_DIFF, A_DOWNED, A_READY, A_START, A_LEAVE, A_YES, A_NO, A_INVITE, A_KICK,
+    A_CONT,             /* 0.2.1: the host's Continue (the checkpoint of its co-op save) */
     A_CHAR = 20,        /* + CP_CHAR_* (20..23) */
     A_FRIEND_ENTRY = 40 /* + index */
 };
@@ -43,6 +44,7 @@ struct lobby {
     char addr[64];
     int prev_ready_partner;
     char ask_from;                            /* the room the leave question came from */
+    int cont;                                 /* 0.2.1: the host chose Continue (not kept in the settings file: a new room starts with a new game) */
 };
 
 static const char *tx(lobby_t *l, int id) { return l->env.text ? l->env.text(l->env.user, id) : ""; }
@@ -180,6 +182,7 @@ static void enter_room(lobby_t *l)
 {
     goto_screen(l, LS_ROOM);
     l->started = 0;
+    l->cont = 0;
     l->partner_seen = 0;
     l->job = JOB_NONE;
     clear_status(l);
@@ -272,7 +275,28 @@ static void leave_session(lobby_t *l)
 static void push_session(lobby_t *l, int episode, int part, int diff)
 {
     char out[160];
-    run(l, out, sizeof out, "session %d %d %d %d", episode, part, diff, l->set.sflags & 7);
+    run(l, out, sizeof out, "session %d %d %d %d", episode, part, diff, (l->set.sflags & 7) | (l->cont ? (int)CP_SESS_CONT : 0));
+}
+
+/* 0.2.1: this PC's co-op save can continue (1 + its half and difficulty) */
+static int own_save(lobby_t *l, int *part, int *diff)
+{
+    int p = -1, d = 1;
+    if (!l->env.coop_save || !l->env.coop_save(l->env.user, &p, &d) || p < 0 || p > 1) return 0;
+    if (part) *part = p;
+    if (diff) *diff = d;
+    return 1;
+}
+/* 0.2.1: a Continue session (CP_SESS_CONT) can start only when both PCs hold a co-op save of its half (the guest follows the host's checkpoint) */
+static int cont_ok(lobby_t *l, const facts *f)
+{
+    if (!(f->ss.flags & CP_SESS_CONT)) return 1;
+    int p = -1;
+    if (f->host) {
+        if (!own_save(l, &p, NULL) || p != f->ss.part) return 0;
+        return f->other < 0 || (f->pl[f->other].flags & (f->ss.part ? CP_PF_SAVE1 : CP_PF_SAVE0)) != 0;
+    }
+    return own_save(l, &p, NULL) && p == f->ss.part;
 }
 
 /* forget a finished result nobody collected (a cancelled attempt), so the next job is accepted */
@@ -461,7 +485,7 @@ static void add_row(lobby_view *v, int action, int kind, const char *label, cons
 static int can_start(lobby_t *l, const facts *f, int *needs_partner)
 {
     *needs_partner = 0;
-    if (!f->active || !f->host || f->phase != CP_PHASE_LOBBY || !episode_ok(l, f)) return 0;
+    if (!f->active || !f->host || f->phase != CP_PHASE_LOBBY || !episode_ok(l, f) || !cont_ok(l, f)) return 0;
     if (f->count < 2) {
         if (l->set.solo) return 1;
         *needs_partner = 1;
@@ -556,8 +580,15 @@ static void build_rows(lobby_t *l, lobby_view *v, const facts *f)
                 snprintf(buf, sizeof buf, "%d", f->ss.episode ? f->ss.episode : 1);
                 add_row(v, 0, LV_INFO, tx(l, LT_EPISODE), buf);
             }
-            snprintf(buf, sizeof buf, "<  %s  >", diff_name(l, f->ss.difficulty));
-            add_row(v, A_DIFF, LV_NORMAL, tx(l, LT_DIFFICULTY), buf);
+            if (l->cont || own_save(l, NULL, NULL)) {   /* 0.2.1: the checkpoint of the co-op save (the half and the difficulty come from it) */
+                snprintf(buf, sizeof buf, "<  %s  >", tx(l, (f->ss.flags & CP_SESS_CONT) ? LT_YES : LT_NO));
+                add_row(v, A_CONT, LV_NORMAL, tx(l, LT_CONTINUE), buf);
+            }
+            if (f->ss.flags & CP_SESS_CONT) add_row(v, 0, LV_INFO, tx(l, LT_DIFFICULTY), diff_name(l, f->ss.difficulty));
+            else {
+                snprintf(buf, sizeof buf, "<  %s  >", diff_name(l, f->ss.difficulty));
+                add_row(v, A_DIFF, LV_NORMAL, tx(l, LT_DIFFICULTY), buf);
+            }
             snprintf(buf, sizeof buf, "<  %s  >", tx(l, (f->ss.flags & CP_SESS_DOWNED) ? LT_YES : LT_NO));
             add_row(v, A_DOWNED, LV_NORMAL, tx(l, LT_DOWNED), buf);
             int need = 0;
@@ -568,6 +599,7 @@ static void build_rows(lobby_t *l, lobby_view *v, const facts *f)
         } else {
             snprintf(buf, sizeof buf, "%d", f->ss.episode);
             add_row(v, 0, LV_INFO, tx(l, LT_EPISODE), buf);
+            if (f->ss.flags & CP_SESS_CONT) add_row(v, 0, LV_INFO, tx(l, LT_CONTINUE), tx(l, LT_YES));   /* 0.2.1: the host continues its co-op save */
             add_row(v, 0, LV_INFO, tx(l, LT_DIFFICULTY), diff_name(l, f->ss.difficulty));
             add_row(v, 0, LV_INFO, tx(l, LT_DOWNED), tx(l, (f->ss.flags & CP_SESS_DOWNED) ? LT_YES : LT_NO));
             int me_ready = f->connected && f->pl[f->pid].ready;
@@ -646,12 +678,14 @@ void lobby_view_get(lobby_t *l, lobby_view *v)
         const char *other = f.other >= 0 ? shown_name(l, f.pl[f.other].name, nm, sizeof nm) : "";
         if (f.host && f.phase == CP_PHASE_LOBBY) {
             if (f.count < 2) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_WAITING));
+            else if (!cont_ok(l, &f)) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_CONT_NEED)), v->status_kind = LSK_ERROR;   /* 0.2.1 */
             else if (!can_start(l, &f, &need) && need) {
                 if (f.other >= 0 && !f.pl[f.other].ready) lobby_format(tx(l, LT_HOST_WAIT_READY), other, NULL, v->status, sizeof v->status);
                 else snprintf(v->status, sizeof v->status, "%s", tx(l, LT_NEED_READY));
             } else if (f.other >= 0) lobby_format(tx(l, LT_HOST_CAN_START), other, NULL, v->status, sizeof v->status);
         } else if (!f.host && f.phase == CP_PHASE_LOBBY && f.connected) {
             if (!episode_ok(l, &f)) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_EP1_ONLY)), v->status_kind = LSK_ERROR;
+            else if (!cont_ok(l, &f)) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_CONT_NEED)), v->status_kind = LSK_ERROR;   /* 0.2.1 */
             else if (!f.pl[f.pid].ready) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_GUEST_PICK));
             else {
                 char hn[64];
@@ -695,7 +729,10 @@ static void do_pick(lobby_t *l, int c)
     run(l, out, sizeof out, "char %s", char_words[c & 3]);
     l->set.character = c;
     save(l);
-    if (f.host && (c >> 1) != f.ss.part) push_session(l, f.ss.episode, c >> 1, f.ss.difficulty);   /* the host's pick decides the half of the story */
+    if (f.host && (c >> 1) != f.ss.part) {   /* the host's pick decides the half of the story */
+        if (l->cont) l->cont = 0;            /* 0.2.1: a character of the other half is a new game of that half */
+        push_session(l, f.ss.episode, c >> 1, l->cont ? f.ss.difficulty : l->set.difficulty);
+    }
 }
 
 static void change_value(lobby_t *l, int action, int dir)
@@ -704,8 +741,25 @@ static void change_value(lobby_t *l, int action, int dir)
     get_facts(l, &f);
     if (!f.active || !f.host || f.phase != CP_PHASE_LOBBY) return;
     int ep = f.ss.episode ? f.ss.episode : 1, df = f.ss.difficulty;
+    if (action == A_CONT) {   /* 0.2.1: Continue takes the half and the difficulty of the co-op save; the host's character moves to the same slot of that half */
+        int part = -1, sdf = 1;
+        if (!l->cont) {
+            if (!own_save(l, &part, &sdf)) return;
+            l->cont = 1;
+            int c = f.connected ? f.pl[f.pid].character : CP_CHAR_NONE;
+            if (c <= 3 && (c >> 1) != part) {
+                char out[120];
+                run(l, out, sizeof out, "char %s", char_words[part * 2 + (c & 1)]);
+            }
+            push_session(l, 1, part, sdf);
+        } else {
+            l->cont = 0;
+            push_session(l, ep, f.ss.part, l->set.difficulty);
+        }
+        return;
+    }
     if (action == A_EPISODE) ep = (ep - 1 + dir + 4) % 4 + 1;
-    else if (action == A_DIFF) df = (df + dir + 4) % 4;
+    else if (action == A_DIFF && !l->cont) df = (df + dir + 4) % 4;
     else if (action == A_DOWNED) l->set.sflags = (int)(((unsigned)f.ss.flags ^ CP_SESS_DOWNED) & 7u);   /* the rule is a toggle (the bleed-out preset bits stay as they are) */
     else return;
     push_session(l, ep, f.ss.part, df);
@@ -762,6 +816,7 @@ static void activate(lobby_t *l, int action)
     case A_EPISODE: change_value(l, A_EPISODE, 1); break;
     case A_DIFF: change_value(l, A_DIFF, 1); break;
     case A_DOWNED: change_value(l, A_DOWNED, 1); break;
+    case A_CONT: change_value(l, A_CONT, 1); break;
     case A_READY:
         if (!episode_ok(l, &f)) {
             set_status(l, LSK_ERROR, 4000, "%s", tx(l, LT_EP1_ONLY));
@@ -778,7 +833,8 @@ static void activate(lobby_t *l, int action)
     case A_START: {
         int need = 0;
         if (!can_start(l, &f, &need)) {
-            set_status(l, LSK_INFO, 3000, "%s", tx(l, LT_NEED_READY));
+            if (!cont_ok(l, &f)) set_status(l, LSK_ERROR, 4000, "%s", tx(l, LT_CONT_NEED));   /* 0.2.1 */
+            else set_status(l, LSK_INFO, 3000, "%s", tx(l, LT_NEED_READY));
             break;
         }
         run(l, out, sizeof out, f.count < 2 && l->set.solo ? "start force" : "start");
@@ -977,6 +1033,7 @@ void lobby_update(lobby_t *l)
             int c = f.pl[f.pid].character;
             if (c <= 3 && (c >> 1) != f.ss.part && t - l->last_auto_pick > 700) {
                 l->last_auto_pick = t;
+                if (l->cont) l->cont = 0;   /* 0.2.1 */
                 push_session(l, f.ss.episode, c >> 1, f.ss.difficulty);
             }
         }

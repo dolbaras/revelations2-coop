@@ -45,6 +45,12 @@ if ./build/test_objsync_prewpb3c.exe > build/test_objsync_prewpb3c.txt; then ech
 # the put-down of the pair run wpB3d (2026-11-07 23:13 / 23:21): the box keeps its carrier as actor; built as the logic before the attach rule the checks have to fail
 "$ZIG" cc $CF -DOS_MODEL_BEFORE_WPB3D -o build/test_objsync_prewpb3d.exe test_objsync.c
 if ./build/test_objsync_prewpb3d.exe > build/test_objsync_prewpb3d.txt; then echo "FAIL: test_objsync passes on the model before the wpB3d put-down rule"; exit 1; fi
+# 0.2.1 coopsave (native/coopsave_logic.h): a co-op game uses its own save; the solo save (Steam's DATA0.DAT) is never written by it. Built as the 0.2.0 model
+# (no routing: the co-op checkpoints go into the solo save) the checks have to fail
+"$ZIG" cc $CF -o build/test_coopsave.exe test_coopsave.c
+if ./build/test_coopsave.exe > build/test_coopsave.txt; then tail -1 build/test_coopsave.txt; else grep "^FAIL" build/test_coopsave.txt; echo "FAIL: test_coopsave"; exit 1; fi
+"$ZIG" cc $CF -DCPS_MODEL_BEFORE -o build/test_coopsave_pre.exe test_coopsave.c
+if ./build/test_coopsave_pre.exe > build/test_coopsave_pre.txt; then echo "FAIL: test_coopsave passes on the 0.2.0 model (the co-op game writes the solo save there)"; exit 1; fi
 "$ZIG" cc $CF -o build/test_radio.exe test_radio.c
 "$ZIG" cc $CF -o build/test_warp.exe test_warp.c
 # the warp back to a part start (run w1 2026-11-07 13:10: no player, black screen): built as the first version the checks have to fail

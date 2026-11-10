@@ -8,8 +8,8 @@
 #            becomes the original.
 #   remove:  deletes what install.txt lists and puts the backed-up files back (a dinput8.dll another mod put over the co-op one, or a loader copy the
 #            player changed, stays); also the mod's logs next to rerev2.exe (rev2_coop.log, rev2_coop.N.log)
-#            and rev2_coop\shots + rev2_coop\ when they are empty (screenshots stay). The game's saves and the co-op settings file
-#            (%LOCALAPPDATA%\CAPCOM\RESIDENT EVIL REVELATIONS2\rev2_coop.ini) are not touched.
+#            and rev2_coop\shots + rev2_coop\ when they are empty (screenshots stay). The game's saves, the co-op settings file and the co-op save
+#            (%LOCALAPPDATA%\CAPCOM\RESIDENT EVIL REVELATIONS2\rev2_coop.ini, rev2_coop_save_*.dat / .rec, 0.2.1) are not touched.
 # A window shows the steps and a progress bar (also on the taskbar button). -Quiet: no window, the same steps written to the console (test scripts).
 # -Game without -Uninstall starts installing into that folder right away.
 # The window's install also makes the "Resident Evil Revelations 2 Co-op" shortcut (desktop and Start menu, the game's icon with a co-op badge): it runs

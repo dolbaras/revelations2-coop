@@ -21,7 +21,20 @@ How a player starts a co-op game from the game's own menus, and how that is buil
 
 Keys: Up/Down choose, Left/Right change a value, Enter / Space / F confirm, Esc / Backspace go back; in the address field type, Backspace edits, Ctrl+V pastes, Enter connects. Pad: D-pad or left stick, A or Start confirm, B back.
 
-**Save slot warning**: the co-op game uses the normal campaign save slot of the Steam account; its checkpoints overwrite the current campaign save, exactly as "New Game" would (the room says so).
+**Saves (0.2.1)**: a co-op game keeps its own save; the campaign save of the Steam account is never written by it (the room says so). `native/coopsave.c` routes the
+game's save calls on "DATA0.DAT" (ISteamRemoteStorage FileExists / GetFileSize / FileRead / FileWrite / FileDelete) to
+`%LOCALAPPDATA%\CAPCOM\RESIDENT EVIL REVELATIONS2\rev2_coop_save_<hash>.dat` from the start of a co-op game until the title menus are back (whether its session still
+runs or not: the host's End Co-Op keeps the co-op save until the host is at the title); the solo save image is kept in memory at the start and put back then.
+The first co-op game starts from a copy of the solo image (settings, skills, unlocks). Next to the co-op save, `.rec` holds the checkpoint of every co-op save write
+(stage, start position, difficulty, the flag block), which the room reads.
+
+**Continue (0.2.1)**: the host's room has a row **Continue** (the game's own word, m03 #87) when the host's co-op save holds an Episode 1 checkpoint: Yes takes the
+half and the difficulty of that checkpoint (the host's character moves to the same slot of that half, Difficulty becomes an info row); a character of the other half
+switches it back to a new game. Start needs a co-op save of that half on both PCs (the guest's HELLO carries its save bits; else the line "Continue needs a co-op save
+of this half on both PCs. Choose No to start a new game." on both, Start grey). At START the host first sends its checkpoint record (session events 0x180, `protocol.md`),
+then both PCs load their co-op save and run the stock title Continue (`cDemoCampaignMenu_OnSelect` case 0x11); the guest writes the host's record (the six mTempData
+fields, the flag block at cGameInfo+0x123740, the EpisodeFlags) into its campaign slot first, like the stock online path FUN_00976A20, so it follows the host's
+checkpoint whatever its own co-op save holds; its own inventory and skills stay its own. The guest's room shows an info row "Continue: Yes".
 
 ## Settings file
 

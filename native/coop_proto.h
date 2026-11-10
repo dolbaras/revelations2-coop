@@ -70,8 +70,11 @@ enum cp_notice_code { CP_NOTE_SLOT_TAKEN = 1, CP_NOTE_NOT_READY = 2, CP_NOTE_REJ
 
 /* cp_session.flags (host settings every player sees): bit 0 = the downed / revive rule is on, bits 1..2 = bleed-out preset (0 60 s, 1 30 s, 2 120 s, 3 never); see docs/downed-revive.md */
 #define CP_SESS_DOWNED 1u
+/* 0.2.1 coopsave: the host continues the checkpoint of its co-op save; the guest follows the host's checkpoint record (events 0x180, native/coopsave_logic.h) */
+#define CP_SESS_CONT 8u
 
-enum cp_player_flags { CP_PF_HOST = 1, CP_PF_CONNECTED = 2, CP_PF_INGAME = 4, CP_PF_LOADED = 8, CP_PF_BOT = 16 };
+/* CP_PF_SAVE0 / CP_PF_SAVE1 (0.2.1 coopsave): this player's co-op save holds an Episode 1 checkpoint of Claire's / Barry's half (sent in HELLO, kept in the lobby table) */
+enum cp_player_flags { CP_PF_HOST = 1, CP_PF_CONNECTED = 2, CP_PF_INGAME = 4, CP_PF_LOADED = 8, CP_PF_BOT = 16, CP_PF_SAVE0 = 32, CP_PF_SAVE1 = 64 };
 
 /* PLAYER_STATE flags */
 enum cp_state_flags {

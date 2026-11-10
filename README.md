@@ -26,6 +26,7 @@ Nothing here modifies the game's files: the DLL is loaded by the exe's own impor
   - `testmode.c` window placement, background mode, adapter choice, input rules for test runs
   - `d3d.c` Direct3D 9 hooks and screenshots (F11 or console `shot`)
   - `steam.c` timing of the game's Steam calls, Steam callbacks and `ISteamUserStats` logging (log only, never changes a call)
+  - `coopsave.c` the co-op save (0.2.1): while a co-op game runs, the game's `DATA0.DAT` calls on `ISteamRemoteStorage` go to a co-op save in `%LOCALAPPDATA%`, so the campaign save is never opened by a co-op game
   - `diag.c` start-up diagnostics (threads, long waits, window messages), `inject.c` synthetic keyboard/mouse for tests
   - `classes.c` class-name walker (vtable[4] -> type info) and bounded object scan, `trace.c` log-only inline hooks and the split-screen calls
   - `console.c` UDP test console on 127.0.0.1, `mute.c` per-process mute
