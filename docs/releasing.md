@@ -295,10 +295,11 @@ Tools: `gh` is the portable one at `<workspace>\tools\gh\bin\gh.exe` with `$env:
 
 ## Release status
 
-Public packages so far: **pre-release 1 (0.1.0)** and **pre-release 2 (0.1.1)** (GitHub pre-releases), and the first full release **0.2.0** (tag `v0.2.0`, `--latest`,
-published 2026-11-09 from the public commit `f15ce38`; zip `ce157026...`, setup exe `cb29cff4...`; the 0.1.1 launcher updated a copy to it through the real feed).
+Public packages so far: **pre-release 1 (0.1.0)** and **pre-release 2 (0.1.1)** (GitHub pre-releases), the first full release **0.2.0** (tag `v0.2.0`, `--latest`,
+published 2026-11-09 from the public commit `f15ce38`; zip `ce157026...`, setup exe `cb29cff4...`; the 0.1.1 launcher updated a copy to it through the real feed) and
+**0.2.1** (tag `v0.2.1`, `--latest`, published 2026-11-10 from the public commit `8f43c08`; zip `3f230f1f...`, setup exe `053bb404...`).
 
-Next: **0.2.1** (branch `coopsave`): a co-op game keeps its own save (`notes\coopsave.md`): the game's save calls (ISteamRemoteStorage, "DATA0.DAT") go to
+0.2.1: a co-op game keeps its own save (`notes\coopsave.md` in the lab repo): the game's save calls (ISteamRemoteStorage, "DATA0.DAT") go to
 `%LOCALAPPDATA%\CAPCOM\RESIDENT EVIL REVELATIONS2\rev2_coop_save_<hash>.dat` while a co-op game runs, the solo save in memory comes back at the title, and the room's
 Continue starts from the co-op checkpoint (the guest follows the host's record, session events 0x180). No message layout changed (new session flag bit 8, player flag
 bits 32 / 64, a new event kind): `CP_PROTO_VERSION` stays 2; both PCs need 0.2.1 anyway (the package version gate).
