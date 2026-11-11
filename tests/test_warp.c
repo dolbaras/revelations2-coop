@@ -71,6 +71,28 @@ int main(void)
         CHECK(g_wl_chp[i].flag < WL_FLAGS_N);
         CHECK(g_wl_chp[i].y > 0 && g_wl_chp[i].y < 5000);
     }
+    /* all-episodes (lab): the table of Episodes 2-4: one entry per (stage, start pos), stage ids of that episode, flags in range, the stage's part known */
+    CHECK(wl_bonus_episode(700) == 9 && wl_bonus_episode(701) == 10 && wl_bonus_episode(711) == 11 && wl_bonus_episode(630) == 8 && wl_bonus_episode(201) == 0);
+    CHECK(WL_CHP2_N >= 97 && wl_find(711, 0) && wl_find(711, 0)->x == 35724 && wl_part_of(700) == 0 && wl_part_of(630) == 0 && wl_part_of(500) == -1);
+    for (int i = 0; i < WL_CHP2_N; i++) {
+        for (int j = i + 1; j < WL_CHP2_N; j++) CHECK(!(g_wl_chp2[i].stage == g_wl_chp2[j].stage && g_wl_chp2[i].startpos == g_wl_chp2[j].startpos));
+        CHECK(wl_part_of(g_wl_chp2[i].stage) >= 0 && g_wl_chp2[i].flag < WL_FLAGS_N && g_wl_chp2[i].stage >= 200 && g_wl_chp2[i].stage <= 711);
+        CHECK(wl_find(g_wl_chp2[i].stage, g_wl_chp2[i].startpos) == &g_wl_chp2[i]);
+    }
+    CHECK(wl_part_of(201) == 0 && wl_part_of(203) == 0 && wl_part_of(250) == 1 && wl_part_of(254) == 1 && wl_part_of(306) == 0 && wl_part_of(351) == 1 && wl_part_of(455) == 1 && wl_part_of(500) == -1 && wl_part_of(9000) == -1);
+    CHECK(wl_find(201, 6) && wl_find(201, 6)->flag == 51 && wl_find(201, 6)->x == 41729);   /* tavern 1F (Pedro infected) */
+    CHECK(wl_find(203, 0) && wl_find(203, 0)->flag == 0 && wl_find(250, 0) && wl_find(250, 0)->flag == -1);
+    {
+        int fl[8];
+        CHECK(wl_chp_flags(201, 6, fl, 8) == 1 && fl[0] == 51);   /* only the target's own flag in Episodes 2-4 */
+        CHECK(wl_chp_flags(201, 99, fl, 8) == -1);
+        CHECK(wl_parse("201 6", 201, &p, err, sizeof err) && p.chp && p.stage == 201);
+        CHECK(!wl_parse("250 0", 201, &p, err, sizeof err) && strstr(err, "other half"));
+    }
+    CHECK(wl_parse("250 0 half", 201, &p, err, sizeof err) && p.cross && p.stage == 250 && p.startpos == 0);   /* the lobby's second-half hop (warp.inc second_half_frame) */
+    CHECK(wl_parse("351 1 half", 306, &p, err, sizeof err) && p.cross && p.chp && p.chp->flag == 14);
+    CHECK(wl_parse("201 0", 250, &p, err, sizeof err) == 0 && wl_parse("201 0 half", 250, &p, err, sizeof err) && p.cross);
+    CHECK(wl_part_start(201, 0) && wl_part_start(250, 0) && wl_part_start(351, 0) && !wl_part_start(201, 1));
     static const int stages[] = {100, 101, 102, 151, 152, 153, 154};
     for (int i = 0; i < 7; i++) CHECK(wl_find(stages[i], 0) != 0);
     CHECK(wl_find(152, 1) && wl_find(152, 1)->flag == 30 && wl_find(152, 1)->x == 24336);   /* s0152.stp entry 1 "back from the forest" */
@@ -105,7 +127,7 @@ int main(void)
     CHECK(wl_parse("101 4 go", 100, &p, err, sizeof err) && p.go == 1);
     CHECK(!wl_parse("154 0", 100, &p, err, sizeof err) && strstr(err, "other half"));   /* Claire's half loaded: no warp into Barry's */
     CHECK(!wl_parse("101 0", 152, &p, err, sizeof err) && strstr(err, "other half"));
-    CHECK(!wl_parse("154 0", 9000, &p, err, sizeof err) && strstr(err, "not in Episode 1"));
+    CHECK(!wl_parse("154 0", 9000, &p, err, sizeof err) && strstr(err, "not in a story stage"));
     CHECK(!wl_parse("154 9", 153, &p, err, sizeof err) && strstr(err, "no start position"));
     CHECK(!wl_parse("154 0 jump", 153, &p, err, sizeof err) && strstr(err, "unknown word"));
     CHECK(!wl_parse("154 0 +600", 153, &p, err, sizeof err) && strstr(err, "out of"));

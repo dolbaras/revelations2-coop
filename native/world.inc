@@ -54,6 +54,7 @@ enum { EV_W_THROW = 0x134, EV_W_BOOM = 0x135 };   /* combat4: the thrower's PC -
 #include "meleehit_logic.h"
 #include "grapple_logic.h"   /* 0.2.0: the replica's alerted bit follows the host (physical attack on a staggered replica) */
 #include "invmirror_logic.h"   /* combat4: the partner's throw (th_*), the inventory mirror (story.inc) */
+#include "wrec_logic.h"   /* 0.3.0: the turning window of the enemy records, the orphan rule */
 static int g_w_alert = 1;           /* 0.2.0 (grapple_logic.h): the replica's +0x37B8 bit 30 (alerted) follows the host's record; `net w alert 0|1`, REV2_ALERT=0 */
 static unsigned g_w_alert_set, g_w_alert_clr, g_w_notice_fix;
 
@@ -534,6 +535,8 @@ static __attribute__((thiscall)) void h_killrep(void *story_p, unsigned enemy, u
     }
 }
 
+static void w_orphan_reset(void);   /* below: the orphan table of the replicas (0.3.0) */
+static void w_orphan_status(char *out, int size);
 #include "story.inc"
 #include "door.inc"
 #include "objsync.inc"
@@ -741,6 +744,7 @@ static void w_status(char *out, int size)
 }
 
 static unsigned w_find_active(unsigned cell, int a, unsigned b, unsigned c);
+static void w_note_death(unsigned en);   /* the replicas killed by a DEATH event (see w_apply_enemy_record) */
 static unsigned g_w_kill_reports;
 static int g_w_autoheal;
 static unsigned g_w_healed;
@@ -791,6 +795,8 @@ static void w_command(const char *rest, char *out, int size)
     } else if (!strcmp(sub, "log")) {
         g_w_log_calls = atoi(arg);
         snprintf(out, size, "log the first %d calls of each hook", g_w_log_calls);
+    } else if (!strcmp(sub, "orphans")) {   /* net w orphans: replicas with no record of the host for 10 s (0.3.0, wrec_logic.h) */
+        w_orphan_status(out, size);
     } else if (!strcmp(sub, "obj")) {
         unsigned o = (unsigned)strtoul(arg, NULL, 16), pos = 0;
         if (!o) snprintf(out, size, "usage: net w obj <hex addr>");
@@ -1653,6 +1659,7 @@ static void w_on_event(const cp_event *e)
             w_orig_for(en)((void *)en, di, hp > 0 ? hp : 1);
             g_w_replay--;
             g_w_applied_death++;
+            w_note_death(en);
             r2_log(W_LOG "DEATH applied: layout (%d,%u,%u) hp %d -> %d", a, lb, lc, hp, (int)rd32(en + 0x1A08));
         }
         break;
@@ -1819,14 +1826,17 @@ static void w_send_enemies(void)
     unsigned now = GetTickCount();
     if (now - g_w_last_send < 66) return;
     g_w_last_send = now;
-    unsigned list[24];
-    unsigned n = w_live_enemies(list, 24);
+    unsigned list[48];
+    unsigned n = w_live_enemies(list, 48);
     story_scan_deaths(list, n);
     if (!n) return;
     unsigned char buf[CP_WORLD_MAX];
     unsigned len = 0, recs = 0;
-    for (unsigned i = 0; i < n && len + WREC <= CP_WORLD_MAX; i++) {
-        unsigned o = list[i];
+    static unsigned rot;
+    unsigned win[WREC_PER_BATCH];
+    unsigned nw = wrec_window(n, WREC_PER_BATCH, &rot, win);   /* more than 12 live enemies: the window turns (wrec_logic.h; live allepP28) */
+    for (unsigned i = 0; i < nw && len + WREC <= CP_WORLD_MAX; i++) {
+        unsigned o = list[win[i]];
         layout_t l;
         layout_of(o, &l);
         short a16 = (short)l.a;
@@ -1892,6 +1902,87 @@ static int w_holder_info(unsigned tag, glue_hold_in_t *in, unsigned *act_out, ch
     return 0;
 }
 
+/* Replicas that died by a DEATH event: a host record built just before the kill (hp > 0, the killing blow's action) can arrive AFTER the event (unreliable batches reorder) and
+ * used to write the old hp and action back (live allepP11: 2-5 client replicas stood alive for minutes, hp 73 / act 52, with the host's enemy dead and `DEATH applied` logged). */
+static struct { unsigned obj, t; } g_w_dead_ring[16];
+static unsigned g_w_dead_next, g_w_stale_rec;
+static void w_note_death(unsigned en)
+{
+    g_w_dead_ring[g_w_dead_next++ & 15].obj = en, g_w_dead_ring[(g_w_dead_next - 1) & 15].t = GetTickCount();
+}
+static int w_died_recently(unsigned en)
+{
+    unsigned now = GetTickCount();
+    for (int i = 0; i < 16; i++)
+        if (g_w_dead_ring[i].obj == en && now - g_w_dead_ring[i].t < 10000) return 1;
+    return 0;
+}
+
+/* 0.3.0 orphans (wrec_logic.h): the guest notes when each replica last had a record; a replica with none for 10 s while 40 of the host's batches arrived belongs to an enemy the
+ * host no longer has. A plain enemy is killed through the same lethal call as the DEATH event (it would otherwise stand and fight on this PC only); an NPC class (uEm8xxx: Pedro,
+ * Chavez, Ryan parked at the origin) is only logged once (its death could run story steps). `net w orphans` shows the table. */
+static struct { unsigned obj, seen, batch; int done; } g_w_orph[64];
+static unsigned g_w_orph_t, g_w_orph_killed, g_w_orph_npc;
+static void w_orphan_seen(unsigned en)
+{
+    int fr = -1;
+    for (int i = 0; i < 64; i++) {
+        if (g_w_orph[i].obj == en) { g_w_orph[i].seen = GetTickCount(), g_w_orph[i].batch = g_w_rx_batches; return; }
+        if (fr < 0 && !g_w_orph[i].obj) fr = i;
+    }
+    if (fr >= 0) g_w_orph[fr].obj = en, g_w_orph[fr].seen = GetTickCount(), g_w_orph[fr].batch = g_w_rx_batches, g_w_orph[fr].done = 0;
+}
+static void w_orphan_reset(void) { memset(g_w_orph, 0, sizeof g_w_orph); }
+static void w_orphan_scan(void)
+{
+    unsigned now = GetTickCount();
+    if (now - g_w_orph_t < 1000) return;
+    g_w_orph_t = now;
+    unsigned list[48];
+    unsigned n = w_live_enemies(list, 48);
+    for (unsigned i = 0; i < n; i++) {
+        unsigned o = list[i];
+        if ((int)rd32(o + 0x1A08) <= 0) continue;
+        int k = -1;
+        for (int j = 0; j < 64; j++)
+            if (g_w_orph[j].obj == o) { k = j; break; }
+        if (k < 0) {   /* first time seen here (made by this PC's own story or a SPAWN): its clock starts now */
+            for (int j = 0; j < 64; j++)
+                if (!g_w_orph[j].obj) { g_w_orph[j].obj = o, g_w_orph[j].seen = now, g_w_orph[j].batch = g_w_rx_batches, g_w_orph[j].done = 0; break; }
+            continue;
+        }
+        if (g_w_orph[k].done || !wrec_orphan(now, g_w_orph[k].seen, g_w_rx_batches - g_w_orph[k].batch)) continue;
+        g_w_orph[k].done = 1;
+        layout_t l;
+        layout_of(o, &l);
+        char cn[100];
+        w_class(o, cn, sizeof cn);
+        if (!strncmp(cn, "uEm8", 4) || !w_orig_for(o)) {
+            g_w_orph_npc++;
+            r2_log(W_LOG "orphan replica (%d,%u,%u) %08x %s: no record of the host for %u ms (%u batches): an NPC / unkillable object, left as it is", l.a, l.b, l.c, o, cn, now - g_w_orph[k].seen,
+                   g_w_rx_batches - g_w_orph[k].batch);
+            continue;
+        }
+        static unsigned char di[0x280];
+        memset(di, 0, sizeof di);
+        int hp = (int)rd32(o + 0x1A08);
+        g_w_replay++;
+        w_orig_for(o)((void *)o, di, hp > 0 ? hp : 1);
+        g_w_replay--;
+        w_note_death(o);
+        g_w_orph_killed++;
+        r2_log(W_LOG "orphan replica (%d,%u,%u) %08x %s: no record of the host for %u ms (%u batches): the host has no such enemy any more: killed here (hp %d -> %d)", l.a, l.b, l.c, o, cn,
+               now - g_w_orph[k].seen, g_w_rx_batches - g_w_orph[k].batch, hp, (int)rd32(o + 0x1A08));
+    }
+}
+
+static void w_orphan_status(char *out, int size)
+{
+    int t = 0;
+    for (int i = 0; i < 64; i++) t += g_w_orph[i].obj != 0;
+    snprintf(out, size, "orphans: %u killed here, %u NPC left alone; %d replicas tracked; batches received %u", g_w_orph_killed, g_w_orph_npc, t, g_w_rx_batches);
+}
+
 static void w_apply_enemy_record(const unsigned char *p)
 {
     short a16, yaw, hp;
@@ -1899,6 +1990,7 @@ static void w_apply_enemy_record(const unsigned char *p)
     float pos[3];
     memcpy(&a16, p, 2), memcpy(&b, p + 2, 2), memcpy(&c, p + 4, 2), memcpy(pos, p + 6, 12), memcpy(&yaw, p + 18, 2), memcpy(&hp, p + 20, 2), memcpy(&act, p + 22, 2), memcpy(&pact, p + 24, 2);
     unsigned en = w_find_active(SENEMY_CELL, (int)a16, b, c);
+    if (en) w_orphan_seen(en);
     if (!en) {   /* no replica yet (the SPAWN was missed or came before this PC was running): a record is as good as a SPAWN, at most once per second per id */
         g_w_rx_nomatch++;
         static unsigned try_t[16], try_k[16];
@@ -1915,6 +2007,10 @@ static void w_apply_enemy_record(const unsigned char *p)
                 r2_log(W_LOG "replica created from a record: layout (%d,%u,%u) -> %08x", (int)a16, b, c, r);
             }
         }
+        return;
+    }
+    if (hp > 0 && (int)rd32(en + 0x1A08) <= 0 && w_died_recently(en)) {   /* a record that overtook the DEATH event: the replica stays dead */
+        if (++g_w_stale_rec <= 10) r2_log(W_LOG "stale record ignored: replica (%d,%u,%u) %08x died by the DEATH event, the record says hp %d act %u", (int)a16, b, c, en, (int)hp, act);
         return;
     }
     float cx = rdf(en + 0x40), cz = rdf(en + 0x48), dx = pos[0] - cx, dz = pos[2] - cz, dist = sqrtf(dx * dx + dz * dz);
@@ -2001,6 +2097,7 @@ static void w_recv_world(void)
             w_apply_enemy_record(wd.body + off);
         }
     }
+    if (!cs_is_host(g_cs)) w_orphan_scan();
 }
 
 /* net w trace <file>|off: a CSV of every live enemy (E rows: ms, layout, class, pos, hp, action, previous action, target slot) and both humans (H rows: ms, slot, type, pos, hp, action) at 10 Hz, plus G rows when an

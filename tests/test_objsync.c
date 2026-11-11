@@ -32,6 +32,16 @@ static void t_kinds(void)
     CHECK(os_kind_of(CH_CHECKER) == OS_PLAIN);             /* uSmMoveBoxPosChecker is no box: the name starts like uSmMoveBox but is another class */
     CHECK(os_kind_of(CH_CELL) == OS_PLAIN);
     CHECK(os_kind_of(NULL) == OS_PLAIN);
+    /* stage 454: the finale helicopters are never mirrored (live allepP20: the DOOR replay of their actions ended the game) */
+    {
+        const char *heli = "vtable exe+f5a1c0, DTI 015736e4: uSm1926(43a0) : uSmLastHelicopter(43a0) : uSetModel(4350)";
+        const char *soft = "vtable exe+f5a2c0, DTI 01577468: uSm8795(4a80) : uSmSoftEventHeliOne(4a80) : uSmSoftEvent(4a00) : uSetModel(4350)";
+        CHECK(os_kind_of(heli) == OS_SCRIPTED);
+        CHECK(os_kind_of(soft) == OS_SCRIPTED);
+        CHECK(!os_door_send(OS_SCRIPTED, 1, OS_ACT_NONE, 2));
+        CHECK(!os_door_apply(OS_SCRIPTED, 1, OS_ACT_NONE));
+        CHECK(os_door_send(OS_PLAIN, 1, OS_ACT_NONE, 2));
+    }
     CHECK(!os_has_class("x: uSmMoveBoxPosChecker(1)", "uSmMoveBox"));
     CHECK(os_has_class("x: a(1) : uSmMoveBox(2)", "uSmMoveBox"));
 }

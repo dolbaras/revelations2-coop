@@ -29,6 +29,7 @@ const char *menu_player_name(void);  /* the name of the lobby settings (the Stea
 
 /* supplied by coop_game.inc */
 int coop_net_command(const char *arg, char *out, int size);
+void coop_second_half_arm(int episode);   /* warp.inc: the lobby started part 0 of this episode (2..4) to hop into Barry's half in play; 0 clears */
 int coop_ep_end_active(void);        /* lobbymust.inc: the co-op end of Episode 1 was reached (the stock episode-end menu then offers no next episode) */
 cs_t *coop_net_session(void);        /* creates the session object on first use */
 cs_t *coop_net_session_peek(void);   /* NULL until something created it */

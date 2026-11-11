@@ -828,6 +828,7 @@ static void w_level_reset(void)
     memset(&g_im_sent, 0, sizeof g_im_sent), memset(&g_im_grace, 0, sizeof g_im_grace);
     g_im_full_tx = 1, g_im_req_t = 0;
     w_sm_reset();
+    w_orphan_reset();
 }
 
 /* ---------------------------------------------------------------- install / events / tick / status */

@@ -1,4 +1,4 @@
-/* lobbymust.inc: the 0.2.0 in-game rules for a lost partner, a lost host, End Co-Op and the end of Episode 1 (rules: lobbymust_logic.h, notes\lobby-must.md).
+/* lobbymust.inc: the 0.2.0 in-game rules for a lost partner, a lost host, End Co-Op and the end of an episode (0.3.0: any episode; rules: lobbymust_logic.h, notes\lobby-must.md).
  * Included at the end of coop3.c (after coop_game.inc, world.inc, downed.inc): uses the glue's state (g_cs, g_state, g_my_slot, g_rem_slot), run_cmd (the coop3
  * console), set_slot_type, game_paused, w_demo_running, game_area, do_call.
  *
@@ -11,6 +11,7 @@ static lm_t g_lm;
 static int g_lm_init;
 static char g_lm_partner[CP_NAME_MAX + 1];   /* the name of the partner who left (the strip) */
 static unsigned g_lm_solo_done, g_lm_quit_done;
+static unsigned g_lm_ep_seen;   /* the story's episode id at the last pass (the log line of the episode end) */
 
 static void lm_glue_init(int no_rejoin)
 {
@@ -90,7 +91,7 @@ static void lm_apply(int act)
             r2_log(NETLOG_PREFIX "strip %d (%s)%s", g_lm.strip, who, g_lm.strip == LM_S_EP_END && g_lm.strip_ms == LM_STRIP_MENU_MS ? " with the episode-end menu" : "");
     }
     if (act & LM_A_EP_LEAVE) {
-        r2_log(NETLOG_PREFIX "the result area of Episode 1: co-op ends here in this version, LEAVE(EP_END)");
+        r2_log(NETLOG_PREFIX "the result area of the episode (episode %u): co-op ends here in this version, LEAVE(EP_END)", g_lm_ep_seen);
         if (g_cs && cs_active(g_cs)) cs_leave(g_cs, CP_LEAVE_EP_END);
     }
     if (act & LM_A_SOLO) lm_go_solo();
@@ -128,12 +129,15 @@ static void lm_frame(void)
     f.paused = game_paused();
     f.demo = w_demo_running();
     if (sb) f.area = rd32(sb + 0x140380), f.episode = rd32(sb + 0x140378), f.part = rd32(sb + 0x15C4A8);
+    g_lm_ep_seen = f.episode;
     {
         unsigned ag = game_area();   /* the stock episode-end menu (FUN_00431190 via the end flow FUN_00430D80: aGame state 2, +0x624 = 8; live runs 2-7) */
         f.end_menu = ag && f.area == 9000 && f.agame_state == 2 && rd32(ag + 0x624) == 8;
     }
     f.at_menus = !game_area() && rd32(0x15DE720) && ((unsigned(__cdecl *)(void))0x44D620)() != 0;   /* Menu_GetDemoArea: the title / menu area */
     lm_apply(lm_tick(&g_lm, &f, GetTickCount()));
+    unplaced_human_frame();   /* warp.inc: Episode 4 stage 454 */
+    second_half_frame();   /* warp.inc: the lobby's start of Barry's half of Episodes 2-4 */
 }
 
 /* menu.c: the stock episode-end menu leaves out "next episode" while this is 1 */

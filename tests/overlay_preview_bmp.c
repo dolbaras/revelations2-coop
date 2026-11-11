@@ -149,10 +149,10 @@ static void room(lobby_view *v, int lang)
     v->players[1].ready = 0, v->players[1].ping = 12;
     lobby_format(lobby_own_text(LT_HOST_WAIT_READY, lang), "Boris6", NULL, v->status, sizeof v->status);   /* 0.2.0 waiting line */
     snprintf(v->note, sizeof v->note, "%s", lobby_own_text(LT_SAVE_WARN, lang));
-    {   /* 0.2.0 info block: Episode 1 only + the System Link host's port hint */
+    {   /* info block: the Barry-half note + the System Link host's port hint */
         char hint[400];
         lobby_format(lobby_own_text(LT_HOST_NET_HINT, lang), "28410", NULL, hint, sizeof hint);
-        snprintf(v->info, sizeof v->info, "%s%c%s", lobby_own_text(LT_EP1_ONLY, lang), 10, hint);
+        snprintf(v->info, sizeof v->info, "%s%c%s", hint, 10, "");
     }
 }
 

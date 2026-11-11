@@ -114,6 +114,7 @@ static int aim_install(void)
  * its crosshair sits on the enemy's joint (default joint 0 = the chest) - a handgun shoots at the crosshair's aim point (aim_logic.h). Writes uCameraCtrl
  * (player+0x4780) +0x23A8..+0x23BC. Fire with `net ach fight <a> <b> <c> <ms> <range> 1 0` (LT held). Game thread, test instances only. */
 static struct { int on, a, joint, n_log; unsigned b, c, frames; float dy, right, eye, yaw, pitch; } g_ac = {.right = AIM_CAM_RIGHT, .eye = AIM_CAM_EYE};
+static void aim_cam_retarget(int a, unsigned b, unsigned c) { if (g_ac.on) g_ac.a = a, g_ac.b = b, g_ac.c = c; }
 static void ac_tick(void)
 {
     if (!g_ac.on) return;

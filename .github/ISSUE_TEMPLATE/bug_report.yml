@@ -1,0 +1,69 @@
+name: Bug report
+description: Something goes wrong in a co-op game, with the installer or at the start-up
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting. The more of this you fill in (and the logs you attach), the faster it can be fixed.
+        Please do not post the game's files, a cracked exe or a link to one.
+  - type: input
+    id: version
+    attributes:
+      label: Mod version
+      description: The installer's title bar, or `coop\version.txt` in the game folder. Both players need the same version.
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: What were you doing
+      options:
+        - Hosting a co-op game
+        - Joining through Steam friends
+        - Joining by IP address
+        - Installing / updating / uninstalling
+        - Starting the game
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Where in the story
+      description: Episode, half (Claire / Barry) and place, or the menu you were in.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect
+      description: What you did just before, what the screen showed, about when.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      description: 'Steps, or "only once". For a network problem say whether both PCs are on one network or not.'
+  - type: textarea
+    id: pc
+    attributes:
+      label: PC and controls
+      description: Windows version, graphics card, keyboard and mouse or which gamepad. The zip below has the system part too.
+  - type: markdown
+    attributes:
+      value: |
+        **Logs: please attach the zip made by `<game folder>\coop\Collect logs.bat` from BOTH PCs** (double-click it right after the
+        problem, before you start the game again; the zip appears on your desktop, drag it into the comment box). It holds rev2_coop.log
+        and the four runs before it, the lobby and display settings, the install record and logs, hashes and system information; it removes
+        your Windows user name, computer name, folder paths, player names, Steam names and IDs, e-mail and MAC addresses and public IP
+        addresses, and uploads nothing. Open it to check before you attach it. A screenshot helps.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checked
+      options:
+        - label: Both players have the same mod version.
+        - label: The game was started with the "Resident Evil Revelations 2 Co-op" shortcut (or I say above how it was started).

@@ -47,7 +47,6 @@ enum lobby_text {
     LT_CONNECTING_TO, LT_AWAITING,                                          /* guest: one %s = the address or the friend */
     LT_HOST_WAIT_READY, LT_HOST_CAN_START, LT_GUEST_PICK, LT_GUEST_WAIT_HOST,   /* room status lines (one %s = the other player, LT_GUEST_PICK none) */
     LT_KICK,                                                                /* host row "Remove partner" */
-    LT_EP1_ONLY,                                                            /* room info: co-op covers Episode 1 */
     LT_HOST_NET_HINT,                                                       /* room info for the System Link host: one %s = the UDP port */
     LT_END_COOP, LT_END_COOP_HELP,                                          /* the host's pause menu row and its help line (drawn by the GAME's GUI font) */
     LT_REF_GONE, LT_REF_DENIED, LT_REF_NOLOBBY, LT_REF_NOTCOOP, LT_REF_STEAM_NOANSWER,   /* lang: the reason of a failed Steam join (lobby_backend_reason) */
@@ -55,6 +54,9 @@ enum lobby_text {
     /* ---- 0.2.1 coopsave ---- */
     LT_CONTINUE,    /* stock m03 #87 "Continue": the host's row (value Yes / No) */
     LT_CONT_NEED,   /* own: Continue needs a co-op save of this half on both PCs */
+    /* ---- 0.3.0 all-episodes ---- */
+    LT_EP_STRUGGLE, LT_EP_LITTLE,   /* stock m03 #74 / #75: the main menu's names of the bonus episodes "The Struggle" / "Little Miss" (the Episode row's values) */
+    LT_EVGENY, LT_DARK_NATALIA,     /* stock m01 #93 / #101: the bonus episodes' second figure (slot 1 of The Struggle / of Little Miss) */
     LT_COUNT
 };
 /* the own text for a backend's English failure reason (coop_steam.c "Steam: ..."; CS_N_REFUSED a = 0), -1 when none fits (the caller then shows no reason) */
@@ -87,6 +89,22 @@ const char *lobby_silent_text(const char *name, int seconds, int lang, char *out
 int lobby_lang_from_game(int game_lang_index);   /* the game's language index ([sGUI]+0x28: 0 jpn, 1 eng, 2 fre, 3 spa, 4 ger, 5 ita, 6 kor, 7 chT, 8 chS, 9/21 ptB, 10 rus, 11 pol) -> 0..11 */
 extern const char *const lobby_lang_names[12];
 
+/* ---- episodes (0.3.0 all-episodes): the lobby's episode ids are the game's own: 1..4 of the story (game type 0), 5 = The Struggle (type 3), 9 = Little Miss (type 4) ---- */
+enum { LOBBY_EP_STRUGGLE = 5, LOBBY_EP_LITTLE = 9, LOBBY_GT_STORY = 0, LOBBY_GT_STRUGGLE = 3, LOBBY_GT_LITTLE = 4 };
+int lobby_episode_valid(int episode);          /* 1..4, 5, 9 */
+int lobby_episode_game_type(int episode);      /* the GameMan type that starts it: 0, 3 or 4 (0 for an id that is not valid) */
+int lobby_episode_is_bonus(int episode);       /* 5 or 9: one part, the two figures are slot 0 / slot 1 of the episode, not the four characters of the story */
+int lobby_episode_step(int episode, int dir);  /* the next id of the row: 1 2 3 4 5 9 (wraps) */
+/* Barry's half of Episodes 2-4 cannot be started by the stock new-game call (static read of Game_PrepareEpisodeStart 0x4240A0 and the live runs allepL2: a new game of an episode
+ * other than 1 goes through the results area 9000 and Game_AdvanceToNextPart, which turns part 1 into the next episode; the Continue branch shows the clear results first). The lobby
+ * therefore starts PART 0 of the episode and the host hops into part 1 once the stage is in play (the lab warp with `half`, carried to the partner by the retry coupling). This returns
+ * the first stage of part 1 (250 / 351 / 451) for such a start, else 0. */
+int lobby_second_half_stage(int episode, int part, int game_type);
+/* the start position index of that hop (Episode 2: 0, Episodes 3 and 4: 1 = after the part opening: position 0 of 351 / 451 shows no player objects, live catalog 2L.1) */
+int lobby_second_half_startpos(int episode);
+/* the name of the character in a slot of a game type: the story's four names by CP_CHAR_*, in the bonus episodes the slot's unit (type 3: Moira / Evgeny, type 4: Natalia / Dark Natalia) */
+int lobby_char_text(int game_type, int character);   /* an LT_ id (LT_CLAIRE ..) or -1 for CP_CHAR_NONE */
+
 /* ---- environment supplied by the host application ---- */
 typedef struct lobby_settings {
     char name[CP_NAME_MAX + 1];   /* player name ("" = the session default) */
@@ -94,12 +112,10 @@ typedef struct lobby_settings {
     char ip[64];                  /* last direct address */
     int port;                     /* host port for direct sessions */
     int transport;                /* 0 Steam friends, 1 direct IP: last way used */
-    int episode;                  /* 1..4, host default */
+    int episode;                  /* host default: 1..4, or a bonus episode (5 The Struggle, 9 Little Miss) */
     int difficulty;               /* 0..3, host default */
     int solo;                     /* dev switch: the host may start alone (`start force`) */
     int sflags;                   /* session flags byte the host publishes (CP_SESS_*: the downed / revive rule and its bleed-out preset) */
-    int episodes_all;             /* lab switch (REV2_EPISODES=all): the host's Episode row offers 1-4; 0 = the 0.2.0 product rule, Episode 1 only (row fixed, other
-                                     episodes refused on both sides) */
 } lobby_settings;
 
 typedef struct lobby_env {
@@ -132,7 +148,7 @@ typedef struct {
 
 typedef struct {
     char name[CP_NAME_MAX + 8];
-    char chr[24];
+    char chr[48];   /* (0.3.0: "Темная Наталья" is 28 bytes; the overlay shrinks a long name to its column) */
     int ready, host, me, ping;   /* ping -1 unknown */
 } lobby_vplayer;
 
@@ -155,7 +171,7 @@ typedef struct {
     char hint[240];
     int busy;                /* show a spinner */
     char note[260];          /* small grey note under the status line (the save slot warning; on the leave question: the session ends for both) */
-    char info[480];          /* room: a wrapped block under the player table (Episode 1 only; the System Link host's port forwarding hint) */
+    char info[1024];          /* room: a wrapped block under the player table (Episode 1 only, or the experimental line + the Barry-half note; the System Link host's port forwarding hint) */
     char col_name[32], col_char[32], col_ping[16], t_ready[32], t_not_ready[32], t_host[24];   /* table captions */
     char t_ms[24];           /* the ping format of the table (LT_MS: one %s) */
     char leg_ok[32], leg_back[32];   /* key legend words (confirm / back) */

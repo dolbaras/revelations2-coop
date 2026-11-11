@@ -35,9 +35,10 @@ static const char *const NAMES[LT_COUNT] = {
     ENUM_NAME(LT_DOWN_PARTNER), ENUM_NAME(LT_REMOVED), ENUM_NAME(LT_REF_BUILD), ENUM_NAME(LT_KICK_ASK), ENUM_NAME(LT_PARTNER_LEFT_ROOM), ENUM_NAME(LT_PARTNER_LOST_ROOM),
     ENUM_NAME(LT_SESSION_OVER), ENUM_NAME(LT_REF_FULL), ENUM_NAME(LT_REF_STARTED), ENUM_NAME(LT_REF_NOANSWER), ENUM_NAME(LT_REF_BAD), ENUM_NAME(LT_PARTNER_LEFT),
     ENUM_NAME(LT_PARTNER_LOST), ENUM_NAME(LT_HOST_ENDED), ENUM_NAME(LT_HOST_LOST), ENUM_NAME(LT_EP1_END), ENUM_NAME(LT_CONNECTING_TO), ENUM_NAME(LT_AWAITING),
-    ENUM_NAME(LT_HOST_WAIT_READY), ENUM_NAME(LT_HOST_CAN_START), ENUM_NAME(LT_GUEST_PICK), ENUM_NAME(LT_GUEST_WAIT_HOST), ENUM_NAME(LT_KICK), ENUM_NAME(LT_EP1_ONLY),
+    ENUM_NAME(LT_HOST_WAIT_READY), ENUM_NAME(LT_HOST_CAN_START), ENUM_NAME(LT_GUEST_PICK), ENUM_NAME(LT_GUEST_WAIT_HOST), ENUM_NAME(LT_KICK),
     ENUM_NAME(LT_HOST_NET_HINT), ENUM_NAME(LT_END_COOP), ENUM_NAME(LT_END_COOP_HELP), ENUM_NAME(LT_REF_GONE), ENUM_NAME(LT_REF_DENIED), ENUM_NAME(LT_REF_NOLOBBY),
     ENUM_NAME(LT_REF_NOTCOOP), ENUM_NAME(LT_REF_STEAM_NOANSWER), ENUM_NAME(LT_MS), ENUM_NAME(LT_CONTINUE), ENUM_NAME(LT_CONT_NEED),
+    ENUM_NAME(LT_EP_STRUGGLE), ENUM_NAME(LT_EP_LITTLE), ENUM_NAME(LT_EVGENY), ENUM_NAME(LT_DARK_NATALIA),
 };
 
 /* the (text, language) pairs whose word is the English one in that language too; "all" = every language. Language codes as L[] */
@@ -45,7 +46,7 @@ static const struct { int text; const char *langs; } SAME[] = {
     {LT_CLAIRE, "all-rus"}, {LT_MOIRA, "all-rus"}, {LT_BARRY, "all-rus"}, {LT_NATALIA, "all-rus"},   /* names: Latin in the game's own tables but Russian */
     {LT_PING, "fre ita ger spa pol ptB"},                     /* "Ping" */
     {LT_NAME, "ger"},                                         /* "Name" */
-    {LT_HOST_TAG, "ita ger pol"},                             /* "Host" */
+    {LT_HOST_TAG, "ita ger"},                                 /* "Host" (i18n2: Polish "Gospodarz", the game's own word for the host) */
     {LT_LINK, "ita"},                                         /* the game's own Italian "System Link" */
     {LT_EPISODE, "ger"},                                      /* "Episode" (the game's own) */
     {LT_PARTNER, "ita ger pol"},                              /* "Partner" (the game's own) */
@@ -53,6 +54,8 @@ static const struct { int text; const char *langs; } SAME[] = {
     {LT_CASUAL, "ptB"},                                       /* "Casual" (the game's own Brazilian Portuguese) */
     {LT_NO, "ita spa"},                                       /* "No" */
     {LT_MS, "fre ita ger spa pol ptB"},                       /* "%s ms": the unit symbol */
+    {LT_EVGENY, "fre ita ger spa pol ptB"},                   /* the name "Evgeny" (the game's own, Latin letters in these languages; Russian and the CJK ones differ) */
+    {LT_DARK_NATALIA, "fre ita"},                             /* the game's own French and Italian "Dark Natalia" */
 };
 
 static int lang_of(const char *code)

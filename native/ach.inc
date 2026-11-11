@@ -394,7 +394,8 @@ static void ach_track(void)
  * position, new yaw: what `net tp` does) and, inside <range> units (default 150), RT is pressed 250 ms (with LT held when lt = 1: aimed fire) through the pad path of the
  * bot (a session: the human's real-pad user; solo: the synthetic pad of slot 0). approach = 1 puts the human 90 units from the enemy first when it is farther. The blow
  * itself is the game's: knife lunge, physical attack, follow-up or a shot, whatever RT does in that state. Test aid only; refused while the Steam writers pass through. */
-static struct { int on, a, lt, approach, phase, presses, n_log; unsigned b, c, until, t, enemy; float range; } g_ach_fight;
+static struct { int on, a, lt, approach, phase, presses, n_log, sweep; unsigned b, c, until, t, enemy; float range; } g_ach_fight;
+static void aim_cam_retarget(int a, unsigned b, unsigned c);   /* aim.inc */
 typedef struct { WORD wButtons; BYTE bLeftTrigger, bRightTrigger; SHORT sThumbLX, sThumbLY, sThumbRX, sThumbRY; } ach_gamepad_t;   /* the XINPUT_GAMEPAD layout */
 static void ach_fight_pad(int rt, int lt)
 {
@@ -420,6 +421,31 @@ static void ach_fight_tick(void)
     int me = g_my_slot >= 0 ? g_my_slot : 0;
     unsigned p = player_obj(me), en = w_find_active(SENEMY_CELL, g_ach_fight.a, g_ach_fight.b, g_ach_fight.c);
     if (!p) return;
+    if (g_ach_fight.sweep) {   /* `net ach fight sweep`: every tick the NEAREST living enemy of the sEnemy manager (no console round trip per target; lab) */
+        unsigned m = rd32(SENEMY_CELL), best = 0;
+        float bd = 1e30f, qx = rdf(p + 0x40), qz = rdf(p + 0x48);
+        for (int k = 0; m && k < 2; k++) {
+            unsigned cnt = rd32(m + (k ? 0x44 : 0x30)), arr = rd32(m + (k ? 0x50 : 0x3C));
+            for (unsigned i = 0; i < cnt && i < 64 && arr; i++) {
+                unsigned o = rd32(arr + 4 * i);
+                layout_t l;
+                if (!o || (int)rd32(o + 0x1A08) <= 0 || !layout_of(o, &l) || l.a < 0) continue;
+                float ox = rdf(o + 0x40), oz = rdf(o + 0x48);
+                if (ox == 0.0f && oz == 0.0f) continue;   /* the NPC set models parked at the origin */
+                float d2 = (ox - qx) * (ox - qx) + (oz - qz) * (oz - qz);
+                if (d2 < bd) bd = d2, best = o;
+            }
+        }
+        if (!best) return;
+        layout_t l;
+        layout_of(best, &l);
+        if (l.a != g_ach_fight.a || l.b != g_ach_fight.b || l.c != g_ach_fight.c) {
+            g_ach_fight.a = l.a, g_ach_fight.b = l.b, g_ach_fight.c = l.c;
+            aim_cam_retarget(l.a, l.b, l.c);
+            if (g_ach_fight.n_log++ < 60) r2_log(ACH_LOG "sweep: next target (%d,%u,%u) at %.0f units", l.a, l.b, l.c, sqrtf(bd));
+        }
+        en = best;
+    }
     if (!en || (int)rd32(en + 0x1A08) <= 0) { ach_fight_stop(en ? "the enemy is dead" : "no such enemy"); return; }
     if ((int)rd32(p + 0x1A08) < 400) { int full = (int)rd32(p + 0x1A0C); if (full > 0) wr(p + 0x1A08, &full, 4); }   /* lab: keep the human standing */
     float px = rdf(p + 0x40), py = rdf(p + 0x44), pz = rdf(p + 0x48), ex = rdf(en + 0x40), ey = rdf(en + 0x44), ez = rdf(en + 0x48);
@@ -433,7 +459,7 @@ static void ach_fight_tick(void)
     g_ach_fight.phase = 0;
     if (act != 2 && act != 3 && (int)(now - g_ach_fight.t) < 1500) return;   /* wait for the blow / reaction to end (at most 1.5 s) */
     if (d > g_ach_fight.range) {
-        if (!g_ach_fight.approach || d < 1.0f) return;
+        if (!g_ach_fight.approach || d < 1.0f || fabsf(ey - py) > 200.0f) return;   /* approach only on the same floor (P8: a stair target put Claire under the map) */
         float k = (d - 90.0f) / d, nx = px + dx * k, nz = pz + dz * k, yaw = atan2f(ex - nx, ez - nz), ny = ey;
         wr(p + 0x39A0, &nx, 4), wr(p + 0x39A4, &ny, 4), wr(p + 0x39A8, &nz, 4), wr(p + 0x39C4, &yaw, 4);
         unsigned a1[1] = {p};
@@ -452,11 +478,162 @@ static void ach_fight_tick(void)
                (int)rd32(en + 0x1A08), rd32(en + 0x1A54));
 }
 
+/* ---- lab: `net ach walk <ms> <stop> <x1> <z1> [<x2> <z2> ...] | stop`: the local human WALKS (real pad input, no teleport: the level loaders follow a human's own movement, a teleport to an
+ * unloaded height lands in the void) along up to 8 ground waypoints. Every tick the camera is turned to the waypoint (same convention as `net aim cam`: yaw = atan2(dx, dz)) and the left
+ * stick is pushed forward; a human that made less than 40 units in 2.5 s presses the action button for 150 ms (doors, ladders, vaults) every 2.5 s. Stops at the last waypoint within <stop>
+ * units, after <ms>, or when the human fell (y < -500). Test aid for the Episode 2 climb after the siege (allep P13). */
+static struct { int on, n, cur, presses, n_log; float x[8], z[8], stop, lx, lz; unsigned until, t_prog, t_press, t_log; int btn; } g_ach_walk;
+static void ach_walk_pad(int fwd, int btn)
+{
+    ach_gamepad_t g;
+    memset(&g, 0, sizeof g);
+    g.sThumbLY = fwd ? 32000 : 0;
+    g.wButtons = btn ? 0x1000 : 0;   /* XINPUT_GAMEPAD_A */
+    if (g_cs && cs_active(g_cs)) testmode_pad_pretend(0, 1, &g);
+    else testmode_pad_set(0, 1, &g);
+}
+static void ach_walk_stop(const char *why)
+{
+    if (!g_ach_walk.on) return;
+    g_ach_walk.on = 0;
+    if (g_cs && cs_active(g_cs)) testmode_pad_pretend(0, 0, NULL);
+    else testmode_pad_set(0, 0, NULL);
+    r2_log(ACH_LOG "walk: stopped (%s) at waypoint %d of %d, %d presses", why, g_ach_walk.cur + 1, g_ach_walk.n, g_ach_walk.presses);
+}
+static void ach_walk_tick(void)
+{
+    if (!g_ach_walk.on) return;
+    unsigned now = GetTickCount();
+    if ((int)(now - g_ach_walk.until) >= 0) { ach_walk_stop("time"); return; }
+    int me = g_my_slot >= 0 ? g_my_slot : 0;
+    unsigned p = player_obj(me), ctrl = p ? rd32(p + 0x4780) : 0;
+    if (!p || !ctrl) return;
+    float px = rdf(p + 0x40), py = rdf(p + 0x44), pz = rdf(p + 0x48);
+    if (py < -500.0f) { ach_walk_stop("the human fell"); return; }
+    float dx = g_ach_walk.x[g_ach_walk.cur] - px, dz = g_ach_walk.z[g_ach_walk.cur] - pz, d = sqrtf(dx * dx + dz * dz);
+    if (d < g_ach_walk.stop) {
+        if (g_ach_walk.cur + 1 >= g_ach_walk.n) { ach_walk_stop("arrived"); return; }
+        g_ach_walk.cur++;
+        r2_log(ACH_LOG "walk: waypoint %d reached at (%.0f,%.0f,%.0f)", g_ach_walk.cur, px, py, pz);
+        return;
+    }
+    float yaw = atan2f(dx, dz), pitch = 0.0f;
+    wr(ctrl + 0x23AC, &yaw, 4), wr(ctrl + 0x23B4, &yaw, 4), wr(ctrl + 0x23B8, &yaw, 4);
+    wr(ctrl + 0x23A8, &pitch, 4), wr(ctrl + 0x23B0, &pitch, 4), wr(ctrl + 0x23BC, &pitch, 4);
+    int btn = 0;
+    if (!g_ach_walk.t_prog) g_ach_walk.t_prog = now, g_ach_walk.lx = px, g_ach_walk.lz = pz;
+    if ((int)(now - g_ach_walk.t_prog) >= 2500) {
+        float mx = px - g_ach_walk.lx, mz = pz - g_ach_walk.lz;
+        if (mx * mx + mz * mz < 40.0f * 40.0f) g_ach_walk.t_press = now, g_ach_walk.presses++, r2_log(ACH_LOG "walk: stuck at (%.0f,%.0f,%.0f) heading (%.0f,%.0f): action button", px, py, pz, g_ach_walk.x[g_ach_walk.cur], g_ach_walk.z[g_ach_walk.cur]);
+        g_ach_walk.t_prog = now, g_ach_walk.lx = px, g_ach_walk.lz = pz;
+    }
+    if (g_ach_walk.t_press && (int)(now - g_ach_walk.t_press) < 150) btn = 1;
+    ach_walk_pad(1, btn);
+    if ((int)(now - g_ach_walk.t_log) >= 3000 && g_ach_walk.n_log++ < 200) {
+        g_ach_walk.t_log = now;
+        r2_log(ACH_LOG "walk: at (%.0f,%.0f,%.0f) -> waypoint %d (%.0f,%.0f), %.0f units, my action %u", px, py, pz, g_ach_walk.cur + 1, g_ach_walk.x[g_ach_walk.cur], g_ach_walk.z[g_ach_walk.cur], d, rd32(p + 0x1A54));
+    }
+}
+
+/* ---- lab: `net ach follow <ms> [near 180] [tp 1500] [fight 0|1] | stop`: the local human FOLLOWS the partner (owner-check sessions: the N100's human keeps up with the owner).
+ * Every tick: health kept at >= 400 (god mode); farther than <near> units: the camera turns to the partner and the stick goes forward (real walking, the level loaders follow);
+ * farther than <tp> or 300 units above / below for 4 s, or fallen 1000 below the partner: the game's teleport puts this human 100 units from the partner on the side it came from;
+ * when the partner stands still within 250 units for 1.5 s the action button is pulsed every 2 s (co-op doors, shutters and pair actions need both humans); fight 1: a living enemy
+ * within 400 units on the same floor is fought with the sweep (aimed fire, approach 0) and the walk waits. Test aid only. */
+static struct { int on, fight, presses, tps, n_log, own_fight; float nr, tp, plx, plz; unsigned until, t_far, t_still, t_press, t_log; } g_ach_fol;
+static void ach_follow_stop(const char *why)
+{
+    if (!g_ach_fol.on) return;
+    g_ach_fol.on = 0;
+    if (g_ach_fol.own_fight) ach_fight_stop("follow stopped"), g_ach_fol.own_fight = 0;
+    if (g_cs && cs_active(g_cs)) testmode_pad_pretend(0, 0, NULL);
+    else testmode_pad_set(0, 0, NULL);
+    r2_log(ACH_LOG "follow: stopped (%s): %d teleports, %d presses", why, g_ach_fol.tps, g_ach_fol.presses);
+}
+static void ach_follow_tick(void)
+{
+    if (!g_ach_fol.on) return;
+    unsigned now = GetTickCount();
+    if ((int)(now - g_ach_fol.until) >= 0) { ach_follow_stop("time"); return; }
+    if (g_my_slot < 0 || g_rem_slot < 0) return;
+    unsigned p = player_obj(g_my_slot), q = player_obj(g_rem_slot), ctrl = p ? rd32(p + 0x4780) : 0;
+    if (!p || !q || !ctrl) return;
+    if ((int)rd32(p + 0x1A08) < 400) { int full = (int)rd32(p + 0x1A0C); if (full > 0) wr(p + 0x1A08, &full, 4); }   /* god mode */
+    float px = rdf(p + 0x40), py = rdf(p + 0x44), pz = rdf(p + 0x48), qx = rdf(q + 0x40), qy = rdf(q + 0x44), qz = rdf(q + 0x48);
+    float dx = qx - px, dz = qz - pz, d = sqrtf(dx * dx + dz * dz), dy = qy - py;
+    if (g_ach_fol.fight) {   /* a living enemy near on the same floor: the sweep fights it, the walk waits */
+        unsigned m = rd32(SENEMY_CELL), near_en = 0;
+        for (int k = 0; m && k < 2 && !near_en; k++) {
+            unsigned cnt = rd32(m + (k ? 0x44 : 0x30)), arr = rd32(m + (k ? 0x50 : 0x3C));
+            for (unsigned i = 0; i < cnt && i < 64 && arr; i++) {
+                unsigned o = rd32(arr + 4 * i);
+                if (!o || (int)rd32(o + 0x1A08) <= 0) continue;
+                float ox = rdf(o + 0x40), oy = rdf(o + 0x44), oz = rdf(o + 0x48);
+                if (ox == 0.0f && oz == 0.0f) continue;
+                if ((ox - px) * (ox - px) + (oz - pz) * (oz - pz) < 400.0f * 400.0f && fabsf(oy - py) < 200.0f) { near_en = o; break; }
+            }
+        }
+        if (near_en && d < g_ach_fol.tp) {
+            if (!g_ach_fight.on) {
+                memset(&g_ach_fight, 0, sizeof g_ach_fight);
+                g_ach_fight.on = 1, g_ach_fight.sweep = 1, g_ach_fight.a = -1, g_ach_fight.lt = 1, g_ach_fight.approach = 0, g_ach_fight.range = 400.0f, g_ach_fight.until = now + 600000u;
+                g_ach_fol.own_fight = 1;
+                r2_log(ACH_LOG "follow: an enemy within 400 units: fighting");
+            }
+            return;
+        }
+        if (g_ach_fol.own_fight && g_ach_fight.on) ach_fight_stop("follow: no enemy near"), g_ach_fol.own_fight = 0;
+    }
+    int far_now = d > g_ach_fol.tp || fabsf(dy) > 300.0f;
+    if (py < qy - 1000.0f || (far_now && g_ach_fol.t_far && (int)(now - g_ach_fol.t_far) >= 4000)) {
+        float k = d > 1.0f ? 100.0f / d : 0.0f, nx = qx - dx * k, nz = qz - dz * k, ny = qy, yaw = atan2f(dx, dz);
+        if (d <= 1.0f) nx = qx - 100.0f, nz = qz;
+        wr(p + 0x39A0, &nx, 4), wr(p + 0x39A4, &ny, 4), wr(p + 0x39A8, &nz, 4), wr(p + 0x39C4, &yaw, 4);
+        unsigned a1[1] = {p};
+        do_call(3, 0x710FD0, a1, 1);
+        g_ach_fol.tps++, g_ach_fol.t_far = 0;
+        if (g_ach_fol.n_log++ < 100) r2_log(ACH_LOG "follow: teleport %d to the partner (%.0f units away, dy %.0f): (%.0f,%.0f,%.0f)", g_ach_fol.tps, d, dy, nx, ny, nz);
+        return;
+    }
+    if (far_now) { if (!g_ach_fol.t_far) g_ach_fol.t_far = now | 1u; } else g_ach_fol.t_far = 0;
+    float mv = (qx - g_ach_fol.plx) * (qx - g_ach_fol.plx) + (qz - g_ach_fol.plz) * (qz - g_ach_fol.plz);
+    if (mv > 20.0f * 20.0f) g_ach_fol.plx = qx, g_ach_fol.plz = qz, g_ach_fol.t_still = now | 1u;
+    int btn = 0;
+    if (d < 250.0f && g_ach_fol.t_still && (int)(now - g_ach_fol.t_still) >= 1500 && (int)(now - g_ach_fol.t_press) >= 2000)
+        g_ach_fol.t_press = now | 1u, g_ach_fol.presses++;
+    if (g_ach_fol.t_press && (int)(now - g_ach_fol.t_press) < 150) btn = 1;
+    int fwd = d > g_ach_fol.nr;
+    if (fwd) {
+        float yaw = atan2f(dx, dz), pitch = 0.0f;
+        wr(ctrl + 0x23AC, &yaw, 4), wr(ctrl + 0x23B4, &yaw, 4), wr(ctrl + 0x23B8, &yaw, 4);
+        wr(ctrl + 0x23A8, &pitch, 4), wr(ctrl + 0x23B0, &pitch, 4), wr(ctrl + 0x23BC, &pitch, 4);
+    }
+    ach_walk_pad(fwd, btn);
+    if ((int)(now - g_ach_fol.t_log) >= 5000 && g_ach_fol.n_log++ < 200)
+        g_ach_fol.t_log = now, r2_log(ACH_LOG "follow: %.0f units from the partner (dy %.0f), %d teleports, %d presses", d, dy, g_ach_fol.tps, g_ach_fol.presses);
+}
+
+/* ---- lab: `net ach god <ms> | stop`: the local human's health is kept at >= 400 (owner-check sessions: a death of the owner's character would stop the check at the
+ * death screen, which both PCs must confirm). Test aid only; nothing else changes. */
+static struct { int on, fills; unsigned until; } g_ach_god;
+static void ach_god_tick(void)
+{
+    if (!g_ach_god.on) return;
+    if ((int)(GetTickCount() - g_ach_god.until) >= 0) { g_ach_god.on = 0; r2_log(ACH_LOG "god: off (time), %d refills", g_ach_god.fills); return; }
+    unsigned p = g_my_slot >= 0 ? player_obj(g_my_slot) : 0;
+    if (!p) return;
+    int hp = (int)rd32(p + 0x1A08), full = (int)rd32(p + 0x1A0C);
+    if (hp < 400 && full > 0) { wr(p + 0x1A08, &full, 4); g_ach_god.fills++; }
+}
+
 static void ach_frame(void)
 {
     if (!g_ach_installed && g_cs && cs_active(g_cs)) ach_install();   /* the hooks go in with the first session, before any slot has a partner (nothing is patched for solo play) */
     ach_track();
     ach_fight_tick();
+    ach_walk_tick();
+    ach_follow_tick();
+    ach_god_tick();
 }
 
 static int ach_install(void)
@@ -584,15 +761,79 @@ static void ach_command(const char *rest, char *out, int size)
             snprintf(out, size, "refused: the Steam writers are NOT blocked (a test aid that makes real kills)");
             return;
         }
-        if (sscanf(arg, "%d %u %u %d %f %d %d", &a, &b, &c, &ms, &r, &lt, &ap) < 4 || ms <= 0 || ms > 600000) {
+        int sweep = 0;
+        if (!strncmp(arg, "sweep ", 6)) {   /* net ach fight sweep <ms> [range] [lt] [approach] */
+            sweep = 1, a = -1;
+            if (sscanf(arg + 6, "%d %f %d %d", &ms, &r, &lt, &ap) < 1 || ms <= 0 || ms > 1800000) {
+                snprintf(out, size, "usage: net ach fight sweep <ms> [range 150] [lt 0|1] [approach 0|1]");
+                return;
+            }
+        } else if (sscanf(arg, "%d %u %u %d %f %d %d", &a, &b, &c, &ms, &r, &lt, &ap) < 4 || ms <= 0 || ms > 600000) {
             snprintf(out, size, "usage: net ach fight <a> <b> <c> <ms> [range 150] [lt 0|1] [approach 0|1] | stop");
             return;
         }
-        unsigned en = w_find_active(SENEMY_CELL, a, b, c);
+        unsigned en = sweep ? 0 : w_find_active(SENEMY_CELL, a, b, c);
+        g_ach_fight.sweep = sweep;
         g_ach_fight.on = 1, g_ach_fight.a = a, g_ach_fight.b = b, g_ach_fight.c = c, g_ach_fight.until = GetTickCount() + (unsigned)ms, g_ach_fight.range = r, g_ach_fight.lt = lt, g_ach_fight.approach = ap;
         g_ach_fight.phase = 0, g_ach_fight.t = 0, g_ach_fight.presses = 0, g_ach_fight.n_log = 0;
         ach_fight_pad(0, lt);   /* connected and neutral first (a solo synthetic pad is seen at the game's next scan) */
         snprintf(out, size, "fight (%d,%u,%u) for %d ms, range %.0f, lt %d, approach %d: enemy %08x hp %d", a, b, c, ms, r, lt, ap, en, en ? (int)rd32(en + 0x1A08) : 0);
+    } else if (!strcmp(sub, "follow")) {   /* net ach follow <ms> [near 180] [tp 1500] [fight 0|1] | stop (lab, see ach_follow_tick) */
+        if (!strncmp(arg, "stop", 4)) {
+            ach_follow_stop("console");
+            snprintf(out, size, "follow stopped");
+            return;
+        }
+        int ms = 0, fight = 0;
+        float nearv = 180.0f, tp = 1500.0f;
+        if (sscanf(arg, "%d %f %f %d", &ms, &nearv, &tp, &fight) < 1 || ms <= 0 || ms > 14400000) {
+            snprintf(out, size, "usage: net ach follow <ms> [near 180] [tp 1500] [fight 0|1] | stop");
+            return;
+        }
+        ach_walk_stop("follow starts");
+        memset(&g_ach_fol, 0, sizeof g_ach_fol);
+        g_ach_fol.on = 1, g_ach_fol.fight = fight, g_ach_fol.nr = nearv, g_ach_fol.tp = tp, g_ach_fol.until = GetTickCount() + (unsigned)ms;
+        ach_walk_pad(0, 0);
+        snprintf(out, size, "follow: the partner (slot %d) for %d ms, near %.0f, teleport beyond %.0f, fight %d, god mode on", g_rem_slot, ms, nearv, tp, fight);
+    } else if (!strcmp(sub, "god")) {   /* net ach god <ms> | stop (lab, see ach_god_tick) */
+        int ms = 0;
+        if (!strncmp(arg, "stop", 4)) {
+            g_ach_god.on = 0;
+            r2_log(ACH_LOG "god: off (console), %d refills", g_ach_god.fills);
+            snprintf(out, size, "god mode off (%d refills)", g_ach_god.fills);
+            return;
+        }
+        if (sscanf(arg, "%d", &ms) < 1 || ms <= 0 || ms > 14400000) {
+            snprintf(out, size, "usage: net ach god <ms> | stop");
+            return;
+        }
+        g_ach_god.on = 1, g_ach_god.fills = 0, g_ach_god.until = GetTickCount() + (unsigned)ms;
+        r2_log(ACH_LOG "god: on for %d ms (my slot %d)", ms, g_my_slot);
+        snprintf(out, size, "god mode on for %d ms: my human (slot %d) keeps hp >= 400", ms, g_my_slot);
+    } else if (!strcmp(sub, "walk")) {   /* net ach walk <ms> <stop> <x1> <z1> [<x2> <z2> ...] | stop (lab, see ach_walk_tick) */
+        if (!strncmp(arg, "stop", 4)) {
+            ach_walk_stop("console");
+            snprintf(out, size, "walk stopped");
+            return;
+        }
+        int ms = 0, n = 0, used = 0, k = 0;
+        float stop = 120.0f, v[16];
+        if (sscanf(arg, "%d %f%n", &ms, &stop, &used) < 2 || ms <= 0 || ms > 1800000) {
+            snprintf(out, size, "usage: net ach walk <ms> <stop units> <x1> <z1> [<x2> <z2> ... up to 8] | stop");
+            return;
+        }
+        const char *q = arg + used;
+        while (n < 16 && sscanf(q, " %f%n", &v[n], &k) == 1) n++, q += k;
+        if (n < 2) {
+            snprintf(out, size, "usage: net ach walk <ms> <stop units> <x1> <z1> [<x2> <z2> ... up to 8] | stop");
+            return;
+        }
+        memset(&g_ach_walk, 0, sizeof g_ach_walk);
+        g_ach_walk.n = n / 2, g_ach_walk.stop = stop, g_ach_walk.until = GetTickCount() + (unsigned)ms;
+        for (int i = 0; i < g_ach_walk.n; i++) g_ach_walk.x[i] = v[2 * i], g_ach_walk.z[i] = v[2 * i + 1];
+        g_ach_walk.on = 1;
+        ach_walk_pad(0, 0);
+        snprintf(out, size, "walk: %d waypoint(s), first (%.0f,%.0f), stop %.0f units, %d ms", g_ach_walk.n, g_ach_walk.x[0], g_ach_walk.z[0], stop, ms);
     } else if (!strcmp(sub, "bits")) {   /* net ach bits [rec hex ...]: record bits 0/1/2 (read-only) + the "flame bust used" bit FLAME_NOT_USED reads (story+0x20+0xCC4 bit 3, 0x404C00) */
         unsigned story = rd32(ACH_STORY_CELL);
         if (!story) {

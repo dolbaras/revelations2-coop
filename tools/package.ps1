@@ -4,7 +4,7 @@
 #                                                            shortcut, coop\coop-installer.ps1 + coop-texts.ps1 for the uninstaller, coop\version.txt,
 #                                                            coop\collect-logs.ps1 + coop\log-profiles\*.psd1 + coop\Collect logs.bat: the bug-report
 #                                                            collector every co-op mod of the workspace shares, <workspace>\tools\log-collector)
-#   README-COOP.txt, LICENSE.txt
+#   README-COOP.txt (docs\release-readme.txt with @VERSION@ filled in), LICENSE.txt, ENET-LICENSE.txt (docs\enet-license.txt: ENet 1.3.18 is built into the DLL)
 # Run native\build.sh first. The developer tools (console, test hooks) are inside the DLL but do nothing without their environment variables. The package sets no
 # environment variable of its own and the shortcut's launcher sets none (REV2_ACHBLOCK and the other lab switches stay unset).
 # Usage: package.ps1 -Version 0.1.0 [-Exe] [-Dist <folder>] [-Dll <dinput8.dll>] [-LogCollector <folder>] [-AnyDllVersion]
@@ -52,7 +52,11 @@ Copy-Item (Join-Path $PSScriptRoot "launcher.ps1") (Join-Path $files "coop\coop-
 # The installer and its texts also go into the game folder (coop\): "Uninstall Co-op.bat" runs them.
 Copy-Item (Join-Path $PSScriptRoot "installer.ps1") (Join-Path $files "coop\coop-installer.ps1")
 Copy-Item (Join-Path $PSScriptRoot "coop-texts.ps1") (Join-Path $files "coop\coop-texts.ps1")
-Copy-Item (Join-Path $root "docs\release-readme.txt") (Join-Path $files "coop\README.txt")
+# The players' readme carries the version (@VERSION@ in docs\release-readme.txt), so it cannot go out with the number of an older release.
+$readme = Get-Content -LiteralPath (Join-Path $root "docs\release-readme.txt") -Raw
+if (-not $readme.Contains("@VERSION@")) { throw "docs\release-readme.txt has no @VERSION@ (its first line names the version)" }
+$readme = $readme.Replace("@VERSION@", $Version)
+Set-Content -Path (Join-Path $files "coop\README.txt") -Value $readme -Encoding ASCII -NoNewline
 # The bug-report collector, one for every co-op mod of the workspace (<workspace>\tools\log-collector: collect-logs.ps1 + a profile per game) and a double-clickable
 # start for it: <game>\coop\Collect logs.bat -> one zip on the desktop. Every profile goes along (collect-logs.ps1 -All also takes the other co-op mods found on the
 # PC); the .bat names this mod's.
@@ -74,8 +78,10 @@ Copy-Item (Join-Path $PSScriptRoot "installer.ps1") (Join-Path $stage "coop-inst
 Copy-Item (Join-Path $PSScriptRoot "coop-texts.ps1") (Join-Path $stage "coop-texts.ps1")
 Set-Content -Path (Join-Path $stage "Install Co-op.bat") -Encoding ASCII `
     -Value '@start "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0coop-installer.ps1" %*'
-Copy-Item (Join-Path $root "docs\release-readme.txt") (Join-Path $stage "README-COOP.txt")
+Set-Content -Path (Join-Path $stage "README-COOP.txt") -Value $readme -Encoding ASCII -NoNewline
 Copy-Item (Join-Path $root "LICENSE") (Join-Path $stage "LICENSE.txt")
+# ENet's MIT license asks for its notice in every copy: the DLL is built with ENet 1.3.18 (native\build.sh)
+Copy-Item (Join-Path $root "docs\enet-license.txt") (Join-Path $stage "ENET-LICENSE.txt")
 $zip = Join-Path $dist "revelations2-coop-$Version.zip"
 Remove-Item $zip -ErrorAction SilentlyContinue
 # The archive is written by .NET's ZipArchive with entry names built here, every one with "/" (the zip format's separator). Compress-Archive of Windows PowerShell 5.1

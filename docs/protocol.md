@@ -81,7 +81,7 @@ Offsets are within the message, type byte = offset 0.
 | 0x50 | STATE | 1 U | any -> all | 60 bytes, see 4.1 |
 | 0x51 | WORLD | 1 U | any -> all | stage 6, additive (no version change: an older peer drops an unknown type): `u8 pid` `u8 kind` `u16 seq` `u32 t_ms` `u8 epoch` `u16 len` `u8[len] body` (len <= 400); newer sequence only, other epochs dropped, relayed by the host. Bodies and the world events (kinds `0x120..0x12A`: SPAWN HIT DEATH PICKUP PDMG FLAG SCENE GRANT BARRIER; WORLD kinds 1 enemy records, 2 flag table digest, 3 item liveness digest): `world.md` |
 
-Blocks: **session** = `u32 id` `u8 game_type` `u8 episode` `u8 part` `u8 difficulty` `u8 max_players` `u8 flags` `u32 area_id` `u32 seed` (16 bytes).
+Blocks: **session** = `u32 id` `u8 game_type` `u8 episode` `u8 part` `u8 difficulty` `u8 max_players` `u8 flags` `u32 area_id` `u32 seed` (16 bytes). `game_type` is the game's GameMan type (0 story campaign; 0.3.0: 3 The Struggle, 4 Little Miss); `episode` 1..4 for type 0, 5 for type 3, 9 for type 4 (a bonus episode has part 0 only); `flags`: bit 0 downed / revive rule, bits 1..2 bleed-out preset, bit 3 (8) Continue (0.2.1), The layout is unchanged (no protocol version change); a peer refuses a session whose episode, game type and part do not make a start the game knows (0.3.0), and the mod version check keeps 0.2.x and 0.3.x peers apart.
 **lobby** = `u32 rev` `u8 count` then per player `u8 pid` `u8 character` `u8 ready` `u8 flags` `str name`; flags: 1 host, 2 connected, 4 in game, 8 loaded, 16 bot, 32 / 64 a co-op save of Claire's / Barry's half (0.2.1).
 
 ### 4.1 PLAYER_STATE (0x50), 20 Hz, 60 bytes (version 2; version 1 was the first 40)

@@ -1,5 +1,5 @@
 /*
- * test_lobbymust.c: the 0.2.0 in-game rules of native/lobbymust_logic.h (a lost partner / host, End Co-Op, the end of Episode 1) driven with the orders the
+ * test_lobbymust.c: the 0.2.0 in-game rules of native/lobbymust_logic.h (a lost partner / host, End Co-Op, the end of an episode) driven with the orders the
  * glue sees: notes from the session, then passes with game facts. Also checks that the values the header repeats are the session's.
  */
 #include <stdio.h>
@@ -205,10 +205,84 @@ static void test_episode_end(void)
     f.at_menus = 1, f.agame_state = -1;
     run(&m, &f, &t, 50, NULL);
     CHECK(!m.ep_end && !m.ep_left);
-    /* another episode's result area (a lab Episode 2 session) is not the end */
+    /* 0.3.0 all-episodes: the result area of ANY episode of the room is the end (2..4, The Struggle chapters 5..8, Little Miss chapters 9..11) once a stage was played ... */
+    static const unsigned eps[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+    for (unsigned k = 0; k < sizeof eps / sizeof eps[0]; k++) {
+        lm_init(&m, 1);
+        f = play(), f.episode = eps[k];
+        CHECK(run(&m, &f, &t, 500, NULL) == 0 && m.played && !m.ep_end);
+        f.area = 9000;
+        CHECK(lm_tick(&m, &f, t += 16) == LM_A_EP_LEAVE && m.ep_end && m.ep_left);
+    }
+    /* ... not an id the lobby cannot start (a story that is not one of ours) */
+    static const unsigned odd[] = {0, 12, 13, 99};
+    for (unsigned k = 0; k < sizeof odd / sizeof odd[0]; k++) {
+        lm_init(&m, 1);
+        f = play(), f.episode = odd[k];
+        run(&m, &f, &t, 100, NULL);
+        f.area = 9000;
+        CHECK(run(&m, &f, &t, 1000, NULL) == 0 && !m.ep_end);
+    }
+    /* the last chapter of a bonus episode ends at its results screen (aGame state 2 in the stage, no area 9000): The Struggle chapter 8, Little Miss chapter 11; other chapters
+     * (5-7, 9, 10) go on to the next chapter through the same results screen and do not end the session */
+    for (unsigned e = 5; e <= 11; e++) {
+        lm_init(&m, 1);
+        f = play(), f.episode = e, f.area = e == 8 ? 630 : e == 11 ? 711 : 600 + e;
+        CHECK(run(&m, &f, &t, 300, NULL) == 0 && m.played);
+        f.agame_state = 2;
+        int a = lm_tick(&m, &f, t += 16);
+        CHECK(a == 0 && !m.ep_end);   /* the first instant of state 2 is not the end: a stage load passes it too (live allepP3: the end fired at the start of the 630 load) */
+        a = run(&m, &f, &t, LM_RESULTS_HOLD_MS + 100, NULL);
+        CHECK((e == 8 || e == 11) ? (a == LM_A_EP_LEAVE && m.ep_end) : (a == 0 && !m.ep_end));
+    }
+    /* the game's last stage (Episode 4, 454): its StageClear starts the credits in the stage (aGame state 2): the end of the co-op game; the other Episode 4 stages do not end it */
     lm_init(&m, 1);
-    f = play(), f.area = 9000, f.episode = 2;
-    CHECK(run(&m, &f, &t, 1000, NULL) == 0 && !m.ep_end);
+    f = play(), f.episode = 4, f.area = 454;
+    CHECK(run(&m, &f, &t, 300, NULL) == 0 && m.played);
+    f.agame_state = 2;
+    CHECK(lm_tick(&m, &f, t += 16) == 0 && !m.ep_end);
+    CHECK(run(&m, &f, &t, LM_RESULTS_HOLD_MS + 100, NULL) == LM_A_EP_LEAVE && m.ep_end);
+    lm_init(&m, 1);
+    f = play(), f.episode = 4, f.area = 453;
+    run(&m, &f, &t, 300, NULL);
+    f.agame_state = 2;
+    CHECK(run(&m, &f, &t, 3000, NULL) == 0 && !m.ep_end);
+    lm_init(&m, 1);   /* results of an Episode 1-4 half in its stage (the first half's end): no end */
+    f = play(), f.episode = 2, f.area = 201;
+    run(&m, &f, &t, 300, NULL);
+    f.agame_state = 2;
+    CHECK(run(&m, &f, &t, 2000, NULL) == 0 && !m.ep_end);
+    /* a transient state 2 of a last chapter (a load: 0.1 s, players gone) never ends it */
+    lm_init(&m, 1);
+    f = play(), f.episode = 8, f.area = 630;
+    run(&m, &f, &t, 300, NULL);
+    f.agame_state = 2, f.in_episode = 0;
+    CHECK(run(&m, &f, &t, 5000, NULL) == 0 && !m.ep_end);
+    f = play(), f.episode = 8, f.area = 630;
+    f.agame_state = 2;
+    CHECK(run(&m, &f, &t, 100, NULL) == 0);
+    f.agame_state = 3;
+    CHECK(run(&m, &f, &t, 3000, NULL) == 0 && !m.ep_end && !m.res_since);
+    /* the game's start passes an intermediate stage 9000 (title -> stage 9000 -> the first stage, notes/episode-catalog.md 2L.1): before any stage was played it is not the end */
+    lm_init(&m, 1);
+    f = play(), f.area = 9000, f.in_episode = 0, f.glue_running = 0, f.agame_state = 8, f.episode = 2;
+    CHECK(run(&m, &f, &t, 5000, NULL) == 0 && !m.ep_end && !m.played);
+    f = play(), f.episode = 2, f.area = 201;   /* the first stage of Episode 2 is played ... */
+    CHECK(run(&m, &f, &t, 100, NULL) == 0 && m.played);
+    f.area = 9000;   /* ... and the result area then ends it */
+    CHECK(lm_tick(&m, &f, t += 16) == LM_A_EP_LEAVE);
+    /* the latch is cleared by the title and by a new session */
+    f.at_menus = 1, f.agame_state = -1, f.session_running = 0;
+    run(&m, &f, &t, 50, NULL);
+    CHECK(!m.played);
+    lm_init(&m, 1);
+    f = play();
+    run(&m, &f, &t, 100, NULL);
+    CHECK(m.played);
+    lm_session_start(&m);
+    CHECK(!m.played);
+    f.area = 9000;
+    CHECK(run(&m, &f, &t, 500, NULL) == 0 && !m.ep_end);   /* a session that has not played yet: the area 9000 alone does not end it */
     /* the partner got there first: the host sees PEER_LEAVE b = EP_END, the guest LOST a = 1 b = EP_END: the strip, no solo, no quit */
     lm_init(&m, 1);
     lm_note_in x = note(CS_N_PEER_LEAVE, 0, CS_GONE_EP_END, 1);
@@ -228,7 +302,9 @@ static void test_episode_end(void)
     lm_init(&m, 1);
     x = note(CS_N_PEER_LEAVE, 0, CS_GONE_LEFT, 1);
     lm_on_note(&m, &x, t);
-    f = play(), f.area = 9000;
+    f = play();
+    lm_tick(&m, &f, t + 8);
+    f.area = 9000;
     CHECK(lm_tick(&m, &f, t + 16) == LM_A_EP_LEAVE && !m.solo_at);
     /* a new session start clears the flags */
     lm_session_start(&m);
@@ -243,6 +319,7 @@ static void test_episode_end_strip(void)
     uint32_t t = 50000, first = 0;
     lm_init(&m, 1);
     lm_frame_in f = play();
+    CHECK(lm_tick(&m, &f, t += 16) == 0);
     f.area = 9000;   /* the StageClear order set the area, still in plain play */
     CHECK(lm_tick(&m, &f, t += 16) == LM_A_EP_LEAVE);
     f.session_running = 0, f.agame_state = 8;

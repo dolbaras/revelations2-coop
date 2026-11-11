@@ -93,8 +93,8 @@ enum cp_phase { CP_PHASE_NONE = 0, CP_PHASE_LOBBY = 1, CP_PHASE_LOADING = 2, CP_
 
 typedef struct {
     uint32_t id;            /* session id chosen by the host */
-    uint8_t game_type;      /* 0 story campaign (more later) */
-    uint8_t episode;        /* 1..4 */
+    uint8_t game_type;      /* 0 story campaign, 3 The Struggle, 4 Little Miss (the game's GameMan type) */
+    uint8_t episode;        /* 1..4 (type 0), 5 (type 3), 9 (type 4) */
     uint8_t part;           /* 0 Claire/Moira half, 1 Barry/Natalia half */
     uint8_t difficulty;
     uint8_t max_players;    /* 2 for now */

@@ -25,7 +25,8 @@ enum os_kind {
     OS_COOP_OTHER,     /* other uSmCoopBase / uSmCoopDemo classes */
     OS_MOVE_PRESS,     /* uSmPress (push boxes) */
     OS_MOVE_CARRY,     /* uSmInteractive (holdable boxes, bricks) */
-    OS_MOVE_OTHER      /* another uSmMoveBox class */
+    OS_MOVE_OTHER,     /* another uSmMoveBox class */
+    OS_SCRIPTED        /* the finale helicopters (uSmLastHelicopter, uSmSoftEventHeli*): moved by the stage's own script and mover units, never mirrored (live allepP16 / P20: replaying their actions killed the game at stage 454) */
 };
 
 /* a whole class name in the chain text of classes_name ("vtable exe+.., DTI ..: uSm0418(43d0) : uSmShutterCoop(43d0) : ..."): the name is followed by '(' */
@@ -44,6 +45,9 @@ static int os_kind_of(const char *chain)
     if (!chain) return OS_PLAIN;
     const char *p = strstr(chain, ": ");
     p = p ? p + 2 : chain;
+#ifndef OS_MODEL_BEFORE_HELI
+    if (os_has_class(p, "uSmLastHelicopter") || strstr(p, "uSmSoftEventHeli")) return OS_SCRIPTED;
+#endif
     if (os_has_class(p, "uSmDoorCoop")) return OS_COOP_DOOR;
     if (os_has_class(p, "uSmShutterCoop")) return OS_COOP_SHUTTER;
     if (os_has_class(p, "uSmPairCoop")) return OS_COOP_PAIR;
@@ -69,6 +73,7 @@ static int os_carry_break_act(int act) { return act == 2 || act == 3 || act == 4
 /* the sender's scan saw the action id of a set model change: send DOOR? (coop_mode = `net w doors coop`, 0 = co-op set models are not mirrored) */
 static int os_door_send(int kind, int act, int actor, int coop_mode)
 {
+    if (kind == OS_SCRIPTED) return 0;
     if (os_is_coop(kind)) {
         if (!coop_mode) return 0;
 #ifdef OS_MODEL_RELEASE020
@@ -89,6 +94,7 @@ static int os_door_send(int kind, int act, int actor, int coop_mode)
 /* the receiver got DOOR for a set model that is not co-op: apply it with ChangeAction(act, 1, 0, -1, 0)? (local_actor: the actor of this PC's copy) */
 static int os_door_apply(int kind, int act, int local_actor)
 {
+    if (kind == OS_SCRIPTED) return 0;
 #ifndef OS_MODEL_RELEASE020
     if (kind == OS_MOVE_CARRY) return os_carry_break_act(act) && local_actor != OS_ACT_LOCAL;
     if (os_is_move(kind)) return 0;

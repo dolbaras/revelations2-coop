@@ -26,6 +26,7 @@ typedef struct {
     char clip[200];
     char local_name[24];
     int save_part, save_diff;   /* 0.2.1: this node's co-op save (-1 none) */
+    lobby_settings last;        /* 0.3.0: the last settings the lobby asked to persist (rev2_coop.ini) */
 } Node;
 
 static void on_note(void *u, const cs_note *n)
@@ -92,7 +93,7 @@ static int env_async_poll(void *u, char *out, int size)
     nd->job_ready = 0;
     return 1;
 }
-static void env_save(void *u, const lobby_settings *s) { (void)s; ((Node *)u)->saves++; }
+static void env_save(void *u, const lobby_settings *s) { ((Node *)u)->saves++, ((Node *)u)->last = *s; }
 static int env_clip(void *u, char *out, int size) { snprintf(out, (size_t)size, "%s", ((Node *)u)->clip); return ((Node *)u)->clip[0] != 0; }
 static int env_addr(void *u, char *out, int size) { (void)u; snprintf(out, (size_t)size, "192.168.1.5"); return 1; }
 static int env_coop_save(void *u, int *part, int *diff)
@@ -258,8 +259,8 @@ static void test_flow(void)
     step(3100);
     CHECK(!strcmp(view(&A).status, "Waiting for Bob to get ready..."));   /* partner joined, not ready (0.2.0: the line names him) */
     CHECK(!strcmp(view(&B).status, lobby_own_text(LT_GUEST_PICK, 0)));     /* the guest is told what to do */
-    CHECK(strstr(view(&A).info, lobby_own_text(LT_EP1_ONLY, 0)) && strstr(view(&A).info, "UDP port 7 must be forwarded"));   /* System Link host: Episode 1 only + port */
-    CHECK(strstr(view(&B).info, lobby_own_text(LT_EP1_ONLY, 0)) && !strstr(view(&B).info, "UDP"));
+    CHECK(strstr(view(&A).info, "UDP port 7 must be forwarded"));   /* System Link host: the port hint (no "Episode 1 only" line any more) */
+    CHECK(!view(&B).info[0]);
     CHECK(row_kind(&A, lobby_own_text(LT_KICK, 0)) == LV_NORMAL && row_kind(&B, lobby_own_text(LT_KICK, 0)) < 0);   /* Remove partner: the host's row only */
     cs_player_info pi;
     CHECK(cs_player(A.s, 0, &pi) && pi.character == CP_CHAR_CLAIRE);
@@ -298,38 +299,25 @@ static void test_flow(void)
     /* the host cannot even reach the partner's slot with the cursor */
     CHECK(goto_row(&A, "Moira") < 0);
 
-    /* episode: 0.2.0 product rule = Episode 1 only, the row is information (not selectable); the lab switch (REV2_EPISODES=all) brings the 1-4 row back */
-    CHECK(row_kind(&A, "Episode") == LV_INFO && !strcmp(row_value(&A, "Episode"), "1"));
-    CHECK(goto_row(&A, "Episode") < 0);
-    {
-        lobby_settings st;
-        lobby_get_settings(A.l, &st);
-        st.episodes_all = 1;
-        lobby_set_settings(A.l, &st);
-    }
+    /* episode (0.3.0, no gate): the row is selectable from the start, 1-4 and the two bonus episodes in the game's own order; the guest follows without any setting */
+    CHECK(row_kind(&A, "Episode") == LV_NORMAL && !strcmp(row_value(&A, "Episode"), "<  1  >"));
+    CHECK(row_kind(&B, "Episode") == LV_INFO && !strcmp(row_value(&B, "Episode"), "1"));
     goto_row(&A, "Episode");
     ev(&A, LE_RIGHT);
     step(300);
     cs_session_get(A.s, &ss);
-    CHECK(ss.episode == 2);
+    CHECK(ss.episode == 2 && ss.game_type == 0 && ss.part == 0);
     CHECK(!strcmp(row_value(&B, "Episode"), "2"));
-    /* the product guest (B) does not play another episode: Ready greyed, the room says why */
-    CHECK(row_kind(&B, "Ready") == LV_GREY && !strcmp(view(&B).status, lobby_own_text(LT_EP1_ONLY, 0)) && view(&B).status_kind == LSK_ERROR);
+    CHECK(A.last.episode == 2);   /* persisted */
+    CHECK(row_kind(&B, "Ready") == LV_NORMAL && view(&B).status_kind != LSK_ERROR);   /* the guest plays it: no refusal */
     ev(&A, LE_LEFT), ev(&A, LE_LEFT);
     step(300);
     cs_session_get(A.s, &ss);
-    CHECK(ss.episode == 4);   /* wraps */
+    CHECK(ss.episode == LOBBY_EP_LITTLE && ss.game_type == LOBBY_GT_LITTLE);   /* 1 left of 2 is 1, then the row wraps to Little Miss */
     ev(&A, LE_RIGHT);
     step(300);
     cs_session_get(A.s, &ss);
-    CHECK(ss.episode == 1 && row_kind(&B, "Ready") == LV_NORMAL);
-    {
-        lobby_settings st;
-        lobby_get_settings(A.l, &st);
-        st.episodes_all = 0;
-        lobby_set_settings(A.l, &st);
-        CHECK(st.episode == 1);
-    }
+    CHECK(ss.episode == 1 && ss.game_type == 0 && row_kind(&B, "Ready") == LV_NORMAL);
     goto_row(&A, "Difficulty");
     ev(&A, LE_RIGHT);
     step(300);
@@ -657,7 +645,8 @@ static void test_lobbymust_room(void)
     n_nodes = 0;
 }
 
-/* 0.2.0: a product guest does not start another episode than 1 that a (lab) host started anyway */
+/* 0.3.0 (no gate): a host of another episode (a saved default of 3) is followed by a plain guest and both start it; a session that is not a start the game knows
+ * (impossible episode / game type / part mix, e.g. from a foreign host) is refused by the guest */
 static void test_episode_rule(void)
 {
     Node A, B;
@@ -666,13 +655,10 @@ static void test_episode_rule(void)
     nodes[0] = &A, nodes[1] = &B, n_nodes = 2;
     lobby_settings st;
     lobby_get_settings(A.l, &st);
-    st.episodes_all = 1, st.episode = 3;
+    st.episode = 3;
     lobby_set_settings(A.l, &st);
-    lobby_get_settings(B.l, &st);
-    st.episode = 3;   /* (an old settings file of the guest) */
-    lobby_set_settings(B.l, &st);
-    lobby_get_settings(B.l, &st);
-    CHECK(st.episode == 1);   /* product: clamped to 1 */
+    lobby_get_settings(A.l, &st);
+    CHECK(st.episode == 3);   /* kept: every episode is played */
     lobby_open(A.l);
     lobby_open(B.l);
     press(&A, "Find a Partner");
@@ -680,18 +666,24 @@ static void test_episode_rule(void)
     step(100);
     cp_session ss;
     cs_session_get(A.s, &ss);
-    CHECK(ss.episode == 3);   /* the lab host's session */
+    CHECK(ss.episode == 3 && ss.game_type == 0 && ss.part == 0);
     press(&B, "Join a Partner");
     press(&B, "System Link");
     retype(&B, "sim:13");
     ev(&B, LE_OK);
     step(2000);
-    CHECK(view(&B).screen == LS_ROOM && row_kind(&B, "Ready") == LV_GREY);
+    CHECK(view(&B).screen == LS_ROOM && row_kind(&B, "Ready") == LV_NORMAL && view(&B).status_kind != LSK_ERROR);
     char o[100];
-    cs_command(A.s, "start force", o, sizeof o);   /* the lab host starts without the guest's Ready */
+    cs_command(A.s, "session 3 0 1 0 0", o, sizeof o);   /* a console line, no lobby involved: still Episode 3 */
+    step(100);
+    CHECK(row_kind(&B, "Ready") == LV_NORMAL);
+    cs_command(A.s, "session 3 0 1 0 4", o, sizeof o);   /* an episode with the wrong game type: refused */
+    step(100);
+    CHECK(row_kind(&B, "Ready") == LV_GREY && !strcmp(view(&B).status, lobby_own_text(LT_REF_BAD, 0)) && view(&B).status_kind == LSK_ERROR);
+    cs_command(A.s, "start force", o, sizeof o);   /* a broken session started anyway: neither PC starts the game and both leave */
     step(300);
-    CHECK(lobby_take_request(A.l) == LR_START);
-    CHECK(lobby_take_request(B.l) == LR_NONE && view(&B).screen == LS_TOP && !strcmp(view(&B).status, lobby_own_text(LT_EP1_ONLY, 0)) && !cs_active(B.s));
+    CHECK(lobby_take_request(A.l) == LR_NONE && view(&A).screen == LS_TOP);
+    CHECK(lobby_take_request(B.l) == LR_NONE && view(&B).screen == LS_TOP && !cs_active(B.s));   /* (the guest sees the host leave or refuses itself, whichever comes first) */
     cs_free(A.s), cs_free(B.s);
     lobby_free(A.l), lobby_free(B.l);
     n_nodes = 0;
@@ -815,6 +807,12 @@ static void test_texts(void)
         }
     }
     CHECK(lobby_lang_from_game(1) == 0 && lobby_lang_from_game(10) == 5 && lobby_lang_from_game(21) == 7 && lobby_lang_from_game(0) == 8);
+    /* 0.3.0: the players table's character column holds the longest character name in every language (live run allepL1: the Russian "Dark Natalia" was cut at 23 bytes) */
+    for (int lang = 0; lang < 12; lang++) {
+        static const int names[] = {LT_CLAIRE, LT_MOIRA, LT_BARRY, LT_NATALIA, LT_EVGENY, LT_DARK_NATALIA};
+        for (unsigned k = 0; k < sizeof names / sizeof names[0]; k++) CHECK(strlen(lobby_own_text(names[k], lang)) < sizeof(((lobby_vplayer *)0)->chr));
+    }
+    CHECK(strlen(lobby_own_text(LT_DARK_NATALIA, 5)) > 23);   /* (the Russian name is the reason for the wider buffer) */
     /* 6i: the banner text is used as a printf format with ONE %s (the awaited player's name) in every language */
     for (int lang = 0; lang < 12; lang++) {
         const char *f = lobby_own_text(LT_WAIT_LOAD, lang);
@@ -911,6 +909,187 @@ static void test_ready_rules(void)
     n_nodes = 0;
 }
 
+/* 0.3.0 all-episodes: the setting, the Episode row with the two bonus episodes, the characters as the slot units of a bonus episode (slot 0 / slot 1, names by game type),
+ * the session fields the start reads, the gate with the setting on / off, the Barry-half note, Continue only for Episode 1 */
+static void test_all_episodes(void)
+{
+    /* the helpers */
+    CHECK(lobby_episode_valid(1) && lobby_episode_valid(4) && lobby_episode_valid(5) && lobby_episode_valid(9) && !lobby_episode_valid(0) && !lobby_episode_valid(6) &&
+          !lobby_episode_valid(7) && !lobby_episode_valid(8) && !lobby_episode_valid(10) && !lobby_episode_valid(-1));
+    CHECK(lobby_episode_game_type(1) == 0 && lobby_episode_game_type(4) == 0 && lobby_episode_game_type(5) == 3 && lobby_episode_game_type(9) == 4 && lobby_episode_game_type(7) == 0);
+    CHECK(!lobby_episode_is_bonus(4) && lobby_episode_is_bonus(5) && lobby_episode_is_bonus(9));
+    /* Barry's half of Episodes 2-4: the lobby starts part 0 and the host hops (lobby_second_half_stage / startpos); nothing else does */
+    CHECK(lobby_second_half_stage(2, 1, 0) == 250 && lobby_second_half_stage(3, 1, 0) == 351 && lobby_second_half_stage(4, 1, 0) == 451);
+    CHECK(!lobby_second_half_stage(1, 1, 0) && !lobby_second_half_stage(2, 0, 0) && !lobby_second_half_stage(3, 0, 0) && !lobby_second_half_stage(5, 1, 3) && !lobby_second_half_stage(9, 1, 4) &&
+          !lobby_second_half_stage(2, 1, 4));
+    CHECK(lobby_second_half_startpos(2) == 0 && lobby_second_half_startpos(3) == 1 && lobby_second_half_startpos(4) == 1);
+    CHECK(lobby_char_text(0, CP_CHAR_CLAIRE) == LT_CLAIRE && lobby_char_text(0, CP_CHAR_MOIRA) == LT_MOIRA && lobby_char_text(0, CP_CHAR_BARRY) == LT_BARRY &&
+          lobby_char_text(0, CP_CHAR_NATALIA) == LT_NATALIA && lobby_char_text(0, CP_CHAR_NONE) == -1);
+    CHECK(lobby_char_text(3, 0) == LT_MOIRA && lobby_char_text(3, 1) == LT_EVGENY && lobby_char_text(4, 0) == LT_NATALIA && lobby_char_text(4, 1) == LT_DARK_NATALIA);
+    CHECK(lobby_stock_ids[LT_EVGENY].table == 0 && lobby_stock_ids[LT_EVGENY].id == 93 && lobby_stock_ids[LT_DARK_NATALIA].id == 101 && lobby_stock_ids[LT_EP_STRUGGLE].id == 74 &&
+          lobby_stock_ids[LT_EP_LITTLE].id == 75);
+    /* the setting: the saved episode is kept when valid (1-4, 5, 9), anything else is Episode 1 */
+    {
+        lobby_env e;
+        memset(&e, 0, sizeof e);
+        e.text = env_text;
+        lobby_t *l = lobby_new(&e);
+        lobby_settings st;
+        lobby_get_settings(l, &st);
+        CHECK(st.episode == 1);
+        static const int good[6] = {1, 2, 3, 4, 5, 9};
+        for (int k = 0; k < 6; k++) {
+            st.episode = good[k];
+            lobby_set_settings(l, &st);
+            lobby_get_settings(l, &st);
+            CHECK(st.episode == good[k]);
+        }
+        static const int junk[5] = {0, 6, 7, 99, -3};
+        for (int k = 0; k < 5; k++) {
+            st.episode = junk[k];
+            lobby_set_settings(l, &st);
+            lobby_get_settings(l, &st);
+            CHECK(st.episode == 1);
+        }
+        lobby_free(l);
+    }
+
+    Node A, B;
+    node_init(&A, "Alice", 15);
+    node_init(&B, "Bob", 15);
+    A.save_part = 0, A.save_diff = 1;   /* the host's co-op save holds a checkpoint of Claire's half */
+    nodes[0] = &A, nodes[1] = &B, n_nodes = 2;
+    {
+        lobby_settings st;
+        lobby_get_settings(A.l, &st);
+        st.episode = LOBBY_EP_LITTLE, st.character = CP_CHAR_BARRY;   /* a saved Little Miss and a saved Barry: the bonus has one part */
+        lobby_set_settings(A.l, &st);
+    }
+    lobby_open(A.l);
+    lobby_open(B.l);
+    press(&A, "Find a Partner");
+    press(&A, "System Link");
+    step(300);
+    cp_session ss;
+    cs_session_get(A.s, &ss);
+    CHECK(ss.episode == 9 && ss.game_type == 4 && ss.part == 0);
+    cs_player_info pi;
+    CHECK(cs_player(A.s, 0, &pi) && pi.character == CP_CHAR_CLAIRE);   /* Barry became slot 0 of part 0 */
+    press(&B, "Join a Partner");
+    press(&B, "System Link");
+    retype(&B, "sim:15");
+    ev(&B, LE_OK);
+    step(1500);
+    step(3100);
+    CHECK(view(&B).screen == LS_ROOM && view(&A).nplayers == 2);
+    /* Little Miss: two figures, named by the slot units (not Claire / Moira / Barry / Natalia by position) */
+    lobby_view va = view(&A), vb = view(&B);
+    CHECK(row_kind(&A, "Natalia") == LV_NORMAL && row_kind(&A, "Dark Natalia") == LV_GREY);   /* the guest holds slot 1 */
+    CHECK(row_kind(&A, "Claire") < 0 && row_kind(&A, "Moira") < 0 && row_kind(&A, "Barry") < 0);
+    CHECK(!strcmp(row_value(&A, "Dark Natalia"), "Bob") && !strcmp(row_value(&A, "Natalia"), lobby_own_text(LT_YOU, 0)));
+    CHECK(row_kind(&B, "Dark Natalia") == LV_NORMAL && row_kind(&B, "Natalia") == LV_GREY && row_kind(&B, "Barry") < 0 && !strcmp(row_value(&B, "Dark Natalia"), lobby_own_text(LT_YOU, 0)));
+    CHECK(va.nplayers == 2 && !strcmp(va.players[0].chr, "Natalia") && !strcmp(va.players[1].chr, "Dark Natalia") && !strcmp(vb.players[1].chr, "Dark Natalia"));
+    CHECK(!strcmp(row_value(&A, "Episode"), "<  Little Miss  >") && !strcmp(row_value(&B, "Episode"), "Little Miss"));
+    CHECK(!vb.info[0] && !strstr(va.info, "forwarded") == 0);
+    CHECK(row_kind(&B, "Ready") == LV_NORMAL && view(&B).status_kind != LSK_ERROR);
+    CHECK(row_kind(&A, lobby_own_text(LT_CONTINUE, 0)) < 0);   /* a Continue is an Episode 1 checkpoint: no row for a bonus episode */
+    /* the Struggle: Moira and Evgeny (one step left of Little Miss) */
+    goto_row(&A, "Episode");
+    ev(&A, LE_LEFT);
+    step(300);
+    cs_session_get(A.s, &ss);
+    CHECK(ss.episode == 5 && ss.game_type == 3 && ss.part == 0);
+    CHECK(row_kind(&A, "Moira") == LV_NORMAL && row_kind(&A, "Evgeny") == LV_GREY && row_kind(&A, "Natalia") < 0 && row_kind(&A, "Dark Natalia") < 0);
+    CHECK(!strcmp(view(&A).players[0].chr, "Moira") && !strcmp(view(&A).players[1].chr, "Evgeny") && !strcmp(row_value(&B, "Episode"), "The Struggle"));
+    /* the guest's character in both bonus episodes is the same slot (1) */
+    CHECK(cs_player(A.s, 1, &pi) && pi.character == CP_CHAR_MOIRA);
+    /* The Struggle -> Episode 4 */
+    ev(&A, LE_LEFT);
+    step(300);
+    cs_session_get(A.s, &ss);
+    CHECK(ss.episode == 4 && ss.game_type == 0 && ss.part == 0);
+    CHECK(row_kind(&A, "Claire") == LV_NORMAL && row_kind(&A, "Barry") == LV_NORMAL && row_kind(&A, "Evgeny") < 0);
+    CHECK(!strcmp(view(&A).players[1].chr, "Moira"));
+    /* Barry's half of an Episode 2-4: the note; Episode 1: none */
+    press(&A, "Barry");
+    step(1500);
+    cs_session_get(A.s, &ss);
+    CHECK(ss.part == 1 && ss.episode == 4 && !view(&B).info[0]);   /* no blocker line any more: the Barry half of Episodes 2-4 starts from the lobby */
+    CHECK(cs_player(A.s, 1, &pi) && pi.character == CP_CHAR_NATALIA);
+    goto_row(&A, "Episode");
+    for (int i = 0; i < 3; i++) ev(&A, LE_LEFT), step(10);   /* 3, 2, 1 */
+    step(300);
+    cs_session_get(A.s, &ss);
+    CHECK(ss.episode == 1 && ss.part == 1);
+    CHECK(row_kind(&A, lobby_own_text(LT_CONTINUE, 0)) == LV_NORMAL);   /* Episode 1 with a co-op save: Continue is offered */
+    ev(&A, LE_RIGHT);
+    step(300);
+    CHECK(row_kind(&A, lobby_own_text(LT_CONTINUE, 0)) < 0);   /* Episode 2: not */
+    /* from Barry's half into a bonus episode: both characters move to the same slot of part 0 */
+    goto_row(&A, "Episode");
+    for (int i = 0; i < 3; i++) ev(&A, LE_RIGHT), step(10);   /* 3, 4, The Struggle */
+    step(1500);
+    cs_session_get(A.s, &ss);
+    CHECK(ss.episode == 5 && ss.game_type == 3 && ss.part == 0);
+    CHECK(cs_player(A.s, 0, &pi) && pi.character == CP_CHAR_CLAIRE);
+    CHECK(cs_player(A.s, 1, &pi) && pi.character == CP_CHAR_MOIRA);
+    CHECK(row_kind(&A, "Barry") < 0 && row_kind(&A, "Natalia") < 0);
+    /* start: Bob ready, Alice starts; both ask the game for The Struggle (type 3, episode 5, part 0), each with its own slot */
+    press(&B, "Ready");
+    step(300);
+    CHECK(row_kind(&A, "Start Game") == LV_NORMAL);
+    press(&A, "Start Game");
+    step(500);
+    CHECK(lobby_take_request(A.l) == LR_START && lobby_take_request(B.l) == LR_START);
+    {
+        int ep = 0, part = 9, df = 9, ch = 9, gt = 9;
+        lobby_start_params(A.l, &ep, &part, &df, &ch, &gt);
+        CHECK(ep == 5 && part == 0 && gt == 3 && ch == CP_CHAR_CLAIRE);
+        lobby_start_params(B.l, &ep, &part, &df, &ch, &gt);
+        CHECK(ep == 5 && part == 0 && gt == 3 && ch == CP_CHAR_MOIRA);
+    }
+    cs_free(A.s), cs_free(B.s);
+    lobby_free(A.l), lobby_free(B.l);
+    n_nodes = 0;
+
+    /* a plain room: Episode 1, type 0, no flag; consistent sessions of any episode are played by the guest, inconsistent ones refused */
+    node_init(&A, "Alice", 16);
+    node_init(&B, "Bob", 16);
+    nodes[0] = &A, nodes[1] = &B, n_nodes = 2;
+    lobby_open(A.l);
+    lobby_open(B.l);
+    press(&A, "Find a Partner");
+    press(&A, "System Link");
+    step(300);
+    press(&B, "Join a Partner");
+    press(&B, "System Link");
+    retype(&B, "sim:16");
+    ev(&B, LE_OK);
+    step(1500);
+    step(3100);
+    cs_session_get(A.s, &ss);
+    CHECK(ss.episode == 1 && ss.game_type == 0 && ss.flags == 0);   /* no episode flag exists any more */
+    CHECK(row_kind(&A, "Episode") == LV_NORMAL);
+    {
+        char o[100];
+        static const char *const good[] = {"session 9 0 1 0 4", "session 5 0 1 0 3", "session 2 1 1 0 0", "session 4 0 3 0 0", "session 1 1 1 0 0", "session 1 0 1 0 0"};
+        for (unsigned k = 0; k < sizeof good / sizeof good[0]; k++) {
+            cs_command(A.s, good[k], o, sizeof o);
+            step(100);
+            CHECK(row_kind(&B, "Ready") == LV_NORMAL && view(&B).status_kind != LSK_ERROR);
+        }
+        static const char *const bad[] = {"session 9 0 1 0 0", "session 5 1 1 0 3", "session 1 0 1 0 3", "session 6 0 1 0 0", "session 9 1 1 0 4", "session 2 0 1 0 4", "session 12 0 1 0 0"};
+        for (unsigned k = 0; k < sizeof bad / sizeof bad[0]; k++) {
+            cs_command(A.s, bad[k], o, sizeof o);
+            step(100);
+            CHECK(row_kind(&B, "Ready") == LV_GREY && view(&B).status_kind == LSK_ERROR);
+        }
+    }
+    cs_free(A.s), cs_free(B.s);
+    lobby_free(A.l), lobby_free(B.l);
+    n_nodes = 0;
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -922,6 +1101,7 @@ int main(void)
     test_episode_rule();
     test_ready_rules();
     test_continue_rule();
+    test_all_episodes();
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

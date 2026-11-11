@@ -12,6 +12,12 @@ $ErrorActionPreference = "Stop"
 $env:PSModulePath = (($env:PSModulePath -split ";") | Where-Object { $_ -notlike "*PowerShell*" }) -join ";"   # Windows PowerShell 5.1 modules only
 $root = Split-Path $PSScriptRoot -Parent
 $tools = Join-Path $root "tools"
+# One run of this suite at a time per Windows session: the installer and the launcher guard themselves with the session-wide mutexes Local\Rev2CoopInstall /
+# Local\Rev2CoopLauncher, so two suites at once (two agents, two worktrees) made random installs refuse each other ("another install runs") and checks
+# fail in random places (2026-11-11: 238 / 239, then a stop at "ual game", then 237 / 239). A second run waits here for the first one (up to 20 minutes).
+$suiteLock = New-Object Threading.Mutex($false, "Local\Rev2CoopInstallerTestSuite")
+try { $gotSuite = $suiteLock.WaitOne(1200000) } catch [Threading.AbandonedMutexException] { $gotSuite = $true }
+if (-not $gotSuite) { throw "another run of test_installer.ps1 still holds Local\Rev2CoopInstallerTestSuite after 20 minutes" }
 $base = Join-Path ([IO.Path]::GetTempPath()) ("rev2-installer-test-" + $PID)
 Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $base | Out-Null
@@ -34,7 +40,15 @@ function Run-PS([string] $script, [string[]] $a) {
     $args2 = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$script`"") + $a
     $p = Start-Process powershell -ArgumentList $args2 -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $o -RedirectStandardError $e
     $script:exit = $p.ExitCode
-    $script:out = (Get-Content -LiteralPath $o -Raw -ErrorAction SilentlyContinue) + (Get-Content -LiteralPath $e -Raw -ErrorAction SilentlyContinue)
+    # (2026-11-11) the output files are read with retries: a file the child just closed can be held for a moment by another reader (a virus scan); a silent
+    # empty read made "the log says ..." checks fail now and then while the install itself had worked (240 / 241 once, the same run again 241 / 241)
+    $script:out = ""
+    foreach ($f in @($o, $e)) {
+        if (-not (Test-Path -LiteralPath $f)) { continue }
+        for ($try = 0; $try -lt 20; $try++) {
+            try { $script:out += [IO.File]::ReadAllText($f, [Text.Encoding]::Default); break } catch [IO.IOException] { Start-Sleep -Milliseconds 150 }
+        }
+    }
 }
 
 # a DLL to package: the real build when there is one, else a stand-in with the words the installer looks for
@@ -76,7 +90,12 @@ Check ($en.Count -ge 18 -and $bs.Count -eq 0 -and ($en -contains "files/coop/coo
 $x1 = Join-Path $base "x1"; $x2 = Join-Path $base "x2"
 [IO.Compression.ZipFile]::ExtractToDirectory($zip1, $x1); [IO.Compression.ZipFile]::ExtractToDirectory($zip2, $x2)
 $names = (Get-ChildItem $x1 -File | ForEach-Object Name) -join ","
-Check ($names -eq "coop-installer.ps1,coop-texts.ps1,Install Co-op.bat,LICENSE.txt,README-COOP.txt") "the zip root: $names"
+Check ($names -eq "coop-installer.ps1,coop-texts.ps1,ENET-LICENSE.txt,Install Co-op.bat,LICENSE.txt,README-COOP.txt") "the zip root: $names"
+# (0.3.0) the players' readme names the package's version (@VERSION@ filled in), ENet's notice ships beside the mod's license
+$rm1 = Get-Content -LiteralPath (Join-Path $x1 "README-COOP.txt") -TotalCount 1
+Check ($rm1 -eq "Resident Evil Revelations 2 Co-op - version 0.0.1") "README-COOP.txt first line: $rm1"
+Check (-not ((Get-Content -LiteralPath (Join-Path $x2 "files\coop\README.txt") -Raw).Contains("@VERSION@"))) "coop\README.txt of the 0.0.2 package has no @VERSION@ left"
+Check ((Get-Content -LiteralPath (Join-Path $x1 "ENET-LICENSE.txt") -Raw) -match "Lee Salzman") "ENET-LICENSE.txt holds the notice of ENet"
 $payload1 = @(Get-Content (Join-Path $x1 "files\coop\payload.txt"))
 Check ((($payload1 -contains "dinput8.dll") -and ($payload1 -contains "coop\coop-launcher.ps1") -and ($payload1 -contains "coop\coop-installer.ps1") -and ($payload1 -contains "coop\coop-texts.ps1") -and ($payload1 -contains "coop\version.txt"))) "payload list names the DLL, launcher, installer, texts and version"
 Check ((($payload1 -contains "coop\collect-logs.ps1") -and ($payload1 -contains "coop\Collect logs.bat") -and ($payload1 -contains "coop\log-profiles\revelations2.psd1"))) "payload list names the log collector, its .bat and the profile"
@@ -448,7 +467,7 @@ try {
     Check ($script:exit -eq 0 -and $script:llog -match "installed 0\.0\.2, latest v0\.0\.2" -and -not ($script:reqs -match "\.zip")) "launcher with nothing new: exit 0, nothing downloaded"
 
     # 4b. -OldZip <a released zip, e.g. work\dist-pre2\revelations2-coop-0.1.1.zip>: that release installed into its own stand-in game, then ITS launcher (the one the
-    #     players have) updates it to a package of this tree's version (R2_VERSION of native/r2.h: 0.2.1, so the published 0.2.0 zip is an old release too) through the local feed;
+    #     players have) updates it to a package of this tree's version (R2_VERSION of native/r2.h: 0.3.0, so the published 0.2.0 and 0.2.1 zips are old releases) through the local feed;
     #     the record, the collector files and the uninstall of the result.
     if ($OldZip) {
         $ox = Join-Path $base "old"; [IO.Compression.ZipFile]::ExtractToDirectory($OldZip, $ox)
@@ -613,6 +632,15 @@ Check ($st["en|ui good"][4] -eq "Install" -and $st["en|ui installed"][4] -eq "Re
 Check ($st["ja|ui good"][3] -match "rerev2|Resident Evil") "ui ja : the info text is in Japanese and names the game"
 
 # 9. texts: 12 languages, the same keys and placeholders as English, nothing empty, translated
+# (i18n2) PowerShell takes U+2018 U+2019 U+201A U+201B as single quotes and U+201C U+201D U+201E as double ones: a typographic quote in a text can end its string and break the whole file
+foreach ($ps in "coop-texts.ps1", "installer.ps1", "launcher.ps1") {
+    $perr = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $tools $ps), [ref]$null, [ref]$perr)
+    Check (@($perr).Count -eq 0) "$ps parses ($(@($perr | ForEach-Object { $_.Message }) -join '; '))"
+}
+$ctRaw = [IO.File]::ReadAllText((Join-Path $tools "coop-texts.ps1"))
+$sq = ([string][char]0x2018 + [char]0x2019 + [char]0x201A + [char]0x201B).ToCharArray()
+Check ($ctRaw.IndexOfAny($sq) -lt 0) "coop-texts.ps1: no typographic single quote (PowerShell would end the string there)"
 . (Join-Path $tools "coop-texts.ps1")
 $en = $script:TEXTS["en"]
 function Ph($x) { (([regex]::Matches($x, "\{\d\}") | ForEach-Object { $_.Value } | Sort-Object) -join "") }
@@ -664,6 +692,26 @@ foreach ($lg in $script:LANGS.Keys) {
     if ($hgt -gt 160) { $tall += "$lg/leftnote $hgt px" }
 }
 Check ($tall.Count -eq 0) "the result text with the dinput8.dll note fits its 160-px label in every language ($($tall -join ', '))"
+# (i18n2) page 1 and the launcher's window in every language, measured the same way: the info text (found, have, what, need) in its 604 x 286 label, the
+# buttons (220 / 120 / 160 px), the launcher's update line in its 424 x 62 label
+$f10 = New-Object Drawing.Font("Segoe UI", 10); $f10b = New-Object Drawing.Font("Segoe UI", 10, [Drawing.FontStyle]::Bold)
+$wbf = [Windows.Forms.TextFormatFlags]::WordBreak
+$big = @()
+foreach ($lg in $script:LANGS.Keys) {
+    $tx = $script:TEXTS[$lg]
+    $info = @(([string][char]0x2714 + "  " + $tx["found"]), ([string][char]0x2022 + "  " + ($tx["have"] -f "0.2.10", "0.3.10")), "", $tx["what"], "", $tx["need"])
+    if ($tx.ContainsKey("net")) { $info += ""; $info += $tx["net"] }
+    $hgt = [Windows.Forms.TextRenderer]::MeasureText(($info -join "`n"), $resFont, (New-Object Drawing.Size(604, 2000)), $wbf).Height
+    if ($hgt -gt 286) { $big += "$lg info $hgt px" }
+    foreach ($b in @(@("remove", 220, $f10), @("cancel", 120, $f10), @("browse", 120, $f10), @("install", 160, $f10b), @("update", 160, $f10b), @("reinstall", 160, $f10b))) {
+        $w = [Windows.Forms.TextRenderer]::MeasureText($tx[$b[0]], $b[2]).Width + 12
+        if ($w -gt $b[1]) { $big += "$lg $($b[0]) $w px" }
+    }
+    $upd = ($tx["l_found"] -f "0.3.10", "0.2.10"); if ($tx.ContainsKey("l_net")) { $upd += "`n" + $tx["l_net"] }
+    $hgt = [Windows.Forms.TextRenderer]::MeasureText($upd, $f10, (New-Object Drawing.Size(424, 2000)), $wbf).Height
+    if ($hgt -gt 62) { $big += "$lg launcher $hgt px" }
+}
+Check ($big.Count -eq 0) "page 1, its buttons and the launcher's update line fit in every language ($($big -join ', '))"
 foreach ($pair in @(@("ru-RU", "ru"), @("de-DE", "de"), @("pt-BR", "pt-br"), @("pt-PT", "pt-br"), @("ko-KR", "ko"), @("kor", "ko"), @("zh-CN", "zh-cn"), @("zh-Hans-CN", "zh-cn"), @("zh-TW", "zh-tw"), @("zh-HK", "zh-tw"), @("ja-JP", "ja"),
                     @("nl-BE", "en"), @("pl-PL", "pl"), @("es-MX", "es"), @("it-IT", "it"), @("fr-CA", "fr"), @("en-GB", "en"), @("sv-SE", "en"), @("ptB", "pt-br"), @("chT", "zh-tw"), @("jpn", "ja"))) {
     Check ((Pick-Lang $pair[0]) -eq $pair[1]) "Pick-Lang $($pair[0]) -> $($pair[1])"
@@ -709,7 +757,8 @@ Run-PS (Join-Path $g5 "coop\coop-launcher.ps1") @("-NoUpdate", "-NoStart")
 Check ((Get-Content -LiteralPath (Join-Path $g5 "coop\launcher-log.txt") -Raw) -match "start: rerev2\.exe") "a copy outside a Steam library: the launcher starts rerev2.exe itself"
 Run-PS (Join-Path $g5 "coop\coop-installer.ps1") @("-Quiet", "-Uninstall", "-Game", "`"$g5`"")
 Run-PS (Join-Path $gs "coop\coop-installer.ps1") @("-Quiet", "-Uninstall", "-Game", "`"$gs`"")
-Check ((@(Get-ChildItem $gs -Force | ForEach-Object Name) -join ",") -eq "rerev2.exe") "uninstall from the Steam-library folder leaves only rerev2.exe"
+$left = @(Get-ChildItem $gs -Force -Recurse | ForEach-Object { $_.FullName.Substring($gs.Length + 1) }) -join ","
+Check ((@(Get-ChildItem $gs -Force | ForEach-Object Name) -join ",") -eq "rerev2.exe") "uninstall from the Steam-library folder leaves only rerev2.exe (left: $left)"
 
 # 12. the player's own files are never touched: the renamed loader and the plugin folder next to a foreign dinput8.dll (the game 'g' above, checked by the snapshot)
 Check ((Test-Path (Join-Path $g "dinput8_real.dll")) -and (Test-Path (Join-Path $g "scripts\widescreen.asi"))) "dinput8_real.dll and scripts\ of the player survive install, update and uninstall"

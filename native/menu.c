@@ -755,7 +755,7 @@ static int g_start_follow; /* 0.2.1: the guest follows the host's checkpoint rec
 static int g_start_pending;   /* 0.2.1: the lobby's start waits for the game's save manager to be idle (coopsave_enter answered 0) */
 static unsigned g_start_tick;
 /* 0.2.1: returns 1 = started, 0 = not yet (the save manager is busy: call again next frame), -1 = refused */
-static int game_start(int episode, int part, int difficulty)
+static int game_start(int episode, int part, int difficulty, int game_type)
 {
     unsigned g = gm(), st = rd32(A_STORY), area = demo_area();
     if (!g || !st || !area) {
@@ -773,11 +773,26 @@ static int game_start(int episode, int part, int difficulty)
         g_start_count++;
         return 1;
     }
-    MLOG("start: episode %d part %d difficulty %d", episode, part, difficulty);
-    ((void(THISCALL *)(void *, int))A_SET_GAMETYPE)((void *)g, 0);
+    /* 0.3.0 all-episodes: the story's episodes 1..4 are game type 0; the two bonus episodes start with their own type and episode id (notesonus-episodes.md 5, proven live:
+     * SetGameType(3 | 4), SetEpisode(5 | 9), part 0, then the same Menu_GoToEpisodeStart) and have one part only */
+    if (!lobby_episode_valid(episode) || game_type != lobby_episode_game_type(episode)) {
+        if (lobby_episode_valid(episode) || game_type) MLOG("start: episode %d with game type %d is not a pair the lobby knows: the story episode %d", episode, game_type, episode < 1 || episode > 4 ? 1 : episode);
+        if (!lobby_episode_valid(episode) || lobby_episode_is_bonus(episode)) episode = 1;
+        game_type = 0;
+    }
+    if (lobby_episode_is_bonus(episode)) part = 0;
+    int sh = lobby_second_half_stage(episode, part, game_type);
+    if (sh) {   /* 0.3.0: Barry's half of Episodes 2-4: part 0 starts, the host hops into part 1 in play (lobby.h lobby_second_half_stage) */
+        MLOG("start: second half of episode %d (stage %d): part 0 first, then the hop in play", episode, sh);
+        coop_second_half_arm(episode);
+        part = 0;
+    } else
+        coop_second_half_arm(0);
+    MLOG("start: episode %d part %d difficulty %d game type %d", episode, part, difficulty, game_type);
+    ((void(THISCALL *)(void *, int))A_SET_GAMETYPE)((void *)g, game_type);
     unsigned char zero = 0;
     wr_data(st + 0x15C485, &zero, 1);
-    ((void(THISCALL *)(void *, int))A_SET_EPISODE)((void *)st, episode < 1 ? 1 : episode > 4 ? 4 : episode);
+    ((void(THISCALL *)(void *, int))A_SET_EPISODE)((void *)st, episode);
     ((void(THISCALL *)(void *, int))A_SET_DIFFICULTY)((void *)st, difficulty < 0 ? 0 : difficulty > 3 ? 3 : difficulty);
     wr32(st + 0x15C4A8, (unsigned)(part ? 1 : 0));
     ((void(THISCALL *)(void *, int))A_SET_CONTINUE)((void *)st, g_start_cont ? 1 : 0);
@@ -797,7 +812,7 @@ static int lobby_game_start(void)
     if (cs) cs_session_get(cs, &ss);
     g_start_cont = (ss.flags & CP_SESS_CONT) != 0;
     g_start_follow = g_start_cont && cs && !cs_is_host(cs);
-    int r = game_start(ep, part, df);
+    int r = game_start(ep, part, df, gt);
     g_start_cont = g_start_follow = 0;
     return r;
 }
@@ -1029,13 +1044,13 @@ static const char *THISCALL h_msg_get(void *sg, int table, int id)
     return orig_msg_get(sg, table, id);
 }
 
-/* the stock episode-end menu (FUN_00431190): at the co-op end of Episode 1 (lobbymust.inc) it offers no "next episode" item, so both players leave it by the
+/* the stock episode-end menu (FUN_00431190): at the co-op end of an episode (lobbymust.inc) it offers no "next episode" item, so both players leave it by the
  * stock "Return to title" (the clear, the records and the rewards are the stock flow's, on each PC) */
 static unsigned char THISCALL h_ep_next_ok(void *tab, unsigned ep)
 {
     unsigned st = rd32(A_STORY);
-    if (coop_ep_end_active() && st && rd32(st + 0x140378) == 1 && rd32(st + 0x15C4A8) == 1) {
-        MLOG("episode-end menu: co-op Episode 1 is over: no next-episode item");   /* (the EP1 strip comes with this menu: lobbymust_logic.h end_menu) */
+    if (coop_ep_end_active() && st) {   /* 0.3.0: any episode of the room (live allepP2: Episode 2 still offered "Next" = solo Episode 3 on both PCs while this was limited to Episode 1 part 1) */
+        MLOG("episode-end menu: the co-op episode is over: no next-episode item");   /* (the EP1 strip comes with this menu: lobbymust_logic.h end_menu) */
         return 0;
     }
     return ((unsigned char (THISCALL *)(void *, unsigned))A_UNLOCK_GET)(tab, ep);
@@ -1063,7 +1078,6 @@ void menu_install(void)
     if (r2_env("REV2_MENU_GATE", v, sizeof v)) g_gate = v[0] == '1';
     if (r2_env("REV2_OVERLAY_MODE", v, sizeof v)) overlay_set_mode(atoi(v));
     if (r2_env("REV2_OVERLAY_TRACE", v, sizeof v)) overlay_set_trace(atoi(v));
-    if (r2_env("REV2_EPISODES", v, sizeof v) && !_stricmp(v, "all")) g_set.episodes_all = 1;   /* lab: the host's Episode row offers 1-4 (0.2.0 product: Episode 1 only) */
     g_installed = 1;
     MLOG("settings %s: name '%s' character %s transport %s port %d; entry %s, autoopen %d", g_ini_path[0] ? g_ini_path : "(no path)", g_set.name, char_words[g_set.character & 3],
          g_set.transport ? "direct" : "steam", g_set.port, g_enabled ? "on" : "OFF", g_autoopen);
@@ -1296,13 +1310,14 @@ void menu_command(const char *arg, char *out, int size)
             dump_view(out, size);
         }
     } else if (!strcmp(w, "start")) {   /* menu start <episode> <part> <difficulty>: the stock start sequence, no lobby */
-        int ep = 1, part = 0, df = 1, cont = 0;
-        sscanf(rest, "%d %d %d %d", &ep, &part, &df, &cont);
+        int ep = 1, part = 0, df = 1, cont = 0, gt = -1;
+        sscanf(rest, "%d %d %d %d %d", &ep, &part, &df, &cont, &gt);
+        if (gt < 0) gt = lobby_episode_game_type(ep);   /* (menu start 5 0 1 = The Struggle, 9 = Little Miss; a fifth number forces the game type) */
         if (!demo_area()) snprintf(out, (size_t)size, "not in the menus (no aDemo)");
         else {
             /* cont 1: the stock title Continue of the campaign slot (0.2.1; in a session the co-op save); cont 2: the same, following the host's record (a guest) */
             g_start_cont = cont != 0, g_start_follow = cont == 2;
-            int r = game_start(ep, part, df);
+            int r = game_start(ep, part, df, gt);
             g_start_cont = g_start_follow = 0;
             snprintf(out, (size_t)size, r > 0 ? "start sequence done: menu id now 0x%x" : r == 0 ? "not started: the game's save manager is busy (menu id 0x%x), try again" : "not started (menu id 0x%x)", menu_id());
         }
@@ -1311,7 +1326,7 @@ void menu_command(const char *arg, char *out, int size)
     } else if (!strcmp(w, "set")) {   /* menu set name=<n> | ip=<a> | character=<c> | solo=0|1 */
         lobby_settings s = g_set;
         char *eq = strchr(rest, '=');
-        if (!eq) snprintf(out, (size_t)size, "usage: menu set name=|ip=|port=|character=|solo=|episode=|difficulty=|episodes=all|1 <value>");
+        if (!eq) snprintf(out, (size_t)size, "usage: menu set name=|ip=|port=|character=|solo=|episode=|difficulty= <value>");
         else {
             *eq = 0;
             const char *val = eq + 1;
@@ -1322,7 +1337,6 @@ void menu_command(const char *arg, char *out, int size)
             else if (!strcmp(rest, "solo")) s.solo = atoi(val) != 0;
             else if (!strcmp(rest, "episode")) s.episode = atoi(val);
             else if (!strcmp(rest, "difficulty")) s.difficulty = atoi(val);
-            else if (!strcmp(rest, "episodes")) s.episodes_all = !_stricmp(val, "all");   /* lab: menu set episodes=all|1 (not written to the file) */
             settings_save(&s);
             if (g_lobby) lobby_set_settings(g_lobby, &s);
             snprintf(out, (size_t)size, "saved: name '%s' ip '%s' port %d character %s solo %d episode %d difficulty %d", s.name, s.ip, s.port, char_words[s.character & 3], s.solo, s.episode, s.difficulty);

@@ -50,11 +50,11 @@ static void lobbymust_texts(void)
     const char *name = "ABCDEFGHIJKLMNOPQRSTUVWX";                 /* CP_NAME_MAX = 24 bytes */
     const char *addr = "[2001:db8:85a3::8a2e:370:7334]:28410";      /* a long address the guest may type */
     static const int own[] = {LT_REF_FULL, LT_REF_STARTED, LT_REF_NOANSWER, LT_REF_BAD, LT_PARTNER_LEFT, LT_PARTNER_LOST, LT_HOST_ENDED, LT_HOST_LOST, LT_EP1_END,
-                              LT_CONNECTING_TO, LT_AWAITING, LT_HOST_WAIT_READY, LT_HOST_CAN_START, LT_GUEST_PICK, LT_GUEST_WAIT_HOST, LT_KICK, LT_EP1_ONLY,
+                              LT_CONNECTING_TO, LT_AWAITING, LT_HOST_WAIT_READY, LT_HOST_CAN_START, LT_GUEST_PICK, LT_GUEST_WAIT_HOST, LT_KICK,
                               LT_HOST_NET_HINT, LT_END_COOP, LT_END_COOP_HELP};
-    static const int room[] = {LT_CONNECTING_TO, LT_AWAITING, LT_HOST_WAIT_READY, LT_HOST_CAN_START, LT_GUEST_PICK, LT_GUEST_WAIT_HOST, LT_EP1_ONLY};
+    static const int room[] = {LT_CONNECTING_TO, LT_AWAITING, LT_HOST_WAIT_READY, LT_HOST_CAN_START, LT_GUEST_PICK, LT_GUEST_WAIT_HOST};
     static const int strip[] = {LT_PARTNER_LEFT, LT_PARTNER_LOST, LT_HOST_ENDED, LT_HOST_LOST, LT_EP1_END};
-    char big[700], out[240];
+    char big[1100], out[240];
     for (int lang = 0; lang < 12; lang++) {
         for (unsigned k = 0; k < sizeof own / sizeof own[0]; k++) {
             int other;
@@ -75,11 +75,10 @@ static void lobbymust_texts(void)
             lobby_loss_line(strip[k], "Player 2", "Spieler", lang, out, sizeof out);
             chk(!lobby_text_args(strip[k]) || strstr(out, "Spieler 2"), "strip: a default name in the player's language", lang);
         }
-        {   /* the info block: Episode 1 + the port hint */
+        {   /* the info block: the port hint alone (0.3.0) fits lobby_view.info and the overlay's 479-byte line */
             char hint[400];
             lobby_format(lobby_own_text(LT_HOST_NET_HINT, lang), "65535", NULL, hint, sizeof hint);
-            snprintf(big, sizeof big, "%s\n%s", lobby_own_text(LT_EP1_ONLY, lang), hint);
-            chk(strlen(big) <= 479 && strstr(hint, "65535") && strlen(hint) < sizeof hint - 1, "info block: <= 479 bytes (lobby_view.info)", lang);
+            chk(strstr(hint, "65535") && strlen(hint) < sizeof hint - 1 && strlen(hint) <= 479 && utf8_valid(hint), "info block: fits lobby_view.info", lang);
         }
         chk(strlen(lobby_own_text(LT_KICK, lang)) <= 60, "Remove partner: a short row label", lang);
         chk(strlen(lobby_own_text(LT_END_COOP, lang)) <= 40 && strlen(lobby_own_text(LT_END_COOP_HELP, lang)) <= 159, "pause row label / help: short", lang);

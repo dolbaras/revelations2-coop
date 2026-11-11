@@ -45,6 +45,7 @@ struct lobby {
     int prev_ready_partner;
     char ask_from;                            /* the room the leave question came from */
     int cont;                                 /* 0.2.1: the host chose Continue (not kept in the settings file: a new room starts with a new game) */
+    int prev_bonus;                           /* 0.3.0: the last room view had a bonus episode (two character rows instead of four: the cursor index follows the shift) */
 };
 
 static const char *tx(lobby_t *l, int id) { return l->env.text ? l->env.text(l->env.user, id) : ""; }
@@ -82,7 +83,7 @@ void lobby_set_settings(lobby_t *l, const lobby_settings *s)
     l->set = *s;
     if (l->set.character < 0 || l->set.character > 3) l->set.character = CP_CHAR_CLAIRE;
     if (l->set.port <= 0 || l->set.port > 65535) l->set.port = 28410;
-    if (l->set.episode < 1 || l->set.episode > 4 || !l->set.episodes_all) l->set.episode = 1;   /* 0.2.0: Episode 1 only (the lab's REV2_EPISODES=all keeps 1-4) */
+    if (!lobby_episode_valid(l->set.episode)) l->set.episode = 1;   /* 1-4 and the two bonus episodes (5, 9) are played; anything else in an old settings file is Episode 1 */
     if (l->set.difficulty < 0 || l->set.difficulty > 3) l->set.difficulty = 1;
     l->set.sflags &= 7;
 }
@@ -105,15 +106,39 @@ static int run(lobby_t *l, char *out, int size, const char *fmt, ...)
     return l->env.command ? l->env.command(l->env.user, line, out, size) : 0;
 }
 
-static const char *char_name(lobby_t *l, int c)
+int lobby_episode_valid(int episode) { return (episode >= 1 && episode <= 4) || episode == LOBBY_EP_STRUGGLE || episode == LOBBY_EP_LITTLE; }
+int lobby_episode_game_type(int episode) { return episode == LOBBY_EP_STRUGGLE ? LOBBY_GT_STRUGGLE : episode == LOBBY_EP_LITTLE ? LOBBY_GT_LITTLE : LOBBY_GT_STORY; }
+int lobby_episode_is_bonus(int episode) { return episode == LOBBY_EP_STRUGGLE || episode == LOBBY_EP_LITTLE; }
+int lobby_episode_step(int episode, int dir)
 {
-    switch (c) {
-    case CP_CHAR_CLAIRE: return tx(l, LT_CLAIRE);
-    case CP_CHAR_MOIRA: return tx(l, LT_MOIRA);
-    case CP_CHAR_BARRY: return tx(l, LT_BARRY);
-    case CP_CHAR_NATALIA: return tx(l, LT_NATALIA);
-    default: return "-";
-    }
+    static const int order[6] = {1, 2, 3, 4, LOBBY_EP_STRUGGLE, LOBBY_EP_LITTLE};
+    int i = 0;
+    while (i < 6 && order[i] != episode) i++;
+    if (i == 6) return 1;
+    return order[(i + (dir < 0 ? 5 : 1)) % 6];
+}
+
+int lobby_second_half_stage(int episode, int part, int game_type)
+{
+    if (game_type != LOBBY_GT_STORY || part != 1) return 0;
+    return episode == 2 ? 250 : episode == 3 ? 351 : episode == 4 ? 451 : 0;
+}
+
+int lobby_second_half_startpos(int episode) { return episode == 2 ? 0 : 1; }
+
+int lobby_char_text(int game_type, int c)
+{
+    if (c < 0 || c > 3) return -1;
+    if (game_type == LOBBY_GT_STRUGGLE) return c & 1 ? LT_EVGENY : LT_MOIRA;                 /* the unit in slot 0 / slot 1 of The Struggle */
+    if (game_type == LOBBY_GT_LITTLE) return c & 1 ? LT_DARK_NATALIA : LT_NATALIA;           /* ... of Little Miss */
+    return c == CP_CHAR_CLAIRE ? LT_CLAIRE : c == CP_CHAR_MOIRA ? LT_MOIRA : c == CP_CHAR_BARRY ? LT_BARRY : LT_NATALIA;
+}
+
+/* the character's name in a session of that game type (the story's four names, or the bonus episode's slot unit) */
+static const char *char_name_gt(lobby_t *l, int gt, int c)
+{
+    int t = lobby_char_text(gt, c);
+    return t < 0 ? "-" : tx(l, t);
 }
 static const char *const char_words[4] = {"claire", "moira", "barry", "natalia"};
 
@@ -160,8 +185,20 @@ static void get_facts(lobby_t *l, facts *f)
 /* a player's name as shown: the default names "Player 1" / "Player 2" in the player's language */
 static const char *shown_name(lobby_t *l, const char *wire, char *out, size_t size) { return lobby_display_name(wire, tx(l, LT_PLAYER), out, size); }
 
-/* 0.2.0: a session of another episode than 1 is not played (the lab's REV2_EPISODES=all is) */
-static int episode_ok(lobby_t *l, const facts *f) { return l->set.episodes_all || !f->active || f->ss.episode == 0 || f->ss.episode == 1; }
+/* the session's episode, game type and part make a consistent whole the game can start (the story's 1..4 of type 0, The Struggle 5 of type 3, Little Miss 9 of type 4, one part for a bonus) */
+static int session_shape_ok(const facts *f)
+{
+    int ep = f->ss.episode ? f->ss.episode : 1;
+    return lobby_episode_valid(ep) && f->ss.game_type == lobby_episode_game_type(ep) && !(lobby_episode_is_bonus(ep) && f->ss.part);
+}
+
+/* every episode is played (0.3.0: no gate): a session is refused only when its episode / game type / part do not make a start the game knows (a damaged or foreign host) */
+static int episode_ok(lobby_t *l, const facts *f)
+{
+    (void)l;
+    if (!f->active || f->ss.episode == 0) return 1;
+    return session_shape_ok(f);
+}
 
 static int slot_taken_by_partner(const facts *f, int character)
 {
@@ -183,6 +220,7 @@ static void enter_room(lobby_t *l)
     goto_screen(l, LS_ROOM);
     l->started = 0;
     l->cont = 0;
+    l->prev_bonus = 0;
     l->partner_seen = 0;
     l->job = JOB_NONE;
     clear_status(l);
@@ -275,7 +313,9 @@ static void leave_session(lobby_t *l)
 static void push_session(lobby_t *l, int episode, int part, int diff)
 {
     char out[160];
-    run(l, out, sizeof out, "session %d %d %d %d", episode, part, diff, (l->set.sflags & 7) | (l->cont ? (int)CP_SESS_CONT : 0));
+    if (!lobby_episode_valid(episode)) episode = 1;
+    if (lobby_episode_is_bonus(episode)) part = 0;
+    run(l, out, sizeof out, "session %d %d %d %d %d", episode, part, diff, (l->set.sflags & 7) | (l->cont ? (int)CP_SESS_CONT : 0), lobby_episode_game_type(episode));
 }
 
 /* 0.2.1: this PC's co-op save can continue (1 + its half and difficulty) */
@@ -447,6 +487,11 @@ static void job_done(lobby_t *l, const char *out)
             else set_status(l, LSK_ERROR, 6000, "%s", tx(l, LT_FAIL_CREATE));
             return;
         }
+        if (lobby_episode_is_bonus(l->set.episode) && l->set.character >= 2) {   /* a bonus episode has the slot 0 / slot 1 figures only: Barry / Natalia become the same slot of part 0 */
+            char cout[120];
+            l->set.character &= 1;
+            run(l, cout, sizeof cout, "char %s", char_words[l->set.character]);
+        }
         push_session(l, l->set.episode, l->set.character >= 2 ? 1 : 0, l->set.difficulty);
         enter_room(l);
         return;
@@ -480,6 +525,17 @@ static void add_row(lobby_view *v, int action, int kind, const char *label, cons
     r->action = action, r->kind = kind;
     snprintf(r->label, sizeof r->label, "%s", label ? label : "");
     snprintf(r->value, sizeof r->value, "%s", value ? value : "");
+}
+
+/* the Episode row's value: the number of a story episode, the game's own name of a bonus episode (arrows: the host's selectable row) */
+static void ep_label(lobby_t *l, int ep, char *out, size_t size, int arrows)
+{
+    char s[96];
+    if (ep == LOBBY_EP_STRUGGLE) snprintf(s, sizeof s, "%s", tx(l, LT_EP_STRUGGLE));
+    else if (ep == LOBBY_EP_LITTLE) snprintf(s, sizeof s, "%s", tx(l, LT_EP_LITTLE));
+    else snprintf(s, sizeof s, "%d", ep);
+    if (arrows) snprintf(out, size, "<  %s  >", s);
+    else snprintf(out, size, "%s", s);
 }
 
 static int can_start(lobby_t *l, const facts *f, int *needs_partner)
@@ -564,23 +620,20 @@ static void build_rows(lobby_t *l, lobby_view *v, const facts *f)
         snprintf(v->title, sizeof v->title, "%s", tx(l, LT_COOP));
         int myc = f->connected ? f->pl[f->pid].character : CP_CHAR_NONE;
         char nm[64];
-        for (int c = 0; c < 4; c++) {
+        int gt = f->active ? f->ss.game_type : 0;
+        int bonus = f->active && lobby_episode_is_bonus(f->ss.episode);
+        for (int c = 0; c < (bonus ? 2 : 4); c++) {   /* a bonus episode has two figures only: slot 0 and slot 1 (their names come with the game type) */
             int taken = slot_taken_by_partner(f, c);
             int other_part = !f->host && (c >> 1) != f->ss.part;
             const char *val = "";
             if (c == myc) val = tx(l, LT_YOU);
             else if (taken && f->other >= 0 && f->pl[f->other].character == c) val = shown_name(l, f->pl[f->other].name, nm, sizeof nm);
-            add_row(v, A_CHAR + c, taken || other_part ? LV_GREY : LV_NORMAL, char_name(l, c), val);
+            add_row(v, A_CHAR + c, taken || other_part ? LV_GREY : LV_NORMAL, char_name_gt(l, gt, c), val);
         }
         if (f->host) {
-            if (l->set.episodes_all) {
-                snprintf(buf, sizeof buf, "<  %d  >", f->ss.episode);
-                add_row(v, A_EPISODE, LV_NORMAL, tx(l, LT_EPISODE), buf);
-            } else {   /* 0.2.0: Episode 1 only (the info block says so) */
-                snprintf(buf, sizeof buf, "%d", f->ss.episode ? f->ss.episode : 1);
-                add_row(v, 0, LV_INFO, tx(l, LT_EPISODE), buf);
-            }
-            if (l->cont || own_save(l, NULL, NULL)) {   /* 0.2.1: the checkpoint of the co-op save (the half and the difficulty come from it) */
+            ep_label(l, f->ss.episode ? f->ss.episode : 1, buf, sizeof buf, 1);
+            add_row(v, A_EPISODE, LV_NORMAL, tx(l, LT_EPISODE), buf);
+            if (l->cont || (own_save(l, NULL, NULL) && (!f->ss.episode || f->ss.episode == 1))) {   /* 0.2.1: the checkpoint of the co-op save (the half and the difficulty come from it; Episode 1 only) */
                 snprintf(buf, sizeof buf, "<  %s  >", tx(l, (f->ss.flags & CP_SESS_CONT) ? LT_YES : LT_NO));
                 add_row(v, A_CONT, LV_NORMAL, tx(l, LT_CONTINUE), buf);
             }
@@ -597,7 +650,7 @@ static void build_rows(lobby_t *l, lobby_view *v, const facts *f)
             if (f->steam && f->count < 2) add_row(v, A_INVITE, LV_NORMAL, tx(l, LT_INVITE), "");
             if (f->other >= 0 && f->phase == CP_PHASE_LOBBY) add_row(v, A_KICK, LV_NORMAL, tx(l, LT_KICK), "");
         } else {
-            snprintf(buf, sizeof buf, "%d", f->ss.episode);
+            ep_label(l, f->ss.episode, buf, sizeof buf, 0);
             add_row(v, 0, LV_INFO, tx(l, LT_EPISODE), buf);
             if (f->ss.flags & CP_SESS_CONT) add_row(v, 0, LV_INFO, tx(l, LT_CONTINUE), tx(l, LT_YES));   /* 0.2.1: the host continues its co-op save */
             add_row(v, 0, LV_INFO, tx(l, LT_DIFFICULTY), diff_name(l, f->ss.difficulty));
@@ -638,6 +691,16 @@ void lobby_view_get(lobby_t *l, lobby_view *v)
     snprintf(v->t_host, sizeof v->t_host, "%s", tx(l, LT_HOST_TAG));
     snprintf(v->t_ms, sizeof v->t_ms, "%s", tx(l, LT_MS));
     build_rows(l, v, &f);
+    if (l->screen == LS_ROOM) {   /* the room's row set changes with the episode (a bonus episode has two character rows, not four): the cursor stays on its row */
+        int bonus = f.active && lobby_episode_is_bonus(f.ss.episode);
+        if (bonus != l->prev_bonus) {
+            if (l->sel >= 0) {
+                if (bonus && l->sel >= 4) l->sel -= 2;
+                else if (!bonus && l->sel >= 2) l->sel += 2;
+            }
+            l->prev_bonus = bonus;
+        }
+    }
     fix_sel(v, &l->sel);
     v->sel = l->sel;
     if ((l->screen == LS_ROOM || l->screen == LS_LEAVE_ASK || l->screen == LS_KICK_ASK)) {
@@ -645,7 +708,7 @@ void lobby_view_get(lobby_t *l, lobby_view *v)
             if (!f.has[i] || !f.pl[i].connected) continue;
             lobby_vplayer *p = &v->players[v->nplayers++];
             shown_name(l, f.pl[i].name, p->name, sizeof p->name);
-            snprintf(p->chr, sizeof p->chr, "%s", char_name(l, f.pl[i].character));
+            snprintf(p->chr, sizeof p->chr, "%s", char_name_gt(l, f.active ? f.ss.game_type : 0, f.pl[i].character));
             p->ready = f.pl[i].ready || i == 0, p->host = i == 0, p->me = i == f.pid, p->ping = f.pl[i].rtt_ms;
         }
         if (f.active && f.host) {
@@ -656,9 +719,10 @@ void lobby_view_get(lobby_t *l, lobby_view *v)
     }
     if (l->screen == LS_ROOM) snprintf(v->note, sizeof v->note, "%s", tx(l, LT_SAVE_WARN));
     if (l->screen == LS_LEAVE_ASK) snprintf(v->note, sizeof v->note, "%s", tx(l, LT_LEAVE_HINT));
-    if (l->screen == LS_ROOM && f.active) {   /* the info block: Episode 1 only; how a friend reaches a System Link host over the internet */
+    if (l->screen == LS_ROOM && f.active) {   /* the info block: how a friend reaches a System Link host over the internet */
         char port[16], hint[400];
-        int o = snprintf(v->info, sizeof v->info, "%s", l->set.episodes_all ? "" : tx(l, LT_EP1_ONLY));
+        int o = 0;
+        v->info[0] = 0;
         if (f.host && !f.steam) {
             snprintf(port, sizeof port, "%d", l->set.port);
             lobby_format(tx(l, LT_HOST_NET_HINT), port, NULL, hint, sizeof hint);
@@ -684,7 +748,7 @@ void lobby_view_get(lobby_t *l, lobby_view *v)
                 else snprintf(v->status, sizeof v->status, "%s", tx(l, LT_NEED_READY));
             } else if (f.other >= 0) lobby_format(tx(l, LT_HOST_CAN_START), other, NULL, v->status, sizeof v->status);
         } else if (!f.host && f.phase == CP_PHASE_LOBBY && f.connected) {
-            if (!episode_ok(l, &f)) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_EP1_ONLY)), v->status_kind = LSK_ERROR;
+            if (!episode_ok(l, &f)) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_REF_BAD)), v->status_kind = LSK_ERROR;
             else if (!cont_ok(l, &f)) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_CONT_NEED)), v->status_kind = LSK_ERROR;   /* 0.2.1 */
             else if (!f.pl[f.pid].ready) snprintf(v->status, sizeof v->status, "%s", tx(l, LT_GUEST_PICK));
             else {
@@ -758,11 +822,23 @@ static void change_value(lobby_t *l, int action, int dir)
         }
         return;
     }
-    if (action == A_EPISODE) ep = (ep - 1 + dir + 4) % 4 + 1;
-    else if (action == A_DIFF && !l->cont) df = (df + dir + 4) % 4;
+    int part = f.ss.part;
+    if (action == A_EPISODE) {
+        ep = lobby_episode_step(ep, dir);
+        if (l->cont) l->cont = 0;   /* a Continue is a checkpoint of Episode 1 */
+        if (lobby_episode_is_bonus(ep)) {   /* one part: the host's character moves to the same slot of part 0 (the guest follows by the auto pick) */
+            part = 0;
+            int c = f.connected ? f.pl[f.pid].character : CP_CHAR_NONE;
+            if (c <= 3 && (c >> 1) != 0) {
+                char out[120];
+                run(l, out, sizeof out, "char %s", char_words[c & 1]);
+                l->set.character = c & 1;
+            }
+        }
+    } else if (action == A_DIFF && !l->cont) df = (df + dir + 4) % 4;
     else if (action == A_DOWNED) l->set.sflags = (int)(((unsigned)f.ss.flags ^ CP_SESS_DOWNED) & 7u);   /* the rule is a toggle (the bleed-out preset bits stay as they are) */
     else return;
-    push_session(l, ep, f.ss.part, df);
+    push_session(l, ep, part, df);
     l->set.episode = ep, l->set.difficulty = df;
     save(l);
 }
@@ -819,7 +895,7 @@ static void activate(lobby_t *l, int action)
     case A_CONT: change_value(l, A_CONT, 1); break;
     case A_READY:
         if (!episode_ok(l, &f)) {
-            set_status(l, LSK_ERROR, 4000, "%s", tx(l, LT_EP1_ONLY));
+            set_status(l, LSK_ERROR, 4000, "%s", tx(l, LT_REF_BAD));
             break;
         }
         if (f.active && f.connected) cs_ready(sess(l), !f.pl[f.pid].ready);
@@ -1011,7 +1087,7 @@ void lobby_update(lobby_t *l)
             if (!episode_ok(l, &f)) {   /* 0.2.0: a (lab) host started another episode than 1: this PC does not start it */
                 leave_session(l);
                 goto_screen(l, LS_TOP);
-                set_status(l, LSK_ERROR, 8000, "%s", tx(l, LT_EP1_ONLY));
+                set_status(l, LSK_ERROR, 8000, "%s", tx(l, LT_REF_BAD));
                 break;
             }
             l->started = 1;
@@ -1033,8 +1109,14 @@ void lobby_update(lobby_t *l)
             int c = f.pl[f.pid].character;
             if (c <= 3 && (c >> 1) != f.ss.part && t - l->last_auto_pick > 700) {
                 l->last_auto_pick = t;
-                if (l->cont) l->cont = 0;   /* 0.2.1 */
-                push_session(l, f.ss.episode, c >> 1, f.ss.difficulty);
+                if (lobby_episode_is_bonus(f.ss.episode)) {   /* a bonus episode has one part: the character goes to the same slot of part 0 */
+                    char out[120];
+                    run(l, out, sizeof out, "char %s", char_words[c & 1]);
+                    l->set.character = c & 1;
+                } else {
+                    if (l->cont) l->cont = 0;   /* 0.2.1 */
+                    push_session(l, f.ss.episode, c >> 1, f.ss.difficulty);
+                }
             }
         }
         if (f.other >= 0 && !l->partner_seen) {

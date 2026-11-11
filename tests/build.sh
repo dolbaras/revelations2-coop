@@ -39,6 +39,14 @@ if ./build/test_objsync_r020.exe > build/test_objsync_r020.txt; then echo "FAIL:
 # the echo rule of the pair run osPB (2026-11-07 07:22:56): built as the logic before it the checks have to fail
 "$ZIG" cc $CF -DOS_MODEL_BEFORE_OSPB -o build/test_objsync_preospb.exe test_objsync.c
 if ./build/test_objsync_preospb.exe > build/test_objsync_preospb.txt; then echo "FAIL: test_objsync passes on the model before the osPB echo rule"; exit 1; fi
+# the finale helicopters of stage 454 (live allepP20): never mirrored; built as the logic before the rule the checks have to fail
+"$ZIG" cc $CF -DOS_MODEL_BEFORE_HELI -o build/test_objsync_preheli.exe test_objsync.c
+if ./build/test_objsync_preheli.exe > build/test_objsync_preheli.txt; then echo "FAIL: test_objsync passes on the model before the helicopter rule"; exit 1; fi
+# the enemy records' window (live allepP28: the 13th and 14th enemy of stage 351 never had a record): the suite must pass, the model before the window must fail
+"$ZIG" cc $CF -o build/test_wrec.exe test_wrec.c
+if ./build/test_wrec.exe > build/test_wrec.txt; then tail -1 build/test_wrec.txt; else grep "^FAIL" build/test_wrec.txt; echo "FAIL: test_wrec"; exit 1; fi
+"$ZIG" cc $CF -DWREC_MODEL_BEFORE_ROT -o build/test_wrec_prerot.exe test_wrec.c
+if ./build/test_wrec_prerot.exe > build/test_wrec_prerot.txt; then echo "FAIL: test_wrec passes on the model before the record window"; exit 1; fi
 # the carried box of the pair run wpB3c (2026-11-07 22:40): its relative +0x40 went out as a world position; built as the logic before the fix the checks have to fail
 "$ZIG" cc $CF -DOS_MODEL_BEFORE_WPB3C -o build/test_objsync_prewpb3c.exe test_objsync.c
 if ./build/test_objsync_prewpb3c.exe > build/test_objsync_prewpb3c.txt; then echo "FAIL: test_objsync passes on the model before the wpB3c carry rule"; exit 1; fi
@@ -119,6 +127,10 @@ if ./build/test_pad_prer26.exe > build/test_pad_prer26.txt; then echo "FAIL: tes
 "$ZIG" cc $CF -o build/test_downed.exe test_downed.c
 # 0.2.0 lobby-must: the in-game rules for a lost partner / host, End Co-Op and the end of Episode 1 (native/lobbymust_logic.h)
 "$ZIG" cc $CF -I"$ENET/include" -o build/test_lobbymust.exe test_lobbymust.c
+if ./build/test_lobbymust.exe > build/test_lobbymust.txt; then tail -1 build/test_lobbymust.txt; else grep "^FAIL" build/test_lobbymust.txt; echo "FAIL: test_lobbymust"; exit 1; fi
+# 0.3.0 all-episodes: the end rule covers every episode of the room and waits for a played stage (the game's start passes a stage 9000); built as the 0.2.x rule (Episode 1 only, no latch) the checks have to fail
+"$ZIG" cc $CF -DLM_MODEL_BEFORE_ALLEP -I"$ENET/include" -o build/test_lobbymust_pre.exe test_lobbymust.c
+if ./build/test_lobbymust_pre.exe > build/test_lobbymust_pre.txt; then echo "FAIL: test_lobbymust passes on the 0.2.x end rule (Episode 1 only)"; exit 1; fi
 # the CANCEL + BEGIN case of run C on rev2-int (2026-11-07 06:53) must describe what the logic before the fix did NOT do: built as that model the checks have to fail
 "$ZIG" cc $CF -DDL_MODEL_BEFORE_RUNC0653 -o build/test_downed_pre0653.exe test_downed.c
 if ./build/test_downed_pre0653.exe > build/test_downed_pre0653.txt; then echo "FAIL: test_downed passes on the model before the run C 06:53 fix (the checks do not discriminate)"; exit 1; fi

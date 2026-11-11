@@ -8,7 +8,9 @@
  *                                                (single player again: the stock character swap works) and the session is closed (LM_A_SOLO)
  *   guest, host left / ended / lost after the start -> strip (LT_HOST_ENDED / LT_HOST_LOST), then the stock quit to the title as soon as the game is in plain
  *                                                play (aGame state 3, no pause menu, no cutscene; a cutscene is waited out at most LM_QUIT_DEMO_MS) (LM_A_QUIT)
- *   either PC reaches the result area of Episode 1 (area 9000) in a running session -> LEAVE(EP_END) (LM_A_EP_LEAVE); the other PC sees the reason (no solo,
+ *   either PC reaches the result area of an episode (area 9000) in a running session -> LEAVE(EP_END) (LM_A_EP_LEAVE); 0.3.0 all-episodes: ANY episode the room
+ *                                                plays (1..4, The Struggle 5, Little Miss 9), not only Episode 1, once a stage of the session was played (the game's
+ *                                                start passes a stage 9000 intermediate too); the other PC sees the reason (no solo,
  *                                                no quit); while the flag is up the stock episode-end menu offers no "next episode" (menu.c), so the stock
  *                                                "Return to title" is the way out on both PCs. The strip LT_EP1_END says why while that end menu is on screen
  *                                                (the area load and the ending scene stay clean: live runs 5-7); a PC that gets the partner's end while it
@@ -19,6 +21,15 @@
 
 #include <stdint.h>
 #include <string.h>
+
+/* the story's episode field at the result area: 1..4 of the story; the bonus episodes count by chapter (Struggle 5..8, Little Miss 9..11) */
+#ifdef LM_MODEL_BEFORE_ALLEP   /* tests/build.sh: the 0.2.x rule (Episode 1 only, no played latch) the checks have to fail on */
+static inline int lm_episode_known(unsigned e) { return e == 1; }
+#define LM_PLAYED_OK(m) 1
+#else
+static inline int lm_episode_known(unsigned e) { return e >= 1 && e <= 11; }   /* the story field is the CHAPTER number: 1-4 story, 5-8 The Struggle, 9-11 Little Miss (live: Little Miss reads 9, 10, 11 in its stages 700, 701, 711) */
+#define LM_PLAYED_OK(m) ((m)->played)
+#endif
 
 /* the values of coop_session.h / coop_proto.h this logic reads, repeated so the header stands alone (tests/test_lobbymust.c checks that they are equal) */
 #define LM_N_LOST 3
@@ -38,6 +49,7 @@
 #define LM_EP_NOTE_PLAY_MS 3000   /* ... after this much plain play outside area 9000 (both PCs clear the stage together: the own end usually follows) */
 #define LM_STRIP_MENU_MS 3000     /* the strip with the episode-end menu: refreshed while the menu is up, gone this long after it */
 #define LM_EP_MENU_REFRESH_MS 1000
+#define LM_RESULTS_HOLD_MS 2000   /* the last chapter's results must be on for this long before they count as the end */
 
 /* strip kinds (menu.h MB_*) */
 enum { LM_S_NONE = 0, LM_S_PARTNER_LEFT = 4, LM_S_PARTNER_LOST = 5, LM_S_HOST_ENDED = 6, LM_S_HOST_LOST = 7, LM_S_EP_END = 8 };
@@ -50,7 +62,9 @@ typedef struct {
     uint32_t solo_at;       /* 0 = no solo step pending */
     uint32_t solo_since;
     uint32_t quit_at, quit_since;
-    int ep_end;             /* the co-op Episode 1 end was reached (by this PC or the partner): the stock end menu offers no next episode */
+    int ep_end;             /* the co-op end of an episode was reached (by this PC or the partner): the stock end menu offers no next episode */
+    uint32_t res_since;     /* 0.3.0: when aGame state 2 of a bonus episode's last chapter began (0 = not in it): the results screen stays for minutes, a stage load passes state 2 for 0.1 s (live allepP3) */
+    int played;             /* 0.3.0: a stage of this session was played (in an episode area other than 9000): only then is area 9000 the result area of the end */
     int ep_left;            /* this PC sent its LEAVE(EP_END) */
     int ep_note;            /* the partner's end arrived (note): the strip waits for LM_EP_NOTE_PLAY_MS of plain play outside area 9000 */
     uint32_t ep_play_since;
@@ -136,12 +150,24 @@ static inline int lm_tick(lm_t *m, const lm_frame_in *f, uint32_t now)
     m->strip = LM_S_NONE, m->strip_ms = 0, m->strip_quiet = 0;
     if (f->at_menus) {   /* back at the title: everything of the last game is over */
         m->solo_at = m->quit_at = 0;
+        m->played = 0, m->res_since = 0;
         m->ep_end = m->ep_left = 0;
         m->ep_note = 0, m->ep_play_since = 0, m->ep_menu_t = 0;
         return 0;
     }
-    /* the end of Episode 1: the result area 9000 of episode 1 (the end of Barry's half) while the session runs */
-    if (f->session_running && !m->ep_left && f->area == 9000 && f->episode == 1) {
+    if (f->session_running && f->in_episode && f->area && f->area != 9000) m->played = 1;
+    /* the end of an episode: the result area 9000 (the end of the second half; the first half's end goes through the stock results screen into the second half with no
+     * area 9000) while the session runs and after a stage of it was played. 0.3.0: any episode of the room (lm_episode_known), no longer Episode 1 only */
+    /* the bonus episodes have no area 9000 at their end: Game_AdvanceToNextPart (0x4236F0) loops chapter 8 back to 5 and chapter 11 back to 9, and the last chapter's StageClear shows
+     * the results (aGame state 2) in the stage itself (live: Little Miss 711, story area 711, episode 11): that results screen is the end of The Struggle / Little Miss */
+    int last_chapter = 0;
+    int final_stage = f->episode == 8 || f->episode == 11 || (f->episode == 4 && f->area == 454);   /* + the game's last stage: its StageClear starts the credits in the stage itself (live allepP21: aGame state 2 sub 2 at area 454, the session stayed open for minutes) */
+    if (final_stage && f->agame_state == 2 && f->area != 9000 && f->in_episode && f->session_running) {
+        if (!m->res_since) m->res_since = now | 1u;
+        last_chapter = (int32_t)(now - m->res_since) >= LM_RESULTS_HOLD_MS;
+    } else
+        m->res_since = 0;
+    if (f->session_running && !m->ep_left && LM_PLAYED_OK(m) && ((f->area == 9000 && lm_episode_known(f->episode)) || last_chapter)) {
         m->ep_left = 1, m->ep_end = 1, m->n_ep++;
         m->solo_at = 0, m->ep_note = 0;
         act |= LM_A_EP_LEAVE;   /* no strip here: the area load and the ending scene (aGame state 8, no sDemo cutscene) stay clean */
@@ -190,6 +216,7 @@ static inline int lm_tick(lm_t *m, const lm_frame_in *f, uint32_t now)
 static inline void lm_session_start(lm_t *m)
 {
     m->solo_at = m->quit_at = 0;
+    m->played = 0, m->res_since = 0;
     m->ep_end = m->ep_left = 0;
     m->ep_note = 0, m->ep_play_since = 0, m->ep_menu_t = 0;
 }

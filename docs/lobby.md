@@ -36,6 +36,12 @@ then both PCs load their co-op save and run the stock title Continue (`cDemoCamp
 fields, the flag block at cGameInfo+0x123740, the EpisodeFlags) into its campaign slot first, like the stock online path FUN_00976A20, so it follows the host's
 checkpoint whatever its own co-op save holds; its own inventory and skills stay its own. The guest's room shows an info row "Continue: Yes".
 
+**All episodes (0.3.0, no switch)**: the Episode row of the host's room offers 1, 2, 3, 4 and the two bonus episodes in the game's own names ("The Struggle", "Little Miss", m03 #74 / #75); the guest follows through the session (`session.game_type` + `episode`, `protocol.md`) and is refused only by a session that is not a start the game knows (an episode with another game type, a second part of a bonus episode). What has been played in a pair is listed in the project's notes, not here; Barry's half of Episodes 2-4 does not start from the title screen (the stock start ends at the results screen or the title): the lobby starts part 0 of the episode and, once it is in play, the host hops into part 1 (the stage's own lab warp with the retry coupling carrying the partner along); shown in a pair for Episodes 2 (stage 250), 3 (351) and 4 (451).
+
+The bonus episodes have one part and two figures, the units of slot 0 and slot 1 of the episode (live census of the bonus stages): the room shows two character rows named after those units - The Struggle: Moira (slot 0) and Evgeny (slot 1, the game's `uPl3300`); Little Miss: Natalia (slot 0) and Dark Natalia (slot 1, `uPl2440`), in the game's own spelling in every language (m01 #93 / #101). On the wire the character is the slot (0 / 1, part 0), so the Episode 1 glue is unchanged. Choosing a bonus episode moves a host or guest who had Barry / Natalia to the same slot of part 0. The start is the proven stock sequence with the bonus game type: `GameMan_SetGameType(3 | 4)`, `Story_SetEpisode(5 | 9)`, part 0, `Menu_GoToEpisodeStart`. Continue stays an Episode 1 row. The game's story field counts the bonus episodes by chapter (Little Miss reads 9, 10, 11 in its stages 700, 701, 711; The Struggle 5 to 8): the stage hand-over inside an episode is the game's own (results screen, then the next stage; both PCs load, the barrier waits for both).
+
+The end: when a session that played a stage reaches the game's result area (stage 9000) of a known episode (story field 1-11) the stock end flow runs and both PCs leave with LEAVE(EP_END) (the stock episode-end menu offers no next episode, the strip says the episode is complete). The first half of an episode ends through the game's own results screen and story hand-over into the second half (no area 9000), which co-op rides along like the Claire -> Barry step of Episode 1. Only the halves of Episode 1 have the host-side radio trigger (`radio_logic.h`: stage 102 and 152); for every other half the story's own end order has to fire on the PCs, which needs a pair run per half.
+
 ## Settings file
 
 `%LOCALAPPDATA%\CAPCOM\RESIDENT EVIL REVELATIONS2\rev2_coop.ini` (the game's own config folder; never the Steam install). Written by the mod whenever you change something, `key=value` lines:
@@ -46,13 +52,13 @@ checkpoint whatever its own co-op save holds; its own inventory and skills stay 
 | `character` | `claire` / `moira` / `barry` / `natalia`: wanted when hosting or joining |
 | `ip`, `port` | last direct address, host port (default 28410) |
 | `transport` | `steam` or `direct`: the way used last |
-| `episode`, `difficulty` | host defaults |
+| `episode`, `difficulty` | host defaults (`episode` 1-4, 5 The Struggle, 9 Little Miss) |
 | `enabled` | `0` removes the Co-Op row and all hooks |
 | `autoopen` | `1` (default): a Steam invitation opens the screen; test runs with the console switch this off |
 | `hide_menu`, `input_gate` | `hide_menu=0` (default; `1` calls the common menu's hide toggle, which on the tested build leaves the stock list invisible afterwards), `input_gate=1` (default): set the pad system's "ignore pad" byte while the screen is open |
 | `solo` | `1`: the host may start without a partner (development) |
 
-`REV2_COOP_INI=<file>` uses another file; `REV2_MENU=0` disables the feature for one run. Lab only: `REV2_EPISODES=all` (or `menu set episodes=all`) gives the host's Episode row 1-4 back; `REV2_REJOIN=1` lets a known player rejoin a running game (the stage-4 rule).
+`REV2_COOP_INI=<file>` uses another file; `REV2_MENU=0` disables the feature for one run.  `REV2_REJOIN=1` lets a known player rejoin a running game (the stage-4 rule).
 
 ## How it is built (for modders)
 
@@ -65,7 +71,7 @@ Everything is native hooks plus the game's own page tables; no game file is repl
 | Drawing | `overlay.c`. Default backend: the screen is composed on the CPU with GDI (the fonts of the system, per language: Segoe UI, Yu Gothic UI, Malgun Gothic, Microsoft YaHei UI, Microsoft JhengHei UI) into a bitmap that is copied into the back buffer with `UpdateSurface` + `StretchRect` from the Present hook: no `BeginScene`, no sprite, no render state is touched, nothing is drawn while the screen is closed. The composition is repeated only when the scene changes. The 1920x1080 virtual layout is scaled to the back buffer and centred. (A D3DX sprite/font backend exists, `menu ov 2`; on the first hardware run it left the game's render thread stalled after the first frame, so it is not used.) |
 | Model | `lobby.c`: screens, rules, session calls through the console grammar of the glue (`host`, `join`, `char`, `ready`, `start`, `session`, `stop`, `steamhost`, `steamjoin`, `steamlobbies`, `steaminvite`, `name`). No Windows or game code; `tests/test_lobby.c` drives two lobbies against each other on the in-process transport (791 checks). |
 | Texts | `lobby_text.c`: the game's strings are read through `Msg_GetString` (message tables 0, 3, 6, 14, 51, 52, 58) in the language the game runs in; the mod's own strings (about 25) are translated into the other 11 languages. A missing table falls back to English. |
-| Start | the stock new-game sequence without its menus: `GameMan_SetGameType(0)`, `Story_SetEpisode`, `Story_SetDifficulty`, `story[0x15C4A8] = part`, `Story_SetContinueFlag(0)`, `story[0x15C485] = 0`, `Menu_GoToEpisodeStart` (menu id 0xE..0x15). The session layer's glue (`coop_game.inc`) then sets the two characters up as in stage 4/5. |
+| Start | the stock new-game sequence without its menus: `GameMan_SetGameType(0)` (0.3.0: the session's game type, 3 / 4 for the bonus episodes), `Story_SetEpisode`, `Story_SetDifficulty`, `story[0x15C4A8] = part`, `Story_SetContinueFlag(0)`, `story[0x15C485] = 0`, `Menu_GoToEpisodeStart` (menu id 0xE..0x15). The session layer's glue (`coop_game.inc`) then sets the two characters up as in stage 4/5. |
 | Pause | `cPauseTopProcess_SetRowVisibility` (0x8B9A60) is wrapped: while a net game runs rows 0x36 / 0x37 (split screen) are hidden and row 0x3B ("Leave", label from the game's cockpit table) is shown. `cPauseTopProcess_OnSelect` (0x8B85D0) is wrapped: for row 0x3B the popup text of the stock quit question is swapped to message 116 "Quit session?" by wrapping `Popup_SetMessage` (0x436CE0) for that one call. The stock quit path does the rest. |
 | Leaving | `menu_frame` ends the session when a running net game and the title menus are on screen together for 1.5 s. |
 | End Co-Op (0.2.0) | Row 0x3D of the pause page (a Raid-only "Give Up" row, 0x1394388) gets our label / help ids while the host of a running net game has a partner (`h_pause_vis`), the stock row otherwise. `Msg_GetString` (0x954B40) is wrapped for two private ids of table 6 (0x2100 / 0x2101: `LT_END_COOP` / `LT_END_COOP_HELP` in the game's language; every character is a glyph of that language's game face, `tests/test_lm_glyphs.c`). The row runs the stock quit question with the popup text swapped to m40 #95 "End the session you created?"; the pause result setter `FUN_009564F0` is wrapped so that a confirmed quit of this row becomes "resume" (1) and the glue runs End Co-Op (`net endcoop`: `cs_kick(partner, END_COOP)`, the solo step). |
@@ -83,3 +89,14 @@ renders again, 3 rounds: the heaps must stay valid and the GDI object count must
 `LT_REF_PROTO`, another mod version `LT_REF_MODVER` with both versions, an older host `LT_REF_MODVER_OLD`); other codes keep the session's English text. While the
 partner's game sends nothing (`CS_N_SILENT`: Alt-Tab, a stall, a blocking load) and no lobby or other strip is on the screen, a strip says "No answer from <name> for N s"
 (`LT_PARTNER_SILENT`) until it is heard again, gone, or 15 s after the last note.
+
+## Episodes 2-4 and the bonus episodes (0.3.0)
+
+- The Episode row cycles 1 2 3 4, The Struggle, Little Miss; the characters follow the episode (bonus: two rows named after the episode's units). No switch: everything is offered.
+- Barry's half of Episodes 2-4: the game starts part 0 only; the host hops into the second half once the first stage (201 / 306 / 400) has been in play for 6 seconds (`warp.inc`
+  `second_half_frame`, the retry coupling carries the hop to the guest): Ep2 -> 250, Ep3 -> 351 sp 1, Ep4 -> 451 sp 1. Never hop from stage 451 (the crane: the game's mover units crash).
+- The end: the result area 9000 of a known episode, or, where the game has no area 9000 (the last chapter of a bonus episode, and the game's last stage 454), the stock results / credits state
+  held for 2 seconds (`lobbymust_logic.h`). The end menu offers no next episode.
+- Stage 454: the human of slot 1 (Claire family) is not placed by the part opening the hop skips; the PC whose human is parked near the origin puts it next to the partner (`warp.inc`
+  `unplaced_human_frame`). The finale helicopters (uSmLastHelicopter, uSmSoftEventHeli*) are never mirrored as doors (`objsync_logic.h` OS_SCRIPTED).
+- Not verified: see `docs/release-readme.txt` "Limits".

@@ -1503,11 +1503,11 @@ int cs_command(cs_t *s, const char *line, char *out, size_t size)
     } else if (!strcmp(cmd, "session")) {
         cp_session ss;
         cs_session_get(s, &ss);
-        unsigned ep = ss.episode, part = ss.part, diff = ss.difficulty, fl = ss.flags;
-        if (sscanf(arg, "%u %u %u %u", &ep, &part, &diff, &fl) >= 1) {
-            ss.episode = (uint8_t)ep, ss.part = (uint8_t)part, ss.difficulty = (uint8_t)diff, ss.flags = (uint8_t)fl;
-            snprintf(out, size, cs_set_session(s, &ss) ? "session: episode %u part %u difficulty %u flags %u" : "cannot change the session now (host, lobby)", ep, part, diff, fl);
-        } else snprintf(out, size, "session: episode %u part %u difficulty %u flags %u (net session <ep> <part> <diff> [flags])", ep, part, diff, fl);
+        unsigned ep = ss.episode, part = ss.part, diff = ss.difficulty, fl = ss.flags, gt = ss.game_type;
+        if (sscanf(arg, "%u %u %u %u %u", &ep, &part, &diff, &fl, &gt) >= 1) {
+            ss.episode = (uint8_t)ep, ss.part = (uint8_t)part, ss.difficulty = (uint8_t)diff, ss.flags = (uint8_t)fl, ss.game_type = (uint8_t)gt;
+            snprintf(out, size, cs_set_session(s, &ss) ? "session: episode %u part %u difficulty %u flags %u game type %u" : "cannot change the session now (host, lobby)", ep, part, diff, fl, gt);
+        } else snprintf(out, size, "session: episode %u part %u difficulty %u flags %u game type %u (net session <ep> <part> <diff> [flags [game type]])", ep, part, diff, fl, gt);
     } else if (!strcmp(cmd, "event") || !strcmp(cmd, "say")) {
         unsigned kind = !strcmp(cmd, "say") ? CP_EV_TEXT : CP_EV_USER;
         if (!strcmp(cmd, "event")) { sscanf(arg, "%u", &kind); skip_word(&arg); }

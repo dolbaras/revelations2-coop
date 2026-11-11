@@ -283,7 +283,7 @@ Tools: `gh` is the portable one at `<workspace>\tools\gh\bin\gh.exe` with `$env:
 3. `powershell -File mod\tools\package.ps1 -Version <v> -Exe -Dll <dist>\dinput8.dll -Dist <dist>` (refuses the DLL if its `R2_VERSION` is not `<v>`). Record the SHA-256 of
    the zip, the setup exe and the DLL. Unzip the zip into a scratch folder and grep it with the export's pattern (only the generic `Users\<name>` of the collector's comments may match).
 4. Install the zip (setup exe) on BOTH PCs for the acceptance runs; the acceptance itself is outside this file (`notes\release-0.2.0-plan.md` section 5).
-5. The real sync: `sh lab/export_public.sh` (working tree in `pub\`), review `git -C pub diff --stat`; `git -C pub add -A`, `git -C pub commit -m "Revelations 2 co-op <v>"`
+5. The real sync: `sh lab/export_public.sh` (working tree in `pub\`), review `git -C pub diff --stat`; `git -C pub add -A`, `git -C pub commit -m "Resident Evil Revelations 2 Co-op <v>"` (the release commit subject = the release title, as in the other co-op mods of the author)
    (with the Co-Authored-By trailer), then `git -C pub -c credential.helper= -c "credential.helper=!'<gh.exe>' auth git-credential" push origin main`.
 6. Release (the tag is made by the command, on the pushed main):
    - pre-release: `gh release create v<v> --repo dolbaras/revelations2-coop --target main --prerelease --title "Pre-release N (testing)" --notes-file <notes> <dist>\revelations2-coop-<v>.zip <dist>\revelations2-coop-setup-<v>.exe` (never `--latest`, never `--draft`);
@@ -338,3 +338,13 @@ Still not checked live: the shortcut starting the game through Steam (deliberate
 standalone Ultimate ASI Loader v10.0.2 next to the mod (its source and export table were read, the chain test judges it), the folder picker's dialog, the taskbar progress.
 The wording of the known limits in `docs/release-readme.txt` is the one of pre-release 2; the 0.2.0 text is written from the acceptance results (draft outside the repository).
   Real Steam unlocks were allowed by the owner for the lab accounts and one shared record (the flame achievement) was unlocked and read back on both accounts.
+
+**0.3.0 (in preparation, not published)**: every episode and both bonus episodes offered by the lobby (see `docs/lobby.md` "Episodes 2-4 and the bonus episodes (0.3.0)"). Version: `R2_VERSION` in
+`native/r2.h` is `0.3.0` (the tag `v0.3.0`, the zip `revelations2-coop-0.3.0.zip`, `coop\version.txt` 0.3.0). `CP_PROTO_VERSION` stays 2: no message layout changed (the session block already
+carried `game_type` and `episode`); both PCs still need the same package version, so a 0.2.1 PC and a 0.3.0 PC refuse each other with the "another co-op version" text until the
+0.2.1 PC has started once through its shortcut (it updates itself to the latest full release). `tests\test_installer.ps1 -OldZip work\dist-021\revelations2-coop-0.2.1.zip` (offline, hidden
+windows, stand-in game folders): 244 of 244 checks, including the 0.2.1 launcher's update to 0.3.0, the uninstall back to the clean folder and the ASI loader case. Published without a session
+of a human player (the owner's word of 2026-11-12: finish everything that needs no live check and publish; what players find is fixed afterwards): Episodes 2-4 and the bonus
+episodes are verified in the lab stage by stage, nobody has played them through. The not-verified list (Episode 2's step 201 -> 203, the fights in Barry's halves, the final
+bosses 453 / 454, The Struggle's gate in 610, Little Miss's stealth rules, the story's own steps between stages) is in `docs/release-readme.txt` (Limits), the public README and
+the release notes, with the request to report problems with `coop\Collect logs.bat` and the issue form.

@@ -779,9 +779,9 @@ $tbGame.BackColor = $C.panel; $tbGame.ForeColor = $C.text; $tbGame.BorderStyle =
 $pSetup.Controls.Add($tbGame)
 $btBrowse = New-Button $pSetup (L "browse") 512 45 120 $false
 $lbInfo = New-Label $pSetup "" 28 96 604 250 (Font 10.5) $C.text
-$btRemove = New-Button $pSetup (L "remove") 28 360 190 $false
-$btCancel = New-Button $pSetup (L "cancel") 372 360 120 $false
-$btGo = New-Button $pSetup (L "install") 502 360 130 $true
+$btRemove = New-Button $pSetup (L "remove") 28 360 220 $false   # (i18n: 220 / 160 px hold the longest labels: pt "Remover o mod cooperativo", pl "Zainstaluj ponownie")
+$btCancel = New-Button $pSetup (L "cancel") 342 360 120 $false
+$btGo = New-Button $pSetup (L "install") 472 360 160 $true
 
 # --- page 2: the steps and the progress
 $pWork = New-Object Windows.Forms.Panel
