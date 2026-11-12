@@ -562,17 +562,17 @@ static void story_apply_digest(const unsigned char *p, unsigned len)
 
 /* ---------------------------------------------------------------- enemy death detection (host): HP crossing zero inside the enemy's update */
 typedef struct { unsigned obj; int hp; int killer; unsigned f28, f2c; unsigned char sent, used; } wdeath_t;
-static wdeath_t g_wdeath[48];
+static wdeath_t g_wdeath[WREC_LIVE_MAX];   /* 0.3.1 R2: as many as the host lists (was 48) */
 
 static wdeath_t *wdeath_slot(unsigned obj)
 {
     wdeath_t *free_slot = NULL;
-    for (int i = 0; i < 48; i++) {
+    for (int i = 0; i < (int)WREC_LIVE_MAX; i++) {
         if (g_wdeath[i].used && g_wdeath[i].obj == obj) return &g_wdeath[i];
         if (!g_wdeath[i].used && !free_slot) free_slot = &g_wdeath[i];
     }
     if (!free_slot) {   /* table full: drop the oldest finished one */
-        for (int i = 0; i < 48; i++)
+        for (int i = 0; i < (int)WREC_LIVE_MAX; i++)
             if (g_wdeath[i].sent) {
                 free_slot = &g_wdeath[i];
                 break;

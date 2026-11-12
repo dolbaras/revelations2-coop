@@ -1821,20 +1821,26 @@ static void w_flash_watch(unsigned o, const layout_t *l, unsigned act, int hp)
     }
 }
 
+static void w_send_batch(const unsigned *list, const unsigned *win, unsigned nw);
 static void w_send_enemies(void)
 {
     unsigned now = GetTickCount();
     if (now - g_w_last_send < 66) return;
     g_w_last_send = now;
-    unsigned list[48];
-    unsigned n = w_live_enemies(list, 48);
+    unsigned list[WREC_LIVE_MAX];
+    unsigned n = w_live_enemies(list, wrec_live_cap());
     story_scan_deaths(list, n);
     if (!n) return;
+    static unsigned rot;
+    unsigned win[WREC_PER_BATCH * WREC_MAX_BATCHES], cnt[WREC_MAX_BATCHES];
+    unsigned nb = wrec_tick(n, WREC_PER_BATCH, WREC_MAX_BATCHES, &rot, win, cnt);   /* 0.3.1 R2: more than 12 live: up to 4 batches a tick (wrec_logic.h) */
+    for (unsigned b = 0; b < nb; b++) w_send_batch(list, win + b * WREC_PER_BATCH, cnt[b]);
+}
+
+static void w_send_batch(const unsigned *list, const unsigned *win, unsigned nw)
+{
     unsigned char buf[CP_WORLD_MAX];
     unsigned len = 0, recs = 0;
-    static unsigned rot;
-    unsigned win[WREC_PER_BATCH];
-    unsigned nw = wrec_window(n, WREC_PER_BATCH, &rot, win);   /* more than 12 live enemies: the window turns (wrec_logic.h; live allepP28) */
     for (unsigned i = 0; i < nw && len + WREC <= CP_WORLD_MAX; i++) {
         unsigned o = list[win[i]];
         layout_t l;
@@ -1883,8 +1889,8 @@ static int w_holder_info(unsigned tag, glue_hold_in_t *in, unsigned *act_out, ch
     if (act_out) *act_out = 0;
     if (cls_size > 0) cls[0] = 0;
     if (!tag) return 0;
-    unsigned list[48];
-    unsigned n = w_live_enemies(list, 48);
+    unsigned list[WREC_LIVE_MAX];
+    unsigned n = w_live_enemies(list, wrec_live_cap());
     for (unsigned i = 0; i < n; i++) {
         unsigned e = list[i];
         if (rd32(e + 0x73E8) != tag) continue;
@@ -1921,12 +1927,12 @@ static int w_died_recently(unsigned en)
 /* 0.3.0 orphans (wrec_logic.h): the guest notes when each replica last had a record; a replica with none for 10 s while 40 of the host's batches arrived belongs to an enemy the
  * host no longer has. A plain enemy is killed through the same lethal call as the DEATH event (it would otherwise stand and fight on this PC only); an NPC class (uEm8xxx: Pedro,
  * Chavez, Ryan parked at the origin) is only logged once (its death could run story steps). `net w orphans` shows the table. */
-static struct { unsigned obj, seen, batch; int done; } g_w_orph[64];
+static struct { unsigned obj, seen, batch; int done; } g_w_orph[WREC_LIVE_MAX];
 static unsigned g_w_orph_t, g_w_orph_killed, g_w_orph_npc;
 static void w_orphan_seen(unsigned en)
 {
     int fr = -1;
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < (int)WREC_LIVE_MAX; i++) {
         if (g_w_orph[i].obj == en) { g_w_orph[i].seen = GetTickCount(), g_w_orph[i].batch = g_w_rx_batches; return; }
         if (fr < 0 && !g_w_orph[i].obj) fr = i;
     }
@@ -1938,16 +1944,16 @@ static void w_orphan_scan(void)
     unsigned now = GetTickCount();
     if (now - g_w_orph_t < 1000) return;
     g_w_orph_t = now;
-    unsigned list[48];
-    unsigned n = w_live_enemies(list, 48);
+    unsigned list[WREC_LIVE_MAX];
+    unsigned n = w_live_enemies(list, wrec_live_cap());
     for (unsigned i = 0; i < n; i++) {
         unsigned o = list[i];
         if ((int)rd32(o + 0x1A08) <= 0) continue;
         int k = -1;
-        for (int j = 0; j < 64; j++)
+        for (int j = 0; j < (int)WREC_LIVE_MAX; j++)
             if (g_w_orph[j].obj == o) { k = j; break; }
         if (k < 0) {   /* first time seen here (made by this PC's own story or a SPAWN): its clock starts now */
-            for (int j = 0; j < 64; j++)
+            for (int j = 0; j < (int)WREC_LIVE_MAX; j++)
                 if (!g_w_orph[j].obj) { g_w_orph[j].obj = o, g_w_orph[j].seen = now, g_w_orph[j].batch = g_w_rx_batches, g_w_orph[j].done = 0; break; }
             continue;
         }
@@ -1974,12 +1980,35 @@ static void w_orphan_scan(void)
         r2_log(W_LOG "orphan replica (%d,%u,%u) %08x %s: no record of the host for %u ms (%u batches): the host has no such enemy any more: killed here (hp %d -> %d)", l.a, l.b, l.c, o, cn,
                now - g_w_orph[k].seen, g_w_rx_batches - g_w_orph[k].batch, hp, (int)rd32(o + 0x1A08));
     }
+    /* 0.3.1 R2: how old the newest record of each live replica is (the log only: every 30 s while replicas live; a players' log shows the steps of R2 if they come back) */
+    static unsigned age_t, age_logs, age_batches;
+    if (now - age_t >= 30000 && age_logs < 240) {
+        unsigned cnt = 0, mx = 0, sum = 0;
+        layout_t ml = {0, 0, 0};
+        for (unsigned i = 0; i < n; i++) {
+            unsigned o = list[i];
+            if ((int)rd32(o + 0x1A08) <= 0) continue;
+            for (int j = 0; j < (int)WREC_LIVE_MAX; j++)
+                if (g_w_orph[j].obj == o && !g_w_orph[j].done) {
+                    unsigned age = now - g_w_orph[j].seen;
+                    cnt++, sum += age;
+                    if (age > mx) mx = age, layout_of(o, &ml);
+                    break;
+                }
+        }
+        if (cnt) {
+            age_logs++;
+            r2_log(W_LOG "record age of the replicas: %u alive, mean %u ms, max %u ms (layout (%d,%u,%u)); %u batches of the host in the last %u s", cnt, sum / cnt, mx, ml.a, ml.b, ml.c,
+                   g_w_rx_batches - age_batches, age_t ? (now - age_t) / 1000 : 0);
+        }
+        age_t = now, age_batches = g_w_rx_batches;
+    }
 }
 
 static void w_orphan_status(char *out, int size)
 {
     int t = 0;
-    for (int i = 0; i < 64; i++) t += g_w_orph[i].obj != 0;
+    for (int i = 0; i < (int)WREC_LIVE_MAX; i++) t += g_w_orph[i].obj != 0;
     snprintf(out, size, "orphans: %u killed here, %u NPC left alone; %d replicas tracked; batches received %u", g_w_orph_killed, g_w_orph_npc, t, g_w_rx_batches);
 }
 

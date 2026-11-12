@@ -203,10 +203,11 @@ static void test_refusals(void)
     CHECK(cs_host(h.s, "sim", 2, 0, err, sizeof err));
 
     struct { const char *what; uint16_t ver, minv; int tag; int expect; } cases[] = {
-        {"too new", 5, 3, 1, CP_REF_VERSION},
+        {"too new", 5, 4, 1, CP_REF_VERSION},
         {"too old", 0, 0, 1, CP_REF_VERSION},
         {"version 1 (40 byte states)", 1, 1, 1, CP_REF_VERSION},
-        {"wrong build", 2, 2, 2, CP_REF_BUILD},
+        {"version 2 (0.3.0: lobby rows without the co-op save key)", 2, 2, 1, CP_REF_VERSION},
+        {"wrong build", CP_PROTO_VERSION, CP_PROTO_MIN, 2, CP_REF_BUILD},
     };
     for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         Node r;
@@ -254,7 +255,7 @@ static void test_refusals(void)
         step(30);
         cp_msg m;
         memset(&m, 0, sizeof m);
-        m.type = CP_HELLO, m.u.hello.version = 2, m.u.hello.min_version = 2, m.u.hello.want_char = CP_CHAR_NONE;
+        m.type = CP_HELLO, m.u.hello.version = CP_PROTO_VERSION, m.u.hello.min_version = CP_PROTO_MIN, m.u.hello.want_char = CP_CHAR_NONE;
         snprintf(m.u.hello.name, sizeof m.u.hello.name, "NoTag");
         uint8_t buf[CP_MAX_PACKET];
         cn_send(r.raw, 0, CP_CH_CONTROL, 1, buf, cp_encode(&m, buf, sizeof buf));

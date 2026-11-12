@@ -33,6 +33,7 @@
 #define CPS_S_STAGE 0x30u
 #define CPS_S_STARTPOS 0x34u
 #define CPS_S_SCENE 0x38u
+#define CPS_S_DONE 0x88u   /* byte: cGameInfo+0x10F0B8 (story+0x1403D8) "the part / chapter was just cleared": the stock Continue then goes on to the NEXT part / chapter (Game_AdvanceToNextPart) */
 
 /* ---- routing: which calls the mod serves ---- */
 static inline int cps_is_save_name(const char *name)
@@ -106,12 +107,28 @@ static inline int cps_rec_valid(const cps_rec *r) { return r->magic == CPS_REC_M
 /* the half of a stage (Story_GetPartOfArea 0x984740: -1 below 100, else stage % 100 > 49) and its episode (stage / 100) */
 static inline int cps_stage_part(int stage) { return stage < 100 ? -1 : (stage % 100 > 49); }
 static inline int cps_stage_episode(int stage) { return stage < 100 ? 0 : stage / 100; }
-/* the checkpoint a record holds is one the co-op lobby can continue: Episode 1 (the 0.2.x rule), a story stage of that episode */
+/* 0.3.1 (C1): the room's episode of a checkpoint: Episodes 1-4 (a story stage of that episode), The Struggle 5 (stages 600-699, chapters 5..8), Little Miss 9 (stages
+ * 700-799, chapters 9..11; the story's episode field counts the bonus chapters, allep-resume STEP 2); 0 = not one the co-op room continues.
+ * -DCPS_MODEL_BEFORE_031: the 0.2.1 / 0.3.0 rule (Episode 1 only): tests/build.sh checks that test_coopsave fails with it. */
+static inline int cps_room_episode(int st, int ep)
+{
+#ifdef CPS_MODEL_BEFORE_031
+    return ep == 1 && cps_stage_episode(st) == 1 ? 1 : 0;
+#else
+    if (ep >= 1 && ep <= 4) return cps_stage_episode(st) == ep ? ep : 0;
+    if (ep >= 5 && ep <= 8) return st >= 600 && st <= 699 ? 5 : 0;
+    if (ep >= 9 && ep <= 11) return st >= 700 && st <= 799 ? 9 : 0;
+    return 0;
+#endif
+}
+/* the checkpoint a record holds is one the co-op lobby can continue (0.3.1: every episode and half the room offers; 0.2.x / 0.3.0: Episode 1 only) */
 static inline int cps_rec_continuable(const cps_rec *r, int *part, int *difficulty, int *stage, int *startpos)
 {
     if (!cps_rec_valid(r)) return 0;
     int st = (int)cps_rec_field(r, CPS_S_STAGE), ep = (int)cps_rec_field(r, CPS_S_EPISODE), d = (int)cps_rec_field(r, CPS_S_DIFF);
-    if (ep != 1 || cps_stage_episode(st) != 1 || d < 0 || d > 3) return 0;
+    int room = cps_room_episode(st, ep);
+    if (!room || d < 0 || d > 3) return 0;
+    if (room >= 2 && r->temp[CPS_S_DONE - CPS_T_OFF]) return 0;   /* 0.3.1: a save made at the end of a half / chapter (Ep2-4, bonus) would start the next one: not offered (Episode 1 as in 0.3.0) */
     if (part) *part = cps_stage_part(st);
     if (difficulty) *difficulty = d;
     if (stage) *stage = st;
@@ -125,6 +142,10 @@ static inline void cps_rec_apply_slot(const cps_rec *r, uint8_t *slot)
     for (unsigned i = 0; i < sizeof f / sizeof f[0]; i++) memcpy(slot + f[i], r->temp + (f[i] - CPS_T_OFF), 4);
     memcpy(slot + CPS_FL_OFF, r->fl, CPS_FL_LEN);
     memcpy(slot + CPS_EPF_OFF, r->epf, CPS_EPF_LEN);
+#ifndef CPS_MODEL_BEFORE_031
+    /* 0.3.1: Episodes 2-4 / bonus: the host's checkpoint has the done byte 0 (cps_rec_continuable); the guest's own may differ and would send its stock Continue into the next part */
+    if (cps_room_episode((int)cps_rec_field(r, CPS_S_STAGE), (int)cps_rec_field(r, CPS_S_EPISODE)) >= 2) slot[CPS_S_DONE] = 0;
+#endif
 }
 
 /* ---- the record on the wire (session events kind CPS_EV, reliable + ordered, sent by the host just before START) ----
@@ -244,6 +265,21 @@ static inline unsigned cps_save_pflags(const cps_rec *r, unsigned save0_bit, uns
     int part = -1;
     if (!r || !cps_rec_continuable(r, &part, NULL, NULL, NULL)) return 0;
     return part == 1 ? save1_bit : part == 0 ? save0_bit : 0;
+}
+/* 0.3.1 (C1): the room episode of a continuable record (0 = none) and the per-episode save key the players advertise (coop_proto.h cp_player.save, protocol 3):
+ * room episode * 2 + half, 0 = no co-op save to continue. The guest follows the host's checkpoint only when its own co-op save has the same key (its inventory and
+ * characters of that episode's half come from its own save). */
+static inline int cps_rec_room_episode(const cps_rec *r)
+{
+    if (!r || !cps_rec_continuable(r, NULL, NULL, NULL, NULL)) return 0;
+    return cps_room_episode((int)cps_rec_field(r, CPS_S_STAGE), (int)cps_rec_field(r, CPS_S_EPISODE));
+}
+static inline unsigned cps_save_key_of(int room_episode, int part) { return room_episode > 0 && (part == 0 || part == 1) ? (unsigned)(room_episode * 2 + part) : 0u; }
+static inline unsigned cps_save_key(const cps_rec *r)
+{
+    int part = -1;
+    if (!r || !cps_rec_continuable(r, &part, NULL, NULL, NULL)) return 0;
+    return cps_save_key_of(cps_rec_room_episode(r), part);
 }
 
 /* ---- the co-op state machine (coopsave.c drives it from the game thread) ----

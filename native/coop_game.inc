@@ -752,6 +752,7 @@ static int game_tuple_changed(void)
 
 /* ---------------------------------------------------------------- per pass */
 static void retry_on_event(const cp_event *e);   /* warp.inc: the retry coupling (the pause menu's Retry, the lab warp) */
+static void sh_ok_on_event(const cp_event *e);   /* warp.inc: 0.3.1 R1, the partner is in Barry's half */
 static void handle_notes(void)
 {
     for (;;) {   /* world events first (they are cheap and independent of the lobby state) */
@@ -762,6 +763,7 @@ static void handle_notes(void)
         LeaveCriticalSection(&g_nlock);
         if (!have) break;
         if (ev.kind == CP_EV_USER + 0x70) { retry_on_event(&ev); continue; }   /* RETRY: in any glue state (see warp.inc) */
+        if (ev.kind == CP_EV_USER + 0x71) { sh_ok_on_event(&ev); continue; }   /* HALF_OK (0.3.1 R1): in any glue state */
         if (g_state == G_RUN) {
             if (ev.kind >= CP_EV_USER + 0x60 && ev.kind <= CP_EV_USER + 0x6F) downed_on_event(&ev);   /* stage 9: downed / revive */
             else if (ev.kind >= CP_EV_USER + 0x50 && ev.kind <= CP_EV_USER + 0x5F) ach_on_event(&ev);   /* stage 8b: forwarded achievement causes */

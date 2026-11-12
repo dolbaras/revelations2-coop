@@ -28,6 +28,8 @@ runs or not: the host's End Co-Op keeps the co-op save until the host is at the 
 The first co-op game starts from a copy of the solo image (settings, skills, unlocks). Next to the co-op save, `.rec` holds the checkpoint of every co-op save write
 (stage, start position, difficulty, the flag block), which the room reads.
 
+**Continue for every episode (0.3.1)**: the row is shown whenever the host's co-op save holds a checkpoint of Episodes 1-4 (either half) or of a bonus episode (`coopsave_logic.h` `cps_room_episode`), whatever episode the room shows; Yes switches the room to the episode, half and difficulty of that checkpoint. Start needs the same save key on both PCs (room episode x 2 + half, protocol 3 `save` byte in HELLO and in the lobby rows). The bonus episodes continue as the stock does (game type 3 / 4, their own game data slot, unlock records 6 / 7). A save made at the end of a half / chapter (the done byte, slot +0x88) is not offered for Episodes 2-4 and the bonus episodes (the stock Continue would start the next one); Episode 1 keeps the 0.2.1 rule.
+
 **Continue (0.2.1)**: the host's room has a row **Continue** (the game's own word, m03 #87) when the host's co-op save holds an Episode 1 checkpoint: Yes takes the
 half and the difficulty of that checkpoint (the host's character moves to the same slot of that half, Difficulty becomes an info row); a character of the other half
 switches it back to a new game. Start needs a co-op save of that half on both PCs (the guest's HELLO carries its save bits; else the line "Continue needs a co-op save

@@ -161,7 +161,7 @@ int main(void)
         snprintf(m.u.hello.mod, sizeof m.u.hello.mod, "0.1");
         len = cp_encode(&m, b, sizeof b);
         hex(b, len, h);
-        static const char *const want_hello = "01" "52324350" "0200" "0200" "0000000000000000" "01" "00" "03426f62" "03302e31";
+        static const char *const want_hello = "01" "52324350" "0200" "0200" "0000000000000000" "01" "00" "00" "03426f62" "03302e31";   /* protocol 3 (0.3.1): + the save key after flags */
         CHECK(!strcmp(h, want_hello));
         if (strcmp(h, want_hello)) printf("hello vector: %s\n", h);
     }

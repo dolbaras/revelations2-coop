@@ -13,8 +13,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CP_PROTO_VERSION 2u   /* layout of the messages below (2: STATE grew from 40 to 60 bytes, stage 5) */
-#define CP_PROTO_MIN 2u       /* oldest version this build still talks (a version 1 STATE has another size: refused by the version gate) */
+#define CP_PROTO_VERSION 3u   /* layout of the messages below (2: STATE grew from 40 to 60 bytes, stage 5; 3: the co-op save key in HELLO and in every lobby row, 0.3.1) */
+#define CP_PROTO_MIN 3u       /* oldest version this build still talks (a version 2 lobby row has no save key: refused by the version gate) */
 #define CP_MAGIC 0x50433252u  /* bytes 'R' '2' 'C' 'P' */
 #define CP_MAX_PLAYERS 4
 #define CP_NAME_MAX 24
@@ -108,6 +108,7 @@ typedef struct {
     uint8_t character;      /* enum cp_character or CP_CHAR_NONE */
     uint8_t ready;
     uint8_t flags;          /* enum cp_player_flags */
+    uint8_t save;           /* 0.3.1 (protocol 3): the co-op save key, room episode * 2 + half (coopsave_logic.h cps_save_key), 0 = none */
     char name[CP_NAME_MAX + 1];
 } cp_player;
 
@@ -122,6 +123,7 @@ typedef struct {
     uint8_t exe_tag[8];     /* first 8 bytes of the game exe's SHA-256, zeros = unknown (bot) */
     uint8_t want_char;
     uint8_t flags;          /* CP_PF_BOT */
+    uint8_t save;           /* 0.3.1 (protocol 3): the co-op save key (cp_player.save) */
     char name[CP_NAME_MAX + 1];
     char mod[CP_MOD_MAX + 1];
 } cp_hello;

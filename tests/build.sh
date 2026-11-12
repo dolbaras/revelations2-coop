@@ -47,6 +47,9 @@ if ./build/test_objsync_preheli.exe > build/test_objsync_preheli.txt; then echo 
 if ./build/test_wrec.exe > build/test_wrec.txt; then tail -1 build/test_wrec.txt; else grep "^FAIL" build/test_wrec.txt; echo "FAIL: test_wrec"; exit 1; fi
 "$ZIG" cc $CF -DWREC_MODEL_BEFORE_ROT -o build/test_wrec_prerot.exe test_wrec.c
 if ./build/test_wrec_prerot.exe > build/test_wrec_prerot.txt; then echo "FAIL: test_wrec passes on the model before the record window"; exit 1; fi
+# 0.3.1 R2: up to 128 live enemies, up to 4 batches a tick while more than 12 live (notes/fix031-plan.md); built as 0.3.0 (48 at most, one batch) the checks have to fail
+"$ZIG" cc $CF -DWREC_MODEL_BEFORE_031 -o build/test_wrec_pre031.exe test_wrec.c
+if ./build/test_wrec_pre031.exe > build/test_wrec_pre031.txt; then echo "FAIL: test_wrec passes on the model of 0.3.0 (one batch a tick, 48 enemies)"; exit 1; fi
 # the carried box of the pair run wpB3c (2026-11-07 22:40): its relative +0x40 went out as a world position; built as the logic before the fix the checks have to fail
 "$ZIG" cc $CF -DOS_MODEL_BEFORE_WPB3C -o build/test_objsync_prewpb3c.exe test_objsync.c
 if ./build/test_objsync_prewpb3c.exe > build/test_objsync_prewpb3c.txt; then echo "FAIL: test_objsync passes on the model before the wpB3c carry rule"; exit 1; fi
@@ -59,6 +62,9 @@ if ./build/test_objsync_prewpb3d.exe > build/test_objsync_prewpb3d.txt; then ech
 if ./build/test_coopsave.exe > build/test_coopsave.txt; then tail -1 build/test_coopsave.txt; else grep "^FAIL" build/test_coopsave.txt; echo "FAIL: test_coopsave"; exit 1; fi
 "$ZIG" cc $CF -DCPS_MODEL_BEFORE -o build/test_coopsave_pre.exe test_coopsave.c
 if ./build/test_coopsave_pre.exe > build/test_coopsave_pre.txt; then echo "FAIL: test_coopsave passes on the 0.2.0 model (the co-op game writes the solo save there)"; exit 1; fi
+# 0.3.1 C1: Continue for every episode and half of the room (Episode 1 exactly as before); built with the 0.3.0 rule (Episode 1 only) the checks have to fail
+"$ZIG" cc $CF -DCPS_MODEL_BEFORE_031 -o build/test_coopsave_pre031.exe test_coopsave.c
+if ./build/test_coopsave_pre031.exe > build/test_coopsave_pre031.txt; then echo "FAIL: test_coopsave passes on the 0.3.0 rule (Continue for Episode 1 only)"; exit 1; fi
 "$ZIG" cc $CF -o build/test_radio.exe test_radio.c
 "$ZIG" cc $CF -o build/test_warp.exe test_warp.c
 # the warp back to a part start (run w1 2026-11-07 13:10: no player, black screen): built as the first version the checks have to fail
@@ -67,6 +73,9 @@ if ./build/test_warp_prew1.exe > build/test_warp_prew1.txt; then echo "FAIL: tes
 # the retry coupling (the pause menu's Retry split the pair): built as rev2-int before it the checks have to fail
 "$ZIG" cc $CF -DWL_MODEL_BEFORE_RC -o build/test_warp_prerc.exe test_warp.c
 if ./build/test_warp_prerc.exe > build/test_warp_prerc.txt; then echo "FAIL: test_warp passes on the model before the retry coupling"; exit 1; fi
+# 0.3.1 R1: the Barry-half start jump repeated until the partner answers from part 1, the partner idempotent (notes/fix031-plan.md); built as 0.3.0 the checks have to fail
+"$ZIG" cc $CF -DWL_MODEL_BEFORE_031 -o build/test_warp_pre031.exe test_warp.c
+if ./build/test_warp_pre031.exe > build/test_warp_pre031.txt; then echo "FAIL: test_warp passes on the model of 0.3.0 (one jump, no answer)"; exit 1; fi
 # 0.2.0 MHIT: the client's real blows on enemy replicas (native/meleehit_logic.h); built as rev2-int a8a067e (the skipped replica update looked at nothing) the checks have to fail
 "$ZIG" cc $CF -o build/test_meleehit.exe test_meleehit.c
 "$ZIG" cc $CF -DMH_MODEL_BEFORE_FIX -o build/test_meleehit_pre.exe test_meleehit.c

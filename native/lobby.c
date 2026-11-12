@@ -318,25 +318,27 @@ static void push_session(lobby_t *l, int episode, int part, int diff)
     run(l, out, sizeof out, "session %d %d %d %d %d", episode, part, diff, (l->set.sflags & 7) | (l->cont ? (int)CP_SESS_CONT : 0), lobby_episode_game_type(episode));
 }
 
-/* 0.2.1: this PC's co-op save can continue (1 + its half and difficulty) */
-static int own_save(lobby_t *l, int *part, int *diff)
+/* 0.2.1: this PC's co-op save can continue (1 + its room episode (0.3.1: 1-4, 5, 9), half and difficulty) */
+static int own_save(lobby_t *l, int *episode, int *part, int *diff)
 {
-    int p = -1, d = 1;
-    if (!l->env.coop_save || !l->env.coop_save(l->env.user, &p, &d) || p < 0 || p > 1) return 0;
+    int e = 1, p = -1, d = 1;
+    if (!l->env.coop_save || !l->env.coop_save(l->env.user, &e, &p, &d) || p < 0 || p > 1 || !lobby_episode_valid(e)) return 0;
+    if (episode) *episode = e;
     if (part) *part = p;
     if (diff) *diff = d;
     return 1;
 }
-/* 0.2.1: a Continue session (CP_SESS_CONT) can start only when both PCs hold a co-op save of its half (the guest follows the host's checkpoint) */
+/* 0.3.1: the save key of a room episode and half (coopsave_logic.h cps_save_key_of; cp_player.save) */
+static unsigned save_key_of(int episode, int part) { return episode > 0 && (part == 0 || part == 1) ? (unsigned)(episode * 2 + part) : 0u; }
+/* 0.2.1: a Continue session (CP_SESS_CONT) can start only when both PCs hold a co-op save of its episode (0.3.1; the half before) and half (the guest follows the host's checkpoint) */
 static int cont_ok(lobby_t *l, const facts *f)
 {
     if (!(f->ss.flags & CP_SESS_CONT)) return 1;
-    int p = -1;
-    if (f->host) {
-        if (!own_save(l, &p, NULL) || p != f->ss.part) return 0;
-        return f->other < 0 || (f->pl[f->other].flags & (f->ss.part ? CP_PF_SAVE1 : CP_PF_SAVE0)) != 0;
-    }
-    return own_save(l, &p, NULL) && p == f->ss.part;
+    int e = 0, p = -1, ep = f->ss.episode ? f->ss.episode : 1;
+    unsigned want = save_key_of(ep, f->ss.part);
+    if (!own_save(l, &e, &p, NULL) || save_key_of(e, p) != want) return 0;
+    if (f->host) return f->other < 0 || f->pl[f->other].save == want;
+    return 1;
 }
 
 /* forget a finished result nobody collected (a cancelled attempt), so the next job is accepted */
@@ -633,7 +635,7 @@ static void build_rows(lobby_t *l, lobby_view *v, const facts *f)
         if (f->host) {
             ep_label(l, f->ss.episode ? f->ss.episode : 1, buf, sizeof buf, 1);
             add_row(v, A_EPISODE, LV_NORMAL, tx(l, LT_EPISODE), buf);
-            if (l->cont || (own_save(l, NULL, NULL) && (!f->ss.episode || f->ss.episode == 1))) {   /* 0.2.1: the checkpoint of the co-op save (the half and the difficulty come from it; Episode 1 only) */
+            if (l->cont || own_save(l, NULL, NULL, NULL)) {   /* 0.2.1: the checkpoint of the co-op save (its episode (0.3.1: any; Episode 1 only before), half and difficulty come from it) */
                 snprintf(buf, sizeof buf, "<  %s  >", tx(l, (f->ss.flags & CP_SESS_CONT) ? LT_YES : LT_NO));
                 add_row(v, A_CONT, LV_NORMAL, tx(l, LT_CONTINUE), buf);
             }
@@ -806,16 +808,16 @@ static void change_value(lobby_t *l, int action, int dir)
     if (!f.active || !f.host || f.phase != CP_PHASE_LOBBY) return;
     int ep = f.ss.episode ? f.ss.episode : 1, df = f.ss.difficulty;
     if (action == A_CONT) {   /* 0.2.1: Continue takes the half and the difficulty of the co-op save; the host's character moves to the same slot of that half */
-        int part = -1, sdf = 1;
+        int part = -1, sdf = 1, sep = 1;
         if (!l->cont) {
-            if (!own_save(l, &part, &sdf)) return;
+            if (!own_save(l, &sep, &part, &sdf)) return;
             l->cont = 1;
             int c = f.connected ? f.pl[f.pid].character : CP_CHAR_NONE;
             if (c <= 3 && (c >> 1) != part) {
                 char out[120];
                 run(l, out, sizeof out, "char %s", char_words[part * 2 + (c & 1)]);
             }
-            push_session(l, 1, part, sdf);
+            push_session(l, sep, part, sdf);   /* 0.3.1: the room follows the save's episode (was always Episode 1) */
         } else {
             l->cont = 0;
             push_session(l, ep, f.ss.part, l->set.difficulty);
@@ -825,7 +827,7 @@ static void change_value(lobby_t *l, int action, int dir)
     int part = f.ss.part;
     if (action == A_EPISODE) {
         ep = lobby_episode_step(ep, dir);
-        if (l->cont) l->cont = 0;   /* a Continue is a checkpoint of Episode 1 */
+        if (l->cont) l->cont = 0;   /* a Continue is the checkpoint of the save's episode: another episode is a new game */
         if (lobby_episode_is_bonus(ep)) {   /* one part: the host's character moves to the same slot of part 0 (the guest follows by the auto pick) */
             part = 0;
             int c = f.connected ? f.pl[f.pid].character : CP_CHAR_NONE;

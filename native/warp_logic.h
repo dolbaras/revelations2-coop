@@ -78,106 +78,106 @@ static const wl_chp_t g_wl_chp2[] = {
     {700, 0, -1, 17271, 1112, -73669, "Little Miss: graveyard and sewer"},
     {701, 0, -1, 19581, 2400, -73890, "Little Miss: the town"},
     {711, 0, -1, 35724, 2000, -30792, "Little Miss: hill and tunnel"},
-    {201, 0, -1, 41678, 397, -44751, "start"},
-    {201, 1, 41, 35962, 759, -45040, "helicopter spot (siren starts)"},
-    {201, 2, 25, 41529, 404, -41258, "fuel warehouse opened"},
-    {201, 3, 197, 42320, 600, -46692, "battery hut entry"},
-    {201, 4, 15, 36266, 728, -45145, "helicopter spot"},
-    {201, 5, 45, 41749, 660, -45626, "tavern 2F (siren stopped)"},
-    {201, 6, 51, 41729, 397, -44958, "tavern 1F (Pedro infected)"},
-    {201, 7, 18, 44505, 193, -41685, "Pedro joins"},
-    {203, 0, 0, 41732, 1176, -52496, "inside the tunnel"},
-    {203, 1, 7, 39014, 2000, -57218, "outside the tunnel"},
-    {203, 2, 12, 30714, 2450, -59820, "after parting with Neil"},
-    {203, 3, 22, 24226, 2050, -65279, "apartment entrance"},
-    {203, 4, 24, 28982, 2050, -60344, "in front of the park"},
-    {203, 5, 23, 26972, 2450, -65115, "hospital entrance"},
-    {203, 6, 68, 22679, 2750, -67032, "before the fat one"},
-    {250, 0, -1, 28130, 3000, -13297, "start"},
-    {250, 1, 9, 39637, 2500, -23445, "just before the first encounter"},
-    {250, 2, 20, 38868, 2000, -31811, "entrance of the area with the key"},
-    {251, 0, 50, 43774, 459, -39094, "start"},
-    {251, 1, 14, 45302, 98, -43050, "before Glasp"},
-    {253, 0, 1, 41746, 1150, -52620, "start"},
-    {253, 1, 2, 30433, 2050, -57895, "first building"},
-    {253, 2, 3, 28308, 2000, -59319, "main street"},
-    {253, 3, 61, 24253, 2050, -65283, "in front of the apartment"},
-    {253, 4, 4, 22743, 3250, -64802, "helicopter-crash spot"},
-    {253, 5, 14, 26970, 2450, -65090, "hospital entrance"},
-    {253, 6, 9, 32297, 1995, -58514, "after Vitaly 1st"},
-    {254, 0, 100, 19508, 2400, -74364, "start position"},
-    {300, 0, 300, 16907, 1950, -68889, "right after the start"},
-    {300, 1, 200, 7036, 1950, -66799, "processing building entrance"},
-    {300, 2, 201, 6462, 1950, -65499, "laser-sight room entrance"},
-    {300, 3, 202, 2274, 1950, -69994, "slaughter building entrance"},
-    {300, 4, 203, -3903, 1550, -65034, "blood bath cleared"},
-    {300, 5, 204, -4958, 1550, -70359, "meat slicer cleared"},
-    {300, 6, 205, 7236, 1952, -72141, "W building entrance"},
-    {300, 7, 207, -5033, 1550, -70737, "before the meat slicer"},
-    {300, 8, 208, 6424, 2450, -62874, "Hawk room entrance"},
-    {300, 9, 209, 5699, 2402, -74678, "W building midpoint"},
-    {300, 10, 210, 6301, 1950, -65489, "after the laser sight"},
-    {300, 11, 206, 6311, 2450, -63414, "after taking the glass eye"},
-    {300, 12, 40, 6350, 2450, -63249, "after taking the processing-plant key"},
-    {300, 13, 50, 5732, 1952, -70042, "after escaping the dismantling yard"},
-    {301, 0, 30, 11617, 1150, -77217, "start"},
-    {301, 1, 31, 19322, 1300, -80187, "before the sluice with scaffold"},
-    {301, 2, 33, 19851, 1100, -72821, "narrow-path area"},
-    {301, 3, 32, 15410, 1000, -80453, "after the Evgeny event"},
-    {301, 4, 34, 17621, 1000, -79960, "before the stairs"},
-    {303, 0, 0, 17507, 1812, -74487, "start (underground)"},
-    {303, 1, -1, 19196, 3250, -81162, "Ryan fight start"},
-    {303, 2, 80, 17104, 3700, -80594, "inside the control room"},
-    {306, 0, -1, 19588, 2359, -73672, "start position"},
-    {351, 0, -1, 17284, 1112, -73685, "start"},
-    {351, 1, 14, 21857, 1100, -79205, "after lowering Natalia"},
-    {351, 2, -1, 13092, 1100, -77956, "for checking: before Evgeny"},
-    {351, 3, 50, 15575, 1000, -80432, "before the Glasp fight"},
-    {352, 0, 200, 10285, 1100, -78671, "start"},
-    {352, 1, 201, 6364, 0, -77687, "NOUSE (unused)"},
-    {352, 2, 202, 4753, 0, -76775, "passed sluice 3"},
-    {352, 3, 203, -141, 499, -73904, "passed sluice 4"},
-    {352, 4, 204, -3635, 800, -73717, "passed the sluice area"},
-    {352, 5, 205, 6524, 0, -80224, "before the first sluice"},
-    {354, 0, 205, -6597, 1700, -78137, "start position"},
-    {354, 1, 200, -15605, 100, -83440, "just before getting the battery"},
-    {354, 2, 201, -15061, 105, -83994, "right after the shield Hom is down"},
-    {354, 3, 202, -10309, 300, -84498, "right after the 3rd conveyor"},
-    {354, 4, 203, -11613, 1700, -87115, "just before the fall"},
-    {354, 5, 204, -12431, 1600, -85649, "before the last battle"},
-    {354, 6, -1, -10149, 500, -82470, "first hut after descending the cliff"},
-    {354, 7, 206, -11894, 300, -84483, "when the fence door opened"},
-    {400, 0, -1, 19562, 12739, -81965, "start"},
-    {400, 1, 57, 17032, 15962, -82068, "collapse begins"},
-    {400, 2, 60, 13811, 15360, -81256, "power room"},
-    {400, 3, 64, 14109, 14760, -83855, "outer wall"},
-    {400, 4, 42, 18304, 11335, -80940, "last spurt"},
-    {451, 0, -1, -15566, 658, -94986, "start"},
-    {451, 1, 110, -19598, 1010, -102976, "crane, start"},
-    {451, 2, 111, -18600, 1499, -100166, "crane, middle"},
-    {451, 3, 113, -18612, 1505, -97575, "crane, end"},
-    {452, 0, 0, -19359, 2300, -94586, "start"},
-    {452, 1, 15, -25613, -6899, -91859, "B1F"},
-    {452, 2, 261, -31391, -6899, -91841, "central building"},
-    {452, 3, 90, -32844, -6399, -89614, "when entering left"},
-    {452, 4, 150, -33296, -6299, -95114, "right entrance"},
-    {452, 5, -1, -33379, -11399, -91372, "B2F"},
-    {452, 6, 198, -32617, -6399, -93195, "before the generator"},
-    {452, 7, 155, -38722, -6299, -94478, "shield-Hom room entrance"},
-    {452, 8, 110, -38376, -6301, -94640, "after leaving the shield-Hom room"},
-    {452, 9, 205, -33003, -6399, -90123, "when leaving the left room"},
-    {453, 0, 0, -59568, -16499, -105474, "start position"},
-    {454, 0, -1, -74134, 3962, -97099, "below the cliff"},
-    {455, 0, 0, -36811, -11399, -91883, "start"},
-    {455, 1, 12, -44331, -12599, -91847, "entered the mansion"},
-    {455, 2, 40, -45136, -12599, -88217, "before the 1F stairs"},
-    {455, 3, 20, -45126, -13649, -93472, "got the L1 card"},
-    {455, 4, 21, -48267, -13649, -88633, "got the emblem key"},
-    {455, 5, 22, -47439, -12599, -95123, "got the L2 card"},
-    {455, 6, 201, -45330, -13649, -94972, "rush room"},
-    {455, 7, 303, -47194, -16649, -96239, "old abandoned mine C"},
-    {455, 8, 330, -57934, -16587, -105560, "before the old mine C boss room"},
-    {455, 9, 95, -47565, -13649, -90211, "added: before the morgue"},
+    {201, 0, -1, 41678, 397, -44751, "start"},
+    {201, 1, 41, 35962, 759, -45040, "helicopter spot (siren starts)"},
+    {201, 2, 25, 41529, 404, -41258, "fuel warehouse opened"},
+    {201, 3, 197, 42320, 600, -46692, "battery hut entry"},
+    {201, 4, 15, 36266, 728, -45145, "helicopter spot"},
+    {201, 5, 45, 41749, 660, -45626, "tavern 2F (siren stopped)"},
+    {201, 6, 51, 41729, 397, -44958, "tavern 1F (Pedro infected)"},
+    {201, 7, 18, 44505, 193, -41685, "Pedro joins"},
+    {203, 0, 0, 41732, 1176, -52496, "inside the tunnel"},
+    {203, 1, 7, 39014, 2000, -57218, "outside the tunnel"},
+    {203, 2, 12, 30714, 2450, -59820, "after parting with Neil"},
+    {203, 3, 22, 24226, 2050, -65279, "apartment entrance"},
+    {203, 4, 24, 28982, 2050, -60344, "in front of the park"},
+    {203, 5, 23, 26972, 2450, -65115, "hospital entrance"},
+    {203, 6, 68, 22679, 2750, -67032, "before the fat one"},
+    {250, 0, -1, 28130, 3000, -13297, "start"},
+    {250, 1, 9, 39637, 2500, -23445, "just before the first encounter"},
+    {250, 2, 20, 38868, 2000, -31811, "entrance of the area with the key"},
+    {251, 0, 50, 43774, 459, -39094, "start"},
+    {251, 1, 14, 45302, 98, -43050, "before Glasp"},
+    {253, 0, 1, 41746, 1150, -52620, "start"},
+    {253, 1, 2, 30433, 2050, -57895, "first building"},
+    {253, 2, 3, 28308, 2000, -59319, "main street"},
+    {253, 3, 61, 24253, 2050, -65283, "in front of the apartment"},
+    {253, 4, 4, 22743, 3250, -64802, "helicopter-crash spot"},
+    {253, 5, 14, 26970, 2450, -65090, "hospital entrance"},
+    {253, 6, 9, 32297, 1995, -58514, "after Vitaly 1st"},
+    {254, 0, 100, 19508, 2400, -74364, "start position"},
+    {300, 0, 300, 16907, 1950, -68889, "right after the start"},
+    {300, 1, 200, 7036, 1950, -66799, "processing building entrance"},
+    {300, 2, 201, 6462, 1950, -65499, "laser-sight room entrance"},
+    {300, 3, 202, 2274, 1950, -69994, "slaughter building entrance"},
+    {300, 4, 203, -3903, 1550, -65034, "blood bath cleared"},
+    {300, 5, 204, -4958, 1550, -70359, "meat slicer cleared"},
+    {300, 6, 205, 7236, 1952, -72141, "W building entrance"},
+    {300, 7, 207, -5033, 1550, -70737, "before the meat slicer"},
+    {300, 8, 208, 6424, 2450, -62874, "Hawk room entrance"},
+    {300, 9, 209, 5699, 2402, -74678, "W building midpoint"},
+    {300, 10, 210, 6301, 1950, -65489, "after the laser sight"},
+    {300, 11, 206, 6311, 2450, -63414, "after taking the glass eye"},
+    {300, 12, 40, 6350, 2450, -63249, "after taking the processing-plant key"},
+    {300, 13, 50, 5732, 1952, -70042, "after escaping the dismantling yard"},
+    {301, 0, 30, 11617, 1150, -77217, "start"},
+    {301, 1, 31, 19322, 1300, -80187, "before the sluice with scaffold"},
+    {301, 2, 33, 19851, 1100, -72821, "narrow-path area"},
+    {301, 3, 32, 15410, 1000, -80453, "after the Evgeny event"},
+    {301, 4, 34, 17621, 1000, -79960, "before the stairs"},
+    {303, 0, 0, 17507, 1812, -74487, "start (underground)"},
+    {303, 1, -1, 19196, 3250, -81162, "Ryan fight start"},
+    {303, 2, 80, 17104, 3700, -80594, "inside the control room"},
+    {306, 0, -1, 19588, 2359, -73672, "start position"},
+    {351, 0, -1, 17284, 1112, -73685, "start"},
+    {351, 1, 14, 21857, 1100, -79205, "after lowering Natalia"},
+    {351, 2, -1, 13092, 1100, -77956, "for checking: before Evgeny"},
+    {351, 3, 50, 15575, 1000, -80432, "before the Glasp fight"},
+    {352, 0, 200, 10285, 1100, -78671, "start"},
+    {352, 1, 201, 6364, 0, -77687, "NOUSE (unused)"},
+    {352, 2, 202, 4753, 0, -76775, "passed sluice 3"},
+    {352, 3, 203, -141, 499, -73904, "passed sluice 4"},
+    {352, 4, 204, -3635, 800, -73717, "passed the sluice area"},
+    {352, 5, 205, 6524, 0, -80224, "before the first sluice"},
+    {354, 0, 205, -6597, 1700, -78137, "start position"},
+    {354, 1, 200, -15605, 100, -83440, "just before getting the battery"},
+    {354, 2, 201, -15061, 105, -83994, "right after the shield Hom is down"},
+    {354, 3, 202, -10309, 300, -84498, "right after the 3rd conveyor"},
+    {354, 4, 203, -11613, 1700, -87115, "just before the fall"},
+    {354, 5, 204, -12431, 1600, -85649, "before the last battle"},
+    {354, 6, -1, -10149, 500, -82470, "first hut after descending the cliff"},
+    {354, 7, 206, -11894, 300, -84483, "when the fence door opened"},
+    {400, 0, -1, 19562, 12739, -81965, "start"},
+    {400, 1, 57, 17032, 15962, -82068, "collapse begins"},
+    {400, 2, 60, 13811, 15360, -81256, "power room"},
+    {400, 3, 64, 14109, 14760, -83855, "outer wall"},
+    {400, 4, 42, 18304, 11335, -80940, "last spurt"},
+    {451, 0, -1, -15566, 658, -94986, "start"},
+    {451, 1, 110, -19598, 1010, -102976, "crane, start"},
+    {451, 2, 111, -18600, 1499, -100166, "crane, middle"},
+    {451, 3, 113, -18612, 1505, -97575, "crane, end"},
+    {452, 0, 0, -19359, 2300, -94586, "start"},
+    {452, 1, 15, -25613, -6899, -91859, "B1F"},
+    {452, 2, 261, -31391, -6899, -91841, "central building"},
+    {452, 3, 90, -32844, -6399, -89614, "when entering left"},
+    {452, 4, 150, -33296, -6299, -95114, "right entrance"},
+    {452, 5, -1, -33379, -11399, -91372, "B2F"},
+    {452, 6, 198, -32617, -6399, -93195, "before the generator"},
+    {452, 7, 155, -38722, -6299, -94478, "shield-Hom room entrance"},
+    {452, 8, 110, -38376, -6301, -94640, "after leaving the shield-Hom room"},
+    {452, 9, 205, -33003, -6399, -90123, "when leaving the left room"},
+    {453, 0, 0, -59568, -16499, -105474, "start position"},
+    {454, 0, -1, -74134, 3962, -97099, "below the cliff"},
+    {455, 0, 0, -36811, -11399, -91883, "start"},
+    {455, 1, 12, -44331, -12599, -91847, "entered the mansion"},
+    {455, 2, 40, -45136, -12599, -88217, "before the 1F stairs"},
+    {455, 3, 20, -45126, -13649, -93472, "got the L1 card"},
+    {455, 4, 21, -48267, -13649, -88633, "got the emblem key"},
+    {455, 5, 22, -47439, -12599, -95123, "got the L2 card"},
+    {455, 6, 201, -45330, -13649, -94972, "rush room"},
+    {455, 7, 303, -47194, -16649, -96239, "old abandoned mine C"},
+    {455, 8, 330, -57934, -16587, -105560, "before the old mine C boss room"},
+    {455, 9, 95, -47565, -13649, -90211, "added: before the morgue"},
 };
 #define WL_CHP2_N ((int)(sizeof g_wl_chp2 / sizeof g_wl_chp2[0]))
 
@@ -359,6 +359,84 @@ static inline int wl_retry_decide(int on, int reason, int agame_state, int my_hp
     if (my_hp <= 0) { *why = "my human is dead (the death screen retry follows)"; return WL_RC_IGNORE; }
     *why = reason == WL_RC_WARP ? "the partner warped: the same checkpoint here" : "the partner retries from its checkpoint: this PC retries too";
     return reason == WL_RC_WARP ? WL_RC_APPLY_WARP : WL_RC_RESTART;
+}
+
+/* ---- 0.3.1 (R1, notes\fix031-plan.md): the lobby's start of Barry's half of Episodes 2-4 is ONE jump of the host (warp `<stage> <sp> half`) that the partner takes
+ * through the retry coupling above. In 0.3.0 the host sent it once and a partner whose game was not in play at that moment (still loading when the barrier opened by
+ * its 300 s timeout, live allepP27; a death screen; a load) ignored it for good: the host played Barry's half, the partner Claire's first stage. Now:
+ *   - the host keeps sending the same jump every WL_SH_RESEND_MS while the session is playing and its own game is in the target stage, until the partner answers
+ *     "I am in Barry's half" (event HALF_OK); it stops at that answer, at a section change (the host left the target stage after it had reached it, or is back in
+ *     part 0), when the session ends, or after WL_SH_GIVEUP_MS;
+ *   - the partner is idempotent: in the jump's target stage it only answers (no second jump); the same jump applied less than WL_SH_LOADING_MS ago is being loaded (ignored);
+ *     otherwise the retry coupling decides as before (in play: jump, else ignore and wait for the next one); after a jump it answers once it is in play in part 1.
+ * -DWL_MODEL_BEFORE_031 = the 0.3.0 logic (one send, no answer, no idempotence): tests/build.sh checks that test_warp fails with it. */
+#define WL_SH_RESEND_MS 3000u
+#define WL_SH_GIVEUP_MS 600000u
+#define WL_SH_LOADING_MS 90000u
+static inline int wl_stage_part(int stage) { return stage < 100 ? -1 : (stage % 100 > 49); }   /* Story_GetPartOfArea: 250 / 351 / 451 are part 1 */
+typedef struct {
+    int active, stage, seen;     /* the jump's target stage; seen = the host's own game was in play there */
+    unsigned since, last_tx, sent;
+} wl_sh_host_t;
+enum { WL_SH_WAIT = 0, WL_SH_SEND = 1, WL_SH_STOP = 2 };
+static inline void wl_sh_host_arm(wl_sh_host_t *h, int stage, unsigned now)
+{
+    memset(h, 0, sizeof *h);
+    h->active = 1, h->stage = stage, h->since = now, h->last_tx = now;   /* the first send is the hop itself (warp_do) */
+}
+/* one step of the host: session = a session exists, playing = its phase is PLAYING (barrier open), my_stage / my_in_play = the host's own game, acked = HALF_OK arrived */
+static inline int wl_sh_host_step(wl_sh_host_t *h, int session, int playing, int my_stage, int my_in_play, int acked, unsigned now, const char **why)
+{
+    *why = "";
+    if (!h->active) return WL_SH_WAIT;
+#ifdef WL_MODEL_BEFORE_031
+    (void)session, (void)playing, (void)my_stage, (void)my_in_play, (void)acked, (void)now;
+    h->active = 0;
+    *why = "0.3.0: the jump is sent once";
+    return WL_SH_STOP;
+#else
+    if (acked) { h->active = 0; *why = "the partner is in Barry's half"; return WL_SH_STOP; }
+    if (!session) { h->active = 0; *why = "the session ended"; return WL_SH_STOP; }
+    if (now - h->since >= WL_SH_GIVEUP_MS) { h->active = 0; *why = "no answer for 10 minutes: given up"; return WL_SH_STOP; }
+    if (my_stage == h->stage && my_in_play) h->seen = 1;
+    if (h->seen && my_stage != h->stage) { h->active = 0; *why = "a section change (this game left the jump's stage)"; return WL_SH_STOP; }
+    if (h->seen && wl_stage_part(my_stage) == 0) { h->active = 0; *why = "this game is back in part 0"; return WL_SH_STOP; }
+    if (!playing || my_stage != h->stage || !my_in_play) return WL_SH_WAIT;   /* a load (its own or the partner's): nothing is sent */
+    if (now - h->last_tx < WL_SH_RESEND_MS) return WL_SH_WAIT;
+    h->last_tx = now, h->sent++;
+    *why = "no answer yet: the jump again";
+    return WL_SH_SEND;
+#endif
+}
+enum { WL_SH_G_RETRY = 0, WL_SH_G_ACK = 1, WL_SH_G_IGNORE = 2 };
+/* the partner got a `half` jump to target_stage: my_stage = its story stage, same_ms_ago = time since it applied THIS jump line (0xFFFFFFFF: never); WL_SH_G_RETRY = decide
+ * with wl_retry_decide. Idempotent per jump: already in the target stage = answer only; the same line applied less than WL_SH_LOADING_MS ago = being loaded. Any other
+ * `half` jump goes on as before (the lab's hops inside part 1, 452 -> 455: live slot F of 2026-11-12, a first rule "any part-1 stage = done" left the guest behind). */
+static inline int wl_sh_guest_decide(int my_stage, int my_in_play, int target_stage, unsigned same_ms_ago, const char **why)
+{
+#ifdef WL_MODEL_BEFORE_031
+    (void)my_stage, (void)my_in_play, (void)target_stage, (void)same_ms_ago;
+    *why = "";
+    return WL_SH_G_RETRY;
+#else
+    if (target_stage > 0 && my_stage == target_stage) {
+        *why = my_in_play ? "already in the jump's stage: answered, no second jump" : "already in the jump's stage (loading): no second jump";
+        return my_in_play ? WL_SH_G_ACK : WL_SH_G_IGNORE;
+    }
+    if (same_ms_ago < WL_SH_LOADING_MS) { *why = "this jump is being loaded here: no second jump"; return WL_SH_G_IGNORE; }
+    *why = "";
+    return WL_SH_G_RETRY;
+#endif
+}
+/* the partner after its jump: answer once its game is in play in the jump's stage */
+static inline int wl_sh_guest_answer(int pending_stage, int my_stage, int my_in_play)
+{
+#ifdef WL_MODEL_BEFORE_031
+    (void)pending_stage, (void)my_stage, (void)my_in_play;
+    return 0;
+#else
+    return pending_stage > 0 && my_in_play && my_stage == pending_stage;
+#endif
 }
 
 #endif

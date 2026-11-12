@@ -25,7 +25,8 @@ What it does
 - When a player leaves or the connection is lost, the host reads it on screen and plays on with the game's AI partner; a guest whose host is gone reads it
   and goes back to the title by itself. A partner who does not answer for 8 seconds (game in the background, a long load, a stall) is named on screen.
 - A co-op game keeps its own save (new in 0.2.1): your campaign save is never changed by a co-op game. In the room the host can choose "Continue" to go on
-  from the last checkpoint of the co-op save; the guest then follows the host's checkpoint. See "Saves" below.
+  from the last checkpoint of the co-op save, in any episode and half and in the bonus episodes (0.3.1; Episode 1 only before): the room then switches to
+  that episode and half, and the guest follows the host's checkpoint. See "Saves" below.
 - Raid Mode and the game's online services are not touched; the mod does nothing outside a co-op game started from the lobby.
 
 Install
@@ -46,6 +47,7 @@ Needs: the Steam version of Resident Evil Revelations 2, build 3658995 (the inst
 PowerShell 5.1 (part of Windows). Direct connection by IP: the host needs inbound UDP port 28410 (Windows asks once to allow the game through its firewall).
 
 Limits
+- Continue in the room (0.3.1) was checked on two PCs in both halves of Episode 2, The Struggle and Little Miss; not yet in Episodes 3 and 4.
 - Verified in the lab stage by stage, NOT as a complete playthrough. Episode 1 is tested from start to end. Episodes 2-4 and the two bonus episodes: the lobby start with
   the right characters, walking of both players, the fights of Episode 2's village (siege waves and the Pedro boss) and of The Struggle's second chapter, the hand-over
   of Episode 3 and of The Struggle between their stages, and the end of Episodes 2 and 3, The Struggle, Little Miss and the game's last stage were shown on two PCs; most
@@ -63,7 +65,8 @@ Limits
   * Play between two different networks (Steam relay).
 - Barry's half of Episodes 2-4 starts by itself a few seconds after the first stage of the part has loaded (the game does not start it from the menu): the first stage's
   opening may flash by.
-- "Continue" in the room works for Episode 1 checkpoints only; for the other episodes choose a new game of the half.
+- "Continue" is not offered for a save made at the end of a half or of a bonus chapter (its results) in Episodes 2-4 and the bonus episodes: start the next half or
+  chapter as a new game.
 - Survival, Invisible and Raid are not offered by the lobby. Episodes 1 to 4 and the two bonus episodes (The Struggle, Little Miss) are.
 - A co-op game starts at the beginning of the half the host picks (Claire's half or Barry's half), or with Continue at the last checkpoint of the co-op save;
   joining a running game is not possible. If one player's game closes or the connection is lost, start a new co-op game from the lobby (Continue takes you
@@ -73,7 +76,8 @@ Limits
   .rec file next to it is the checkpoint the room shows). Your campaign save (the one Steam keeps and Steam Cloud carries) is not opened by a co-op game and
   is exactly as before when you leave co-op; the co-op save is not in Steam Cloud, so it stays on that PC. The first co-op game starts its save from a copy of
   your campaign save's settings and unlocks; after that the two saves are separate. "Continue" in the room starts at the last checkpoint of the host's co-op
-  save; both players need a co-op save of that half (they played it together before), and the guest follows the host's checkpoint. To start the co-op story
+  save; both players need a co-op save of that episode and half (they played it together before), and the guest follows the host's checkpoint. The co-op save
+  holds one checkpoint: the last one of whatever episode was played. To start the co-op story
   over, choose Continue "No" (a new game of the half), or delete the two files. After a game over, Retry takes both players back to the same checkpoint.
 - Achievements: Steam achievements are NOT blocked in your game. What you earn in a co-op game is really unlocked on your Steam account (and cannot be taken back by this mod);
   each PC credits only what its own player did, through the game's own record path.

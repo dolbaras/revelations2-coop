@@ -224,8 +224,49 @@ static void test_record(void)
     cps_rec b = r;
     cps_rec_set_field(&b, CPS_S_STAGE, 153), b.crc = cps_rec_crc(&b);
     CHECK(cps_rec_continuable(&b, &part, NULL, NULL, NULL) && part == 1 && cps_save_pflags(&b, 32, 64) == 64);
-    cps_rec_set_field(&b, CPS_S_STAGE, 201), cps_rec_set_field(&b, CPS_S_EPISODE, 2), b.crc = cps_rec_crc(&b);
-    CHECK(!cps_rec_continuable(&b, NULL, NULL, NULL, NULL) && cps_save_pflags(&b, 32, 64) == 0);   /* Episode 2: not in co-op 0.2.x */
+    /* 0.3.1 C1: Episode 1 exactly as 0.2.1 / 0.3.0 (the reference rule below is the old one); every other episode / half of the room now continues too */
+    for (int stg = 90; stg <= 160; stg++)
+        for (int d = -1; d <= 4; d++) {
+            cps_rec_set_field(&b, CPS_S_STAGE, (uint32_t)stg), cps_rec_set_field(&b, CPS_S_EPISODE, 1), cps_rec_set_field(&b, CPS_S_DIFF, (uint32_t)d), b.crc = cps_rec_crc(&b);
+            int ref = cps_stage_episode(stg) == 1 && d >= 0 && d <= 3, p2 = -9, d2 = -9;
+            int got = cps_rec_continuable(&b, &p2, &d2, NULL, NULL);
+            CHECK(got == ref);
+            if (got && ref) CHECK(p2 == cps_stage_part(stg) && d2 == d && cps_save_pflags(&b, 32, 64) == (p2 ? 64u : 32u) && cps_save_key(&b) == (unsigned)(2 + p2));
+        }
+    static const struct { int stage, ep, room, part; } cc[] = {
+        {201, 2, 2, 0}, {203, 2, 2, 0}, {250, 2, 2, 1}, {254, 2, 2, 1}, {306, 3, 3, 0}, {303, 3, 3, 0}, {351, 3, 3, 1}, {354, 3, 3, 1}, {400, 4, 4, 0}, {451, 4, 4, 1}, {454, 4, 4, 1},
+        {600, 5, 5, 0}, {620, 6, 5, 0}, {610, 7, 5, 0}, {630, 8, 5, 0}, {700, 9, 9, 0}, {701, 10, 9, 0}, {711, 11, 9, 0},
+        {201, 1, 0, 0}, {101, 2, 0, 0}, {600, 9, 0, 0}, {700, 5, 0, 0}, {9000, 2, 0, 0}, {201, 12, 0, 0}, {1000, 5, 0, 0}};   /* mismatches: not continuable */
+    b.temp[CPS_S_DONE - CPS_T_OFF] = 0;   /* a plain checkpoint (slotA holds random bytes) */
+    for (unsigned i = 0; i < sizeof cc / sizeof cc[0]; i++) {
+        cps_rec_set_field(&b, CPS_S_STAGE, (uint32_t)cc[i].stage), cps_rec_set_field(&b, CPS_S_EPISODE, (uint32_t)cc[i].ep), cps_rec_set_field(&b, CPS_S_DIFF, 1), b.crc = cps_rec_crc(&b);
+        int p2 = -9;
+        int got = cps_rec_continuable(&b, &p2, NULL, NULL, NULL);
+        CHECK(got == (cc[i].room != 0));
+        CHECK(cps_rec_room_episode(&b) == cc[i].room);
+        if (cc[i].room) CHECK(p2 == cc[i].part && cps_save_key(&b) == cps_save_key_of(cc[i].room, cc[i].part));
+        else CHECK(cps_save_key(&b) == 0 && cps_save_pflags(&b, 32, 64) == 0);
+    }
+    /* the done byte (slot +0x88): a save at the end of a half / chapter starts the NEXT one in the stock Continue: not offered for Ep2-4 / bonus; Episode 1 as in 0.3.0 */
+    {
+        cps_rec c = b;
+        cps_rec_set_field(&c, CPS_S_STAGE, 102), cps_rec_set_field(&c, CPS_S_EPISODE, 1), c.temp[CPS_S_DONE - CPS_T_OFF] = 1, c.crc = cps_rec_crc(&c);
+        CHECK(cps_rec_continuable(&c, NULL, NULL, NULL, NULL));   /* Episode 1: unchanged */
+        static uint8_t gs[CPS_SLOT_BYTES];
+        memset(gs, 0, sizeof gs), gs[CPS_S_DONE] = 1;
+        cps_rec_apply_slot(&c, gs);
+        CHECK(gs[CPS_S_DONE] == 1);   /* Episode 1: the guest's done byte untouched, as in 0.3.0 */
+        cps_rec_set_field(&c, CPS_S_STAGE, 254), cps_rec_set_field(&c, CPS_S_EPISODE, 2), c.crc = cps_rec_crc(&c);
+        CHECK(!cps_rec_continuable(&c, NULL, NULL, NULL, NULL) && cps_save_key(&c) == 0);
+        cps_rec_set_field(&c, CPS_S_STAGE, 630), cps_rec_set_field(&c, CPS_S_EPISODE, 8), c.crc = cps_rec_crc(&c);
+        CHECK(!cps_rec_continuable(&c, NULL, NULL, NULL, NULL));   /* the last chapter's clear would loop to chapter 1 */
+        c.temp[CPS_S_DONE - CPS_T_OFF] = 0, c.crc = cps_rec_crc(&c);
+        CHECK(cps_rec_continuable(&c, NULL, NULL, NULL, NULL));
+        gs[CPS_S_DONE] = 1;
+        cps_rec_apply_slot(&c, gs);
+        CHECK(gs[CPS_S_DONE] == 0 && cps_rd32(gs + CPS_S_STAGE) == 630 && cps_rd32(gs + CPS_S_EPISODE) == 8);   /* the guest takes the host's plain checkpoint */
+    }
+    CHECK(cps_save_key_of(2, 0) != cps_save_key_of(3, 0) && cps_save_key_of(2, 0) != cps_save_key_of(2, 1) && cps_save_key_of(1, 1) == 3 && cps_save_key_of(0, 0) == 0 && cps_save_key_of(9, 0) == 18);
     b = r, b.fl[5] ^= 1;
     CHECK(!cps_rec_valid(&b));   /* a damaged record */
     CHECK(cps_stage_part(100) == 0 && cps_stage_part(102) == 0 && cps_stage_part(151) == 1 && cps_stage_part(154) == 1 && cps_stage_part(99) == -1);

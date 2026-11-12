@@ -56,6 +56,99 @@ static int same_set(const int *a, int na, const int *b, int nb)
     return 1;
 }
 
+/* ---- 0.3.1 R1: the Barry-half start jump of the host and the partner, in steps of 500 ms. The host hops at t = 0 from 201 to 250 (its own load host_load ms);
+ * the partner is in its initial load for guest_init ms (the barrier opened by its timeout), then in play in 201; a jump it takes costs it guest_load ms.
+ * The session phase is PLAYING unless one of the two loads a jump (the barrier). end_ms: the session ends there (the host left). */
+typedef struct { int jumps, gstage, hstage, acked, sends_after_end, host_active, stop_seen; } sh_res_t;
+static sh_res_t sh_run(unsigned guest_init, unsigned host_load, unsigned guest_load, unsigned end_ms, unsigned total_ms)
+{
+    sh_res_t r;
+    memset(&r, 0, sizeof r);
+    wl_sh_host_t h;
+    r.hstage = 201, r.gstage = 201;
+    unsigned h_load_end = host_load, g_init_end = guest_init, g_jump_end = 0, applied_t = 0xFFFFFFFFu;
+    int g_jumping = 0, pending = 0, session = 1, have_applied = 0;
+    wl_sh_host_arm(&h, 250, 0);
+    int jump_now = 1;   /* the hop itself goes out at t = 0 (warp_do) */
+    for (unsigned t = 0; t <= total_ms; t += 500) {
+        if (t >= end_ms) session = 0;
+        int h_in_play = t >= h_load_end;
+        if (t >= h_load_end) r.hstage = 250;
+        int g_in_play = t >= g_init_end && !g_jumping;
+        if (g_jumping && t >= g_jump_end) g_jumping = 0, r.gstage = 250, g_in_play = t >= g_init_end;
+        if (jump_now) {   /* the partner receives the jump (reliable, same step) */
+            const char *why = 0;
+            unsigned ago = have_applied ? t - applied_t : 0xFFFFFFFFu;
+            int d = wl_sh_guest_decide(r.gstage, g_in_play, 250, ago, &why);
+            if (d == WL_SH_G_ACK) r.acked = 1;
+            else if (d == WL_SH_G_RETRY && wl_retry_decide(1, WL_RC_WARP, g_in_play ? 3 : 8, 700, &why) == WL_RC_APPLY_WARP) {
+                r.jumps++, applied_t = t, have_applied = 1, pending = 250, g_jumping = 1, g_jump_end = t + guest_load;
+                if (r.gstage == 250) r.gstage = 250;   /* a second jump inside part 1 reloads the stage (counted in jumps) */
+            }
+            jump_now = 0;
+        }
+        g_in_play = t >= g_init_end && !g_jumping;
+        if (wl_sh_guest_answer(pending, r.gstage, g_in_play)) r.acked = 1, pending = 0;
+        int playing = session && !g_jumping && t >= h_load_end;
+        const char *why = 0;
+        int s = wl_sh_host_step(&h, session, playing, r.hstage, h_in_play, r.acked, t, &why);
+        if (s == WL_SH_SEND) {
+            jump_now = 1;
+            if (!session) r.sends_after_end++;
+        }
+        if (s == WL_SH_STOP) r.stop_seen = 1;
+    }
+    r.host_active = h.active;
+    return r;
+}
+
+static void sh_tests(void)
+{
+    /* guest loading when the hop goes out (allepP27-like: its 201 load runs 40 s past the barrier): 0.3.0 left it in 201 for good */
+    sh_res_t a = sh_run(40000, 8000, 15000, 0xFFFFFFFFu, 180000);
+    CHECK(a.gstage == 250 && a.jumps == 1 && a.acked && !a.host_active);
+    /* guest in play when the hop goes out (the normal path of P2 / P4 / P10): exactly one jump, then the answer stops the repeats */
+    sh_res_t b = sh_run(0, 8000, 15000, 0xFFFFFFFFu, 120000);
+    CHECK(b.gstage == 250 && b.jumps == 1 && b.acked && !b.host_active);
+    /* a slower guest load than the resend period: the repeats during its load do not jump it twice */
+    sh_res_t b2 = sh_run(0, 4000, 60000, 0xFFFFFFFFu, 180000);
+    CHECK(b2.gstage == 250 && b2.jumps == 1 && b2.acked);
+    /* a repeat after the jump: a partner already in a stage of part 1 answers and does not jump again */
+    {
+        const char *why = 0;
+        CHECK(wl_sh_guest_decide(250, 1, 250, 0xFFFFFFFFu, &why) == WL_SH_G_ACK);
+        CHECK(wl_sh_guest_decide(351, 1, 351, 100000, &why) == WL_SH_G_ACK);
+        CHECK(wl_sh_guest_decide(451, 0, 451, 0xFFFFFFFFu, &why) == WL_SH_G_IGNORE);   /* in the target stage, still loading: neither a jump nor an answer */
+        CHECK(wl_sh_guest_decide(201, 1, 250, 2000, &why) == WL_SH_G_IGNORE);          /* the same jump is being loaded */
+        CHECK(wl_sh_guest_decide(201, 1, 250, WL_SH_LOADING_MS + 1000, &why) == WL_SH_G_RETRY);   /* that jump failed long ago: decide again */
+        CHECK(wl_sh_guest_decide(306, 1, 351, 0xFFFFFFFFu, &why) == WL_SH_G_RETRY);
+        /* the lab's hops inside part 1 (live slot F 2026-11-12: 452 -> 455 was refused by the first rule "any part-1 stage = done") */
+        CHECK(wl_sh_guest_decide(452, 1, 455, 0xFFFFFFFFu, &why) == WL_SH_G_RETRY);
+        CHECK(wl_sh_guest_decide(455, 1, 453, 0xFFFFFFFFu, &why) == WL_SH_G_RETRY);
+        CHECK(!wl_sh_guest_answer(250, 201, 1) && !wl_sh_guest_answer(250, 250, 0) && wl_sh_guest_answer(250, 250, 1) && !wl_sh_guest_answer(0, 250, 1) && !wl_sh_guest_answer(455, 452, 1));
+    }
+    /* the host leaves 5 s after the hop (its own load done at 4 s, the partner still loading): the repeats stop with the session, nothing is sent after it */
+    sh_res_t d = sh_run(60000, 4000, 15000, 5000, 120000);
+    CHECK(!d.host_active && d.sends_after_end == 0 && d.stop_seen && d.jumps == 0);
+    /* the host step itself: a section change and the end of the session stop it, a load only waits */
+    {
+        wl_sh_host_t h;
+        const char *why = 0;
+        wl_sh_host_arm(&h, 250, 0);
+        CHECK(wl_sh_host_step(&h, 1, 0, 201, 0, 0, 1000, &why) == WL_SH_WAIT && h.active);   /* the host's own load */
+        CHECK(wl_sh_host_step(&h, 1, 1, 250, 1, 0, 5000, &why) == WL_SH_SEND);               /* in play at 250, no answer: again */
+        CHECK(wl_sh_host_step(&h, 1, 1, 250, 1, 0, 6000, &why) == WL_SH_WAIT);               /* not before the resend period */
+        CHECK(wl_sh_host_step(&h, 1, 1, 251, 1, 0, 9000, &why) == WL_SH_STOP && !h.active && strstr(why, "section"));
+        wl_sh_host_arm(&h, 351, 0);
+        CHECK(wl_sh_host_step(&h, 0, 0, 306, 1, 0, 1000, &why) == WL_SH_STOP && strstr(why, "session"));
+        wl_sh_host_arm(&h, 451, 0);
+        CHECK(wl_sh_host_step(&h, 1, 1, 451, 1, 1, 4000, &why) == WL_SH_STOP && strstr(why, "Barry"));
+        wl_sh_host_arm(&h, 451, 0);
+        CHECK(wl_sh_host_step(&h, 1, 1, 451, 1, 0, WL_SH_GIVEUP_MS, &why) == WL_SH_STOP);
+        CHECK(wl_sh_host_step(&h, 1, 1, 451, 1, 0, WL_SH_GIVEUP_MS + 5000, &why) == WL_SH_WAIT);   /* stopped stays stopped */
+    }
+}
+
 int main(void)
 {
     char err[200];
@@ -220,6 +313,7 @@ int main(void)
         CHECK(a2.stage == 154 && b2.stage == 154 && a2.startpos == 3 && b2.startpos == 3 && game_flag(&b2, 165) == 1);
     }
 
+    sh_tests();
     printf("test_warp: %d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -80,7 +80,7 @@ typedef struct {
 typedef struct {
     int pid, used, connected, peer;
     char name[CP_NAME_MAX + 1];
-    uint8_t character, ready, flags, loaded;
+    uint8_t character, ready, flags, loaded, save;   /* save: the co-op save key (0.3.1, cp_player.save) */
     int rtt_ms;                       /* -1 unknown */
     uint32_t rx, dup, old, stale, gap;
     uint32_t expired;                 /* (steamgap) see cs_stats.rx_expired */

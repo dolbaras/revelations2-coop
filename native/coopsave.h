@@ -12,10 +12,11 @@ int coopsave_active(void);                   /* 1 = a co-op game runs: the save 
 int coopsave_enter(const char *why);
 /* the stock title Continue of the campaign slot (cDemoCampaignMenu_OnSelect case 0x11, game type 0). follow: apply the host's checkpoint record first (guest).
  * 1 = the game manager was told to load */
-int coopsave_continue_start(int follow);
+int coopsave_continue_start(int follow, int game_type);   /* 0.3.1: game type 0 (Episodes 1-4) or 3 / 4 (the bonus episodes) */
 void coopsave_frame(int in_menus, int title_menus, int session_running);   /* menu.c, every pass: gives the solo save back after the co-op game */
 /* the checkpoint this PC's co-op save can continue (Episode 1): 1 + part / difficulty / stage / start position, 0 none */
 int coopsave_summary(int *part, int *difficulty, int *stage, int *startpos);
+int coopsave_summary_ep(int *episode, int *part, int *difficulty);   /* 0.3.1: + the room episode (1-4, 5, 9) */
 unsigned coopsave_pflags(void);              /* CP_PF_SAVE0 / CP_PF_SAVE1 of this PC's co-op save */
 int coopsave_send_record(cs_t *s, char *err, int esz);   /* host, before START of a Continue: the record of its co-op save as events; 1 = sent */
 void coopsave_on_event(const void *body, unsigned len);  /* the glue's note callback: a record event (CP_EV_USER + 0x80) from the host */

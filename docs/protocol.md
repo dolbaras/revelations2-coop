@@ -1,4 +1,8 @@
-# Revelations 2 co-op: wire protocol, version 2 (stage 5)
+# Revelations 2 co-op: wire protocol, version 3 (0.3.1)
+
+**Version 3 (0.3.1)**: `HELLO` and every row of the lobby table (in `WELCOME`, `LOBBY_STATE`, `START`) carry one more byte after `flags`: `save` = the key of the player's co-op save checkpoint (room episode x 2 + half: Episode 1 Claire 2, Barry 3, ... Episode 4 Barry 9, The Struggle 10, Little Miss 18; 0 = none; `coopsave_logic.h` `cps_save_key`). A Continue starts only when the guest's key equals the host's. `CP_PROTO_MIN` = `CP_PROTO_VERSION` = 3: a version 2 build (0.3.0 and older) is refused with `REFUSE(VERSION)` (the package version check refused 0.3.0 against 0.3.1 anyway). New event `0x171` HALF_OK (partner -> host, body u16 the partner's story stage): the partner of a Barry-half start is in a stage of part 1; the host repeats the start jump (RETRY 0x170, reason warp, line `<stage> <sp> half`) every 3 s until it arrives (`warp_logic.h` `wl_sh_*`).
+
+History: version 2 (stage 5)
 
 Source of truth: `native/coop_proto.h` / `coop_proto.c` (encode and decode, shared by the proxy, the headless bot and the tests), session rules in
 `native/coop_session.c`, transport in `native/coop_net.c`. Tests: `tests/test_proto.c` (byte vectors, fuzz), `tests/test_session.c` (sim transport,
@@ -43,7 +47,7 @@ client                                host
 ```
 
 - `HELLO` carries `magic 'R2CP'`, the sender's `version` and the oldest version it still speaks (`min_version`), the first 8 bytes of the game
-  exe's SHA-256 (`exe_tag`; zeros = unknown, the bot) and the mod build string. The negotiated version is `min(both versions)`; today `CP_PROTO_MIN` = `CP_PROTO_VERSION` = 2 (version 1 had a 40-byte STATE: a version 1 build is refused with `REFUSE(VERSION)`).
+  exe's SHA-256 (`exe_tag`; zeros = unknown, the bot) and the mod build string. The negotiated version is `min(both versions)`; today `CP_PROTO_MIN` = `CP_PROTO_VERSION` = 3 (0.3.1: the save key; version 2 and version 1, which had a 40-byte STATE, are refused with `REFUSE(VERSION)`).
 - A host that has not received a `HELLO` 5 s after the transport connected drops the peer; a client that has no `WELCOME`/`REFUSE` after 10 s gives up.
 - `REFUSE` is followed by a graceful disconnect from the host. Anything but `HELLO` before the welcome is dropped.
 - **No join after the start (0.2.0 product rule, `cs_config.no_rejoin`, the glue sets it unless `REV2_REJOIN=1`)**: every `HELLO` after `START` is refused with

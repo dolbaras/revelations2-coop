@@ -129,7 +129,7 @@ typedef struct lobby_env {
     void (*save)(void *user, const lobby_settings *s);                   /* settings changed: persist */
     int (*clipboard)(void *user, char *out, int size);                   /* text on the clipboard (Ctrl+V), 1 = got some */
     int (*local_address)(void *user, char *out, int size);               /* "192.168.1.5" or "" */
-    int (*coop_save)(void *user, int *part, int *difficulty);            /* 0.2.1: this PC's co-op save can continue an Episode 1 checkpoint of that half (1); NULL / 0 = none */
+    int (*coop_save)(void *user, int *episode, int *part, int *difficulty);   /* 0.2.1: this PC's co-op save can continue a checkpoint (1) of that room episode (1-4, 5, 9: 0.3.1; Episode 1 only before) and half; NULL / 0 = none */
 } lobby_env;
 
 /* ---- input ---- */

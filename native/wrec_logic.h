@@ -34,6 +34,52 @@ static unsigned wrec_window(unsigned n, unsigned per, unsigned *rot, unsigned *i
 #endif
 }
 
+/* 3. 0.3.1 (R2, notes\fix031-plan.md): more enemies. The host read at most 48 live enemies and sent ONE batch per 66 ms tick: with n live enemies each had a record every
+ *    ceil(n / 12) ticks (40 in The Struggle's forest 600: every 264 ms, steps on the guest's PC), and beyond 48 never (their replicas stood still and the orphan rule could kill
+ *    them on the guest's PC). Now the list holds up to WREC_LIVE_MAX (the game's two enemy arrays of 64) and a tick sends ceil(n / 12) batches, at most WREC_MAX_BATCHES:
+ *    up to 48 live enemies every one has a record every tick, above that the window turns (every ceil(n / 48) ticks). With 12 or fewer the tick is EXACTLY 0.3.0's:
+ *    one batch, the list in order. Traffic: one full batch = 12 x 32 = 384 bytes + ~76 bytes of headers (message 16, ENet 16-20, UDP/IP 28; a Steam relay adds a few
+ *    dozen) at 15 ticks a second: 0.3.0 at most ~7 KB/s; now 40 enemies = 40 x 32 + 4 x 76 = 1584 bytes a tick = ~24 KB/s, 128 enemies = 48 x 32 + 4 x 76 = 1840 bytes =
+ *    ~28 KB/s (about 220 kbit/s), only while more than 12 are alive.
+ *    -DWREC_MODEL_BEFORE_031 = the 0.3.0 tick (one batch, 48 at most): tests/build.sh checks that test_wrec fails with it. */
+#define WREC_MAX_BATCHES 4u
+#define WREC_LIVE_MAX 128u          /* array size of the host's / guest's lists */
+static unsigned wrec_live_cap(void)
+{
+#ifdef WREC_MODEL_BEFORE_031
+    return 48u;
+#else
+    return WREC_LIVE_MAX;
+#endif
+}
+/* the batches of one tick: idx[b * per + k] (k < counts[b]) are the indices of batch b; returns the number of batches */
+static unsigned wrec_tick(unsigned n, unsigned per, unsigned maxb, unsigned *rot, unsigned *idx, unsigned *counts)
+{
+    if (!n || !per || !maxb) return 0;
+#ifdef WREC_MODEL_BEFORE_031
+    (void)maxb;
+    counts[0] = wrec_window(n, per, rot, idx);
+    return 1;
+#else
+    if (n <= per) {
+        counts[0] = wrec_window(n, per, rot, idx);   /* 0.3.0 exactly */
+        return 1;
+    }
+    if (n <= per * maxb) {
+        unsigned nb = (n + per - 1) / per;
+        for (unsigned b = 0; b < nb; b++) {
+            unsigned c = n - b * per < per ? n - b * per : per;
+            for (unsigned k = 0; k < c; k++) idx[b * per + k] = b * per + k;
+            counts[b] = c;
+        }
+        *rot = 0;
+        return nb;
+    }
+    for (unsigned b = 0; b < maxb; b++) counts[b] = wrec_window(n, per, rot, idx + b * per);
+    return maxb;
+#endif
+}
+
 #define WREC_ORPHAN_MS 10000u      /* no record of this layout for 10 s ... */
 #define WREC_ORPHAN_BATCHES 40u    /* ... while at least 40 batches of the host arrived (every enemy is in one of every ceil(n / 12) batches) */
 

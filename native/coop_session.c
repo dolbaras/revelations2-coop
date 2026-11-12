@@ -55,7 +55,7 @@ typedef struct {
 typedef struct {
     int used, connected, peer, hello_done;
     char name[CP_NAME_MAX + 1];
-    uint8_t character, ready, flags, loaded;
+    uint8_t character, ready, flags, loaded, save;   /* save: the co-op save key (0.3.1) */
     uint32_t hb_peer_t, hb_peer_rx;
     int have_hb;
     float srtt;
@@ -160,6 +160,7 @@ static void build_lobby(cs_t *s, cp_lobby *l)
         cp_player *p = &l->p[l->count++];
         p->pid = (uint8_t)i, p->character = s->pl[i].character, p->ready = s->pl[i].ready;
         p->flags = (uint8_t)((s->pl[i].flags & ~CP_PF_CONNECTED & ~CP_PF_LOADED) | (s->pl[i].connected ? CP_PF_CONNECTED : 0) | (s->pl[i].loaded ? CP_PF_LOADED : 0) | (i == 0 ? CP_PF_HOST : 0));
+        p->save = s->pl[i].save;
         memcpy(p->name, s->pl[i].name, sizeof p->name);
     }
 }
@@ -175,7 +176,7 @@ static void apply_lobby(cs_t *s, const cp_lobby *l)
         if (!q->used) memset(q, 0, sizeof *q);
         q->used = 1;
         q->connected = (p->flags & CP_PF_CONNECTED) != 0;
-        q->character = p->character, q->ready = p->ready, q->flags = p->flags & ~CP_PF_CONNECTED & ~CP_PF_LOADED, q->loaded = (p->flags & CP_PF_LOADED) != 0;
+        q->character = p->character, q->ready = p->ready, q->flags = p->flags & ~CP_PF_CONNECTED & ~CP_PF_LOADED, q->loaded = (p->flags & CP_PF_LOADED) != 0, q->save = p->save;
         memcpy(q->name, p->name, sizeof q->name);
         q->peer = p->pid == 0 ? 0 : -1;
     }
@@ -409,6 +410,7 @@ static void init_local_player(cs_t *s, int pid, int host)
     memset(p, 0, sizeof *p);
     p->used = 1, p->connected = 1, p->hello_done = 1, p->peer = -1;
     p->flags = (uint8_t)((host ? CP_PF_HOST : 0) | (s->cfg.is_bot ? CP_PF_BOT : 0) | CP_PF_CONNECTED | (s->cfg.pflags & (CP_PF_SAVE0 | CP_PF_SAVE1)));
+    p->save = (uint8_t)((s->cfg.pflags >> 8) & 0xFF);   /* 0.3.1: the co-op save key */
     memcpy(p->name, s->name, sizeof p->name);
     p->character = CP_CHAR_NONE;
 }
@@ -599,6 +601,7 @@ static void host_hello(cs_t *s, int peer, const cp_hello *h)
     p->used = 1, p->connected = 1, p->hello_done = 1, p->peer = peer;
     if (!rejoin) copy_name(p->name, h->name);
     p->flags = (uint8_t)((h->flags & (CP_PF_BOT | CP_PF_SAVE0 | CP_PF_SAVE1)) | CP_PF_CONNECTED);   /* 0.2.1: the guest's co-op save bits travel with it */
+    p->save = h->save;   /* 0.3.1: and its per-episode key */
     p->character = rejoin ? keep_char : (uint8_t)free_character(s, pid, h->want_char);
     p->ready = rejoin ? 1 : 0, p->loaded = 0;
     p->heard = now_of(s), p->silent_on = 0;
@@ -891,6 +894,7 @@ static void send_hello(cs_t *s)
     memcpy(h->exe_tag, s->cfg.exe_tag, 8);
     h->want_char = (uint8_t)(s->cfg.want_char >= 0 && s->cfg.want_char <= 3 ? s->cfg.want_char : CP_CHAR_NONE);
     h->flags = (uint8_t)((s->cfg.is_bot ? CP_PF_BOT : 0) | (s->cfg.pflags & (CP_PF_SAVE0 | CP_PF_SAVE1)));
+    h->save = (uint8_t)((s->cfg.pflags >> 8) & 0xFF);
     memcpy(h->name, s->name, sizeof h->name);
     snprintf(h->mod, sizeof h->mod, "%s", s->mod);
     send_msg(s, 0, CP_CH_CONTROL, 1, &m);
@@ -1378,11 +1382,12 @@ int cs_remote_pid(cs_t *s)
 void cs_set_pflags(cs_t *s, unsigned flags)
 {
     EnterCriticalSection(&s->lock);
-    flags &= CP_PF_SAVE0 | CP_PF_SAVE1;
+    flags &= CP_PF_SAVE0 | CP_PF_SAVE1 | 0xFF00u;   /* 0.3.1: bits 8..15 = the co-op save key */
     if (s->cfg.pflags != flags) {
         s->cfg.pflags = flags;
         if (s->role == CN_ROLE_HOST && s->pid >= 0 && s->pid < CP_MAX_PLAYERS && s->pl[s->pid].used) {
-            s->pl[s->pid].flags = (uint8_t)((s->pl[s->pid].flags & ~(CP_PF_SAVE0 | CP_PF_SAVE1)) | flags);
+            s->pl[s->pid].flags = (uint8_t)((s->pl[s->pid].flags & ~(CP_PF_SAVE0 | CP_PF_SAVE1)) | (flags & (CP_PF_SAVE0 | CP_PF_SAVE1)));
+            s->pl[s->pid].save = (uint8_t)((flags >> 8) & 0xFF);
             lobby_changed(s);
         }
     }
@@ -1398,7 +1403,7 @@ int cs_player(cs_t *s, int pid, cs_player_info *out)
         memset(out, 0, sizeof *out);
         out->pid = pid, out->used = 1, out->connected = p->connected, out->peer = p->peer;
         memcpy(out->name, p->name, sizeof out->name);
-        out->character = p->character, out->ready = p->ready, out->flags = p->flags, out->loaded = p->loaded;
+        out->character = p->character, out->ready = p->ready, out->flags = p->flags, out->loaded = p->loaded, out->save = p->save;
         out->rtt_ms = p->have_rtt ? (int)(p->srtt + 0.5f) : -1;
         out->rx = p->n_rx, out->dup = p->n_dup, out->old = p->n_old, out->stale = p->n_stale, out->gap = p->n_gap, out->expired = p->n_exp;
         ok = 1;

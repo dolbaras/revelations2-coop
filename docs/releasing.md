@@ -340,6 +340,8 @@ standalone Ultimate ASI Loader v10.0.2 next to the mod (its source and export ta
 The wording of the known limits in `docs/release-readme.txt` is the one of pre-release 2; the 0.2.0 text is written from the acceptance results (draft outside the repository).
   Real Steam unlocks were allowed by the owner for the lab accounts and one shared record (the flame achievement) was unlocked and read back on both accounts.
 
+**0.3.1** (in preparation, NOT published): Continue in the room for every episode and half and both bonus episodes (protocol version 3: the co-op save key in `HELLO` and the lobby rows), the Barry-half start repeated until the guest is in part 1 (event 0x171), more enemy records (up to 128 enemies, up to 4 batches a tick while more than 12 live). Offline: every suite green, the 0.3.0 models of the new rules fail (test_warp, test_wrec, test_coopsave), `test_installer -OldZip` with the published v0.3.0 zip: 252 of 252. The live checks and the hashes are in the release notes `noteseleaseselnotes-rev2-031-github.md` (private).
+
 **0.3.0** (tag `v0.3.0`, `--latest`, published 2026-11-12 from the public commit `227c5c5`; zip `f09658e5...`, setup exe `94dbcb5f...`; the full SHA-256 values are in the
 release notes): every episode and both bonus episodes offered by the lobby (see `docs/lobby.md` "Episodes 2-4 and the bonus episodes (0.3.0)"). Version: `R2_VERSION` in
 `native/r2.h` is `0.3.0` (the tag `v0.3.0`, the zip `revelations2-coop-0.3.0.zip`, `coop\version.txt` 0.3.0). `CP_PROTO_VERSION` stays 2: no message layout changed (the session block already

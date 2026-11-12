@@ -7,9 +7,9 @@ Network co-op for two players in the story campaign of **Resident Evil Revelatio
 
 ## Status
 
-**Version 0.3.0** ([release notes](https://github.com/dolbaras/revelations2-coop/releases/latest)): the lobby offers Episodes 1-4 (Claire's half with Moira and Barry's half with Natalia) and the bonus episodes The Struggle (Moira and Evgeny) and Little Miss (Natalia and Dark Natalia). **Episode 1 is tested from its start to its end; the other episodes were tested stage by stage in the lab, not as complete playthroughs.** A co-op game keeps its own save (the campaign save is never opened by a co-op game) and the room can continue from the host's last co-op checkpoint of Episode 1. Earlier: pre-releases 0.1.0 and 0.1.1, full releases 0.2.0 and 0.2.1.
+**Version 0.3.1** ([release notes](https://github.com/dolbaras/revelations2-coop/releases/latest)): the lobby offers Episodes 1-4 (Claire's half with Moira and Barry's half with Natalia) and the bonus episodes The Struggle (Moira and Evgeny) and Little Miss (Natalia and Dark Natalia). **Episode 1 is tested from its start to its end; the other episodes were tested stage by stage in the lab, not as complete playthroughs.** A co-op game keeps its own save (the campaign save is never opened by a co-op game) and the room can continue from the host's last co-op checkpoint in any episode and half and in the bonus episodes (0.3.1). 0.3.1 also fixes Barry's half starting on one PC only when the partner's game was still loading, and lets the guest's PC follow big groups of enemies smoothly. Earlier: pre-releases 0.1.0 and 0.1.1, full releases 0.2.0, 0.2.1 and 0.3.0.
 
-Checked in the game on the author's test PCs (host and guest on two PCs; Episodes 2-4 and the bonus episodes stage by stage, with test jumps). Nobody outside the lab has played 0.3.0 yet, and play between two different networks (Steam relay) has not been tried. Both players need the same version of the mod: another version is refused and told so.
+Continue in the room (0.3.1) was checked on two PCs in both halves of Episode 2, The Struggle and Little Miss (not yet in Episodes 3 and 4). Checked in the game on the author's test PCs (host and guest on two PCs; Episodes 2-4 and the bonus episodes stage by stage, with test jumps). Nobody outside the lab has played 0.3.x yet, and play between two different networks (Steam relay) has not been tried. Both players need the same version of the mod: another version is refused and told so.
 
 ## What works
 
@@ -22,7 +22,7 @@ Checked in the game on the author's test PCs (host and guest on two PCs; Episode
 | Episodes 2-4 and the bonus episodes: the lobby start with the right characters, both players walking and seeing each other, the fights of Episode 2's village (siege waves, the Pedro boss), the hand-over between stages and halves through the game's own results screens (Episode 3: 306 -> 351 and 303 -> 351; The Struggle: 600 -> 620 -> 610 -> 630), the ends of Episodes 2 and 3, The Struggle, Little Miss and the last stage | 🟨 stage by stage, not a playthrough; see "Known limits" |
 | The world run by the host's PC: enemies as replicas on the other PC, the guest's knife, handgun and bottle hits, kill credit for the player who made the kill, story flags, co-op doors, shutters, boxes and slides, enemy grabs, items, the stage change between areas | ✅ |
 | Downed / revive (the host's choice, on by default): the partner helps you up with the game's Rescue key before 60 seconds run out | ✅ both ways |
-| A co-op save of its own (`rev2_coop_save_<number>.dat`), Continue in the room from the host's last checkpoint | ✅ Episode 1 checkpoints only |
+| A co-op save of its own (`rev2_coop_save_<number>.dat`), Continue in the room from the host's last checkpoint | ✅ every episode and half, both bonus episodes (0.3.1) |
 | The partner's arrow on the minimap | ✅ |
 | Per-player Steam achievements (not blocked: what a co-op game earns is really unlocked) | ✅ |
 | Join through Steam on two PCs of one network; join by IP address | ✅ |
@@ -52,7 +52,7 @@ The setup exe is not code-signed, so Windows SmartScreen may warn ("More info" -
 
 - Title screen -> Campaign -> **Co-Op Play** opens the room. The host picks the episode (Episodes 1-4, The Struggle, Little Miss), the half and the difficulty; each player picks a character; both press Ready.
 - Join through Steam ("Join Game" in the friends list or the host's invite) or by the host's IP address.
-- **Continue** in the room (Episode 1): Yes starts at the host's last co-op checkpoint, No starts a new game of the half; the guest follows the host's checkpoint with his own items.
+- **Continue** in the room (every episode and half, the bonus episodes): Yes switches the room to the episode and half of the host's last co-op checkpoint and starts there, No starts a new game of the half; the guest follows the host's checkpoint with his own items (both need a co-op save of that episode and half).
 - Leaving: the pause menu has "Leave" while a co-op game runs, the host also "End Co-Op" (the host plays on with the game's AI partner).
 
 ### Controls
@@ -79,7 +79,7 @@ The co-op screens, the installer and the shortcut's messages are in the game's 1
   - Companions that the host's story removes may stay on the guest's PC where the story left them (no effect on play was seen).
   - Play between two different networks (Steam relay).
 - Barry's half of Episodes 2-4 starts by itself a few seconds after the first stage of the part has loaded: the first stage's opening may flash by.
-- "Continue" in the room works for Episode 1 checkpoints only; for the other episodes choose a new game of the half.
+- "Continue" is not offered for a save made at the end of a half or of a bonus chapter in Episodes 2-4 and the bonus episodes: start the next one as a new game.
 - Joining a running game is not possible: if one player's game closes or the connection is lost, start a new co-op game from the lobby.
 - The end of Episode 1's halves needs both players at the radio together.
 - **Steam achievements are NOT blocked:** what you earn in a co-op game is really unlocked on your Steam account.

@@ -103,6 +103,65 @@ void coop_pause_retry(void)
     rc_send(WL_RC_PAUSE, NULL);
 }
 
+/* 0.3.1 R1 (warp_logic.h wl_sh_*): the Barry-half start jump is repeated by the host until the partner answers HALF_OK from a stage of part 1 */
+#define EV_R_HALFOK (CP_EV_USER + 0x71)   /* 0x171: partner -> host, body u16 the partner's story stage */
+static wl_sh_host_t g_shh;
+static int g_shh_acked, g_shg_have, g_shg_pending;
+static unsigned g_shg_applied_t, g_sh_logs, g_sh_resends, g_sh_answers;
+static char g_shh_line[48], g_shg_line[48];   /* the host's start jump; the last half jump this PC applied as the partner */
+static unsigned g_sh_hold_until;   /* lab: `warp couple hold <ms>` */
+static int sh_held(void) { return (int)(g_sh_hold_until - GetTickCount()) > 0; }
+static int sh_in_play(void)
+{
+    unsigned ar = game_area();
+    return ar && (int)(rd32(ar + 4) & 0xFF) == 3 && game_in_episode() && !sh_held();
+}
+static int sh_my_stage(void)
+{
+    unsigned sb = story_block();
+    return sb ? (int)rd32(sb + 0x140380) : -1;
+}
+static void sh_answer(const char *why)
+{
+    if (!g_cs || !cs_active(g_cs)) return;
+    unsigned char b[2];
+    unsigned short st = (unsigned short)sh_my_stage();
+    memcpy(b, &st, 2);
+    if (cs_send_event(g_cs, EV_R_HALFOK, b, 2)) g_sh_answers++;
+    if (g_sh_logs++ < 40) r2_log(WARP_LOG "Barry's half: told the host I am in stage %u (%s)", st, why);
+}
+/* coop_game.inc handle_notes: the partner's HALF_OK */
+static void sh_ok_on_event(const cp_event *e)
+{
+    unsigned short st = 0;
+    if (e->len >= 2) memcpy(&st, e->body, 2);
+    if (!g_shh_acked && g_shh.active && g_sh_logs++ < 40) r2_log(WARP_LOG "Barry's half: the partner is in stage %u: no more repeats of the jump", st);
+    g_shh_acked = 1;
+}
+/* every frame of the glue (second_half_frame): the host's repeats, the partner's answer after its jump */
+static void sh_retry_frame(void)
+{
+    static unsigned t;
+    unsigned now = GetTickCount();
+    if (now - t < 500) return;
+    t = now;
+    int session = g_cs && cs_active(g_cs);
+    if (g_shg_pending && wl_sh_guest_answer(g_shg_pending, sh_my_stage(), sh_in_play() && g_state == G_RUN)) {
+        g_shg_pending = 0;
+        sh_answer("after the jump");
+    }
+    if (!g_shh.active) return;
+    const char *why = "";
+    int playing = session && cs_phase(g_cs) == CP_PHASE_PLAYING;
+    int s = wl_sh_host_step(&g_shh, session, playing, sh_my_stage(), sh_in_play() && g_state == G_RUN, g_shh_acked, now, &why);
+    if (s == WL_SH_SEND) {
+        rc_send(WL_RC_WARP, g_shh_line);
+        g_sh_resends++;
+        if (g_sh_logs++ < 40) r2_log(WARP_LOG "Barry's half: %s ('%s', repeat %u)", why, g_shh_line, g_shh.sent);
+    } else if (s == WL_SH_STOP && g_sh_logs++ < 40)
+        r2_log(WARP_LOG "Barry's half: the repeats of the jump end: %s (%u repeats)", why, g_shh.sent);
+}
+
 /* coop_game.inc handle_notes: the partner's RETRY (any glue state: the partner's load notice may already have moved this PC to "waiting") */
 static void retry_on_event(const cp_event *e)
 {
@@ -112,6 +171,20 @@ static void retry_on_event(const cp_event *e)
     unsigned ar = game_area(), lp = player_obj(g_my_slot);
     int st = ar ? (int)(rd32(ar + 4) & 0xFF) : -1, hp = lp ? (int)rd32(lp + 0x1A08) : 0;
     const char *why = "";
+    int half = reason == WL_RC_WARP && e->len > 2 && strstr((const char *)e->body + 2, " half") != NULL;   /* the lobby's Barry-half jump (R1) */
+    if (sh_held() && st == 3) st = 8;   /* lab: `warp couple hold` (a guest that is still loading) */
+    if (half) {
+        unsigned now = GetTickCount();
+        const char *jl = (const char *)e->body + 2;
+        int same = g_shg_have && !strncmp(jl, g_shg_line, sizeof g_shg_line - 1);
+        int g = wl_sh_guest_decide(sh_my_stage(), sh_in_play(), atoi(jl), same ? now - g_shg_applied_t : 0xFFFFFFFFu, &why);
+        if (g == WL_SH_G_ACK) { g_rc_ignored++; sh_answer(why); return; }
+        if (g == WL_SH_G_IGNORE) {
+            g_rc_ignored++;
+            if (g_sh_logs++ < 40) r2_log(WARP_LOG "retry coupling: the partner's jump into Barry's half again: %s", why);
+            return;
+        }
+    }
     int act = wl_retry_decide(g_rc_on, reason, st, hp, &why);
     r2_log(WARP_LOG "retry coupling: the partner (slot %d) %s; aGame state %d, my hp %d: %s", slot, reason == WL_RC_WARP ? "warped" : "chose Retry in its pause menu", st, hp, why);
     if (act == WL_RC_RESTART) {
@@ -124,6 +197,10 @@ static void retry_on_event(const cp_event *e)
         memcpy(line, e->body + 2, (size_t)l), line[l] = 0;
         warp_do(line, out, sizeof out, 1);
         g_rc_warp++;
+        if (half && strncmp(out, "warp: stage", 11) == 0) {   /* written and the restart asked for: answer the host from that stage */
+            g_shg_have = 1, g_shg_applied_t = GetTickCount(), g_shg_pending = atoi(line);
+            snprintf(g_shg_line, sizeof g_shg_line, "%s", line);
+        }
         r2_log(WARP_LOG "retry coupling: applied the partner's warp '%s': %s", line, out);
     } else g_rc_ignored++;
 }
@@ -138,6 +215,7 @@ void coop_second_half_arm(int episode)
 {
     g_sh_ep = episode >= 2 && episode <= 4 ? episode : 0;
     g_sh_since = 0;
+    memset(&g_shh, 0, sizeof g_shh), g_shh_acked = 0, g_shg_have = 0, g_shg_pending = 0;   /* R1: a new start forgets the repeats / answers of an earlier one */
     if (g_sh_ep) r2_log(WARP_LOG "second half of episode %d armed: the host hops into part 1 once part 0 is in play", g_sh_ep);
 }
 
@@ -169,6 +247,7 @@ static void unplaced_human_frame(void)
 
 static void second_half_frame(void)
 {
+    sh_retry_frame();   /* R1: repeats / answer, also after g_sh_ep is done */
     if (!g_sh_ep) return;
     unsigned sb = story_block(), ar = game_area();
     if (!sb || !ar) { g_sh_since = 0; return; }
@@ -186,6 +265,11 @@ static void second_half_frame(void)
     snprintf(line, sizeof line, "%d %d half", stage, lobby_second_half_startpos(g_sh_ep));
     warp_do(line, out, sizeof out, 0);
     r2_log(WARP_LOG "second half of episode %d: hop '%s': %s", g_sh_ep, line, out);
+    if (session && strncmp(out, "warp: stage", 11) == 0) {   /* R1: repeated until the partner answers from part 1 */
+        wl_sh_host_arm(&g_shh, stage, now);
+        g_shh_acked = 0;
+        snprintf(g_shh_line, sizeof g_shh_line, "%s", line);
+    }
     g_sh_done++;
     g_sh_ep = 0;
 }
@@ -196,6 +280,11 @@ static void warp_cmd(const char *arg, char *out, int size)
     if (!*arg || !strncmp(arg, "status", 6)) { warp_status(out, size); return; }
     if (!strncmp(arg, "list2", 5)) { warp_list2(out, size, atoi(arg + 5)); return; }   /* warp list2 [first row]: the Episode 2-4 table (about 60 rows fit one answer) */
     if (!strncmp(arg, "list", 4)) { warp_list(out, size); return; }
+    if (!strncmp(arg, "couple hold", 11)) {   /* lab (R1 check): warp couple hold <ms>: this PC answers the partner's jumps as "not in play" for <ms> */
+        g_sh_hold_until = GetTickCount() + (unsigned)atoi(arg + 11);
+        snprintf(out, size, "retry coupling: this PC counts as not in play for %d ms (jumps of the partner ignored meanwhile); repeats sent %u, answers sent %u", atoi(arg + 11), g_sh_resends, g_sh_answers);
+        return;
+    }
     if (!strncmp(arg, "couple", 6)) {   /* warp couple [0|1]: the retry coupling (pause Retry, warp) */
         if (arg[6] == ' ') g_rc_on = atoi(arg + 7) != 0;
         snprintf(out, size, "retry coupling %s: sent %u, received %u (restarts %u, warps applied %u, ignored %u)", g_rc_on ? "ON" : "off", g_rc_tx, g_rc_rx, g_rc_restart, g_rc_warp, g_rc_ignored);

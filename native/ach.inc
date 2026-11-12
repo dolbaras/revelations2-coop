@@ -447,7 +447,7 @@ static void ach_fight_tick(void)
         en = best;
     }
     if (!en || (int)rd32(en + 0x1A08) <= 0) { ach_fight_stop(en ? "the enemy is dead" : "no such enemy"); return; }
-    if ((int)rd32(p + 0x1A08) < 400) { int full = (int)rd32(p + 0x1A0C); if (full > 0) wr(p + 0x1A08, &full, 4); }   /* lab: keep the human standing */
+    if ((int)rd32(p + 0x1A08) > 0 && (int)rd32(p + 0x1A08) < 400) { int full = (int)rd32(p + 0x1A0C); if (full > 0) wr(p + 0x1A08, &full, 4); }   /* lab: keep the human standing (0.3.1 L1: never a dead one: the auto-retry needs hp <= 0) */
     float px = rdf(p + 0x40), py = rdf(p + 0x44), pz = rdf(p + 0x48), ex = rdf(en + 0x40), ey = rdf(en + 0x44), ez = rdf(en + 0x48);
     float dx = ex - px, dz = ez - pz, d = sqrtf(dx * dx + dz * dz);
     unsigned act = rd32(p + 0x1A54);
@@ -558,7 +558,7 @@ static void ach_follow_tick(void)
     if (g_my_slot < 0 || g_rem_slot < 0) return;
     unsigned p = player_obj(g_my_slot), q = player_obj(g_rem_slot), ctrl = p ? rd32(p + 0x4780) : 0;
     if (!p || !q || !ctrl) return;
-    if ((int)rd32(p + 0x1A08) < 400) { int full = (int)rd32(p + 0x1A0C); if (full > 0) wr(p + 0x1A08, &full, 4); }   /* god mode */
+    if ((int)rd32(p + 0x1A08) > 0 && (int)rd32(p + 0x1A08) < 400) { int full = (int)rd32(p + 0x1A0C); if (full > 0) wr(p + 0x1A08, &full, 4); }   /* god mode (0.3.1 L1: not for a dead human) */
     float px = rdf(p + 0x40), py = rdf(p + 0x44), pz = rdf(p + 0x48), qx = rdf(q + 0x40), qy = rdf(q + 0x44), qz = rdf(q + 0x48);
     float dx = qx - px, dz = qz - pz, d = sqrtf(dx * dx + dz * dz), dy = qy - py;
     if (g_ach_fol.fight) {   /* a living enemy near on the same floor: the sweep fights it, the walk waits */
@@ -623,7 +623,7 @@ static void ach_god_tick(void)
     unsigned p = g_my_slot >= 0 ? player_obj(g_my_slot) : 0;
     if (!p) return;
     int hp = (int)rd32(p + 0x1A08), full = (int)rd32(p + 0x1A0C);
-    if (hp < 400 && full > 0) { wr(p + 0x1A08, &full, 4); g_ach_god.fills++; }
+    if (hp > 0 && hp < 400 && full > 0) { wr(p + 0x1A08, &full, 4); g_ach_god.fills++; }   /* 0.3.1 L1: a dead human stays dead (the death screen / auto-retry) */
 }
 
 static void ach_frame(void)

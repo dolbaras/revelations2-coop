@@ -108,7 +108,7 @@ static void w_lobby(W *w, const cp_lobby *l)
     unsigned n = l->count > CP_MAX_PLAYERS ? CP_MAX_PLAYERS : l->count;
     w8(w, n);
     for (unsigned i = 0; i < n; i++) {
-        w8(w, l->p[i].pid), w8(w, l->p[i].character), w8(w, l->p[i].ready), w8(w, l->p[i].flags);
+        w8(w, l->p[i].pid), w8(w, l->p[i].character), w8(w, l->p[i].ready), w8(w, l->p[i].flags), w8(w, l->p[i].save);   /* save: protocol 3 */
         wstr(w, l->p[i].name);
     }
 }
@@ -120,7 +120,7 @@ static void r_lobby(R *r, cp_lobby *l)
     if (n > CP_MAX_PLAYERS) { r->err = 1; return; }
     l->count = (uint8_t)n;
     for (unsigned i = 0; i < n; i++) {
-        l->p[i].pid = (uint8_t)r8(r), l->p[i].character = (uint8_t)r8(r), l->p[i].ready = (uint8_t)r8(r), l->p[i].flags = (uint8_t)r8(r);
+        l->p[i].pid = (uint8_t)r8(r), l->p[i].character = (uint8_t)r8(r), l->p[i].ready = (uint8_t)r8(r), l->p[i].flags = (uint8_t)r8(r), l->p[i].save = (uint8_t)r8(r);
         rstr(r, l->p[i].name, sizeof l->p[i].name);
     }
 }
@@ -176,7 +176,7 @@ size_t cp_encode(const cp_msg *m, uint8_t *buf, size_t cap)
     case CP_HELLO:
         w8(&w, CP_HELLO), w32(&w, CP_MAGIC), w16(&w, m->u.hello.version), w16(&w, m->u.hello.min_version);
         wbytes(&w, m->u.hello.exe_tag, 8);
-        w8(&w, m->u.hello.want_char), w8(&w, m->u.hello.flags);
+        w8(&w, m->u.hello.want_char), w8(&w, m->u.hello.flags), w8(&w, m->u.hello.save);   /* save: protocol 3 */
         wstr(&w, m->u.hello.name), wstr(&w, m->u.hello.mod);
         break;
     case CP_WELCOME:
@@ -259,7 +259,7 @@ int cp_decode(const uint8_t *buf, size_t len, cp_msg *m)
         if (r32(&r) != CP_MAGIC) return 0;
         h->version = (uint16_t)r16(&r), h->min_version = (uint16_t)r16(&r);
         rbytes(&r, h->exe_tag, 8);
-        h->want_char = (uint8_t)r8(&r), h->flags = (uint8_t)r8(&r);
+        h->want_char = (uint8_t)r8(&r), h->flags = (uint8_t)r8(&r), h->save = (uint8_t)r8(&r);
         rstr(&r, h->name, sizeof h->name), rstr(&r, h->mod, sizeof h->mod);
         break;
     }

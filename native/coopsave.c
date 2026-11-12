@@ -154,9 +154,9 @@ static void write_record(void)
     int part = -1, diff = -1, st = 0, sp = 0;
     int cont = cps_rec_continuable(&r, &part, &diff, &st, &sp);
     if (file_write(g_rec, &r, sizeof r)) {
-        g_pflags = cps_save_pflags(&r, CP_PF_SAVE0, CP_PF_SAVE1);
+        g_pflags = cps_save_pflags(&r, CP_PF_SAVE0, CP_PF_SAVE1) | (cps_save_key(&r) << 8);   /* 0.3.1: the per-episode key in bits 8..15 */
         CLOG("record written: slot %u, stage %d start %d difficulty %d (%s)", k, (int)cps_rec_field(&r, CPS_S_STAGE), (int)cps_rec_field(&r, CPS_S_STARTPOS),
-             (int)cps_rec_field(&r, CPS_S_DIFF), cont ? (part ? "Barry's half of Episode 1: continuable" : "Claire's half of Episode 1: continuable") : "not a co-op checkpoint");
+             (int)cps_rec_field(&r, CPS_S_DIFF), cont ? (part ? "Barry's half: continuable" : "Claire's half / bonus: continuable") : "not a co-op checkpoint");
     } else
         CLOG("record NOT written (error %lu)", GetLastError());
 }
@@ -256,7 +256,7 @@ void coopsave_on_context(void *ctx)
     g_rs = rs, g_rs_vt = vt;
     paths();
     cps_rec r;
-    if (read_record(&r)) g_pflags = cps_save_pflags(&r, CP_PF_SAVE0, CP_PF_SAVE1);
+    if (read_record(&r)) g_pflags = cps_save_pflags(&r, CP_PF_SAVE0, CP_PF_SAVE1) | (cps_save_key(&r) << 8);
     CLOG("ISteamRemoteStorage %p: FileWrite / FileRead / FileDelete / FileExists / GetFileSize wrapped%s; co-op save %s, record %s", rs, g_disabled ? " (REV2_COOPSAVE=0: never routed)" : "",
          file_size(g_dat) > 0 ? "present" : "none yet", g_pflags & CP_PF_SAVE1 ? "Barry's half" : g_pflags & CP_PF_SAVE0 ? "Claire's half" : "none");
 }
@@ -351,7 +351,7 @@ static void leave(const char *why)
     cps_rx_reset(&g_rx);   /* a record belongs to one start */
     LeaveCriticalSection(&g_lock);
     cps_rec r;
-    g_pflags = read_record(&r) ? cps_save_pflags(&r, CP_PF_SAVE0, CP_PF_SAVE1) : 0;
+    g_pflags = read_record(&r) ? cps_save_pflags(&r, CP_PF_SAVE0, CP_PF_SAVE1) | (cps_save_key(&r) << 8) : 0;
 }
 
 void coopsave_frame(int in_menus, int title_menus, int session_running)
@@ -361,17 +361,25 @@ void coopsave_frame(int in_menus, int title_menus, int session_running)
 }
 
 /* ------------------------------------------------------------------ Continue */
-int coopsave_continue_start(int follow)
+int coopsave_continue_start(int follow, int game_type)
 {
     unsigned story = rd32(CA_STORY), gm = rd32(CA_GAMEMAN);
     if (!story || !gm) return 0;
-    ((void(THISCALL *)(void *, int))CF_SET_GAMETYPE)((void *)gm, 0);
+    if (game_type != 0 && game_type != 3 && game_type != 4) game_type = 0;
+    ((void(THISCALL *)(void *, int))CF_SET_GAMETYPE)((void *)gm, game_type);   /* 0.3.1: the bonus episodes continue their own slot (game types 3 / 4) */
     unsigned k = rd32(story + ST_SLOT_TYPE);
-    if (k > 5) {
-        CLOG("continue: game data slot %u: refused", k);
+    if (k > 5 || (game_type && k != (unsigned)game_type)) {   /* SetGameType maps type 0..4 to slot 0..4 (FUN_009756F0); slot 5 = saving off (static g2c_bc*: research of 2026-11-12) */
+        CLOG("continue: game type %d, game data slot %u: refused", game_type, k);
         return 0;
     }
     unsigned slot = story + ST_SLOT0 + k * CPS_SLOT_BYTES;
+    if (game_type) {   /* 0.3.1: a bonus checkpoint: the slot holds a stage of that bonus episode (cps_room_episode on the host's record and on this PC's own) */
+        int sst = (int)rd32(slot + CPS_S_STAGE);
+        if (sst < (game_type == 3 ? 600 : 700) || sst > (game_type == 3 ? 699 : 799)) {
+            CLOG("continue: game type %d, slot %u holds stage %d: refused", game_type, k, sst);
+            return 0;
+        }
+    }
     if (follow) {
         lock_init();
         EnterCriticalSection(&g_lock);
@@ -385,6 +393,17 @@ int coopsave_continue_start(int follow)
     unsigned char one = 1;
     memcpy((void *)(story + 0x15C485), &one, 1);
     int stage = (int)rd32(story + 0x140380), part = cps_stage_part(stage);
+    if (game_type) {   /* the stock bonus Continue (cDemoCampaignMenu_OnSelect case 0x11, types 3 / 4): the unlock records of that type (records 6 / 7), no part byte, no done check */
+        ((void(THISCALL *)(void *, int, int, int))CF_UNLOCKREC)((void *)story, game_type, 0, 0);
+        ((void(THISCALL *)(void *, int, int, int))CF_UNLOCKREC)((void *)story, game_type, 1, 0);
+        unsigned d = 0xD, m1 = 0xFFFFFFFFu, z = 0;
+        memcpy((void *)(gm + 0x20), &d, 4), memcpy((void *)(gm + 0x24), &m1, 4);
+        ((void(THISCALL *)(void *, int))CF_SET_CONTINUE)((void *)story, 1);
+        memcpy((void *)(gm + 0x30), &z, 4);
+        CLOG("continue: the stock bonus Continue (game type %d) of slot %u: chapter %u stage %d start position %u difficulty %u", game_type, k, rd32(story + 0x140378), stage,
+             rd32(story + 0x140384), rd32(story + 0x140374));
+        return 1;
+    }
     unsigned up = part > 0 ? 1u : 0u;
     memcpy((void *)(story + 0x15C4A8), &up, 4);
     unsigned char done = 0;
@@ -403,17 +422,24 @@ int coopsave_continue_start(int follow)
 }
 
 /* ------------------------------------------------------------------ the lobby's view and the record on the wire */
+static cps_rec g_sum_rec;
 int coopsave_summary(int *part, int *difficulty, int *stage, int *startpos)
 {
-    static cps_rec r;
     static DWORD t;
     static int ok;
     DWORD now = GetTickCount();
     if (!t || now - t > 1500) {   /* the lobby asks every frame: read the 23 KB file at most every 1.5 s */
         t = now | 1u;
-        ok = read_record(&r);
+        ok = read_record(&g_sum_rec);
     }
-    return ok && cps_rec_continuable(&r, part, difficulty, stage, startpos);
+    return ok && cps_rec_continuable(&g_sum_rec, part, difficulty, stage, startpos);
+}
+/* 0.3.1 (C1): the same plus the room episode of the checkpoint (1-4, 5 The Struggle, 9 Little Miss) */
+int coopsave_summary_ep(int *episode, int *part, int *difficulty)
+{
+    if (!coopsave_summary(part, difficulty, NULL, NULL)) return 0;
+    if (episode) *episode = cps_rec_room_episode(&g_sum_rec);
+    return 1;
 }
 
 unsigned coopsave_pflags(void) { return g_disabled ? 0 : g_pflags; }

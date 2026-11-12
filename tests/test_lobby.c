@@ -25,7 +25,7 @@ typedef struct {
     int saves;
     char clip[200];
     char local_name[24];
-    int save_part, save_diff;   /* 0.2.1: this node's co-op save (-1 none) */
+    int save_part, save_diff, save_ep;   /* 0.2.1: this node's co-op save (-1 none); 0.3.1: its room episode (default 1) */
     lobby_settings last;        /* 0.3.0: the last settings the lobby asked to persist (rev2_coop.ini) */
 } Node;
 
@@ -96,10 +96,11 @@ static int env_async_poll(void *u, char *out, int size)
 static void env_save(void *u, const lobby_settings *s) { ((Node *)u)->saves++, ((Node *)u)->last = *s; }
 static int env_clip(void *u, char *out, int size) { snprintf(out, (size_t)size, "%s", ((Node *)u)->clip); return ((Node *)u)->clip[0] != 0; }
 static int env_addr(void *u, char *out, int size) { (void)u; snprintf(out, (size_t)size, "192.168.1.5"); return 1; }
-static int env_coop_save(void *u, int *part, int *diff)
+static int env_coop_save(void *u, int *episode, int *part, int *diff)
 {
     Node *nd = (Node *)u;
     if (nd->save_part < 0) return 0;
+    if (episode) *episode = nd->save_ep ? nd->save_ep : 1;
     if (part) *part = nd->save_part;
     if (diff) *diff = nd->save_diff;
     return 1;
@@ -698,7 +699,7 @@ static void test_continue_rule(void)
     nodes[0] = &A, nodes[1] = &B, n_nodes = 2;
     A.save_part = 1, A.save_diff = 2;   /* the host's co-op save: Barry's half, Hard */
     B.save_part = 1, B.save_diff = 1;
-    cs_set_pflags(B.s, CP_PF_SAVE1);    /* (the glue sets it from the co-op save record) */
+    cs_set_pflags(B.s, CP_PF_SAVE1 | (3u << 8));    /* (the glue sets it from the co-op save record; 0.3.1: + the key of Episode 1 Barry's half) */
     lobby_open(A.l);
     lobby_open(B.l);
     press(&A, "Find a Partner");
@@ -911,6 +912,60 @@ static void test_ready_rules(void)
 
 /* 0.3.0 all-episodes: the setting, the Episode row with the two bonus episodes, the characters as the slot units of a bonus episode (slot 0 / slot 1, names by game type),
  * the session fields the start reads, the gate with the setting on / off, the Barry-half note, Continue only for Episode 1 */
+
+/* 0.3.1 C1: Continue for Episodes 2-4 and the bonus episodes: the room follows the save's episode and half; the guest's save must be of the same episode and half */
+static void cont_room(int save_ep, int save_part, unsigned guest_key, int want_ep, int want_part, int want_gt, int want_char, int start_ok, int port)
+{
+    Node A, B;
+    node_init(&A, "Alice", port);
+    node_init(&B, "Bob", port);
+    nodes[0] = &A, nodes[1] = &B, n_nodes = 2;
+    A.save_ep = save_ep, A.save_part = save_part, A.save_diff = 2;
+    B.save_ep = save_ep, B.save_part = save_part, B.save_diff = 1;
+    cs_set_pflags(B.s, guest_key << 8);
+    lobby_open(A.l);
+    lobby_open(B.l);
+    press(&A, "Find a Partner");
+    press(&A, "System Link");
+    step(100);
+    CHECK(row_value(&A, "Continue") && strstr(row_value(&A, "Continue"), "No"));   /* offered in the room whatever episode it shows */
+    press(&B, "Join a Partner");
+    press(&B, "System Link");
+    char addr[16];
+    snprintf(addr, sizeof addr, "sim:%d", port);
+    retype(&B, addr);
+    ev(&B, LE_OK);
+    step(2000);
+    press(&A, "Continue");
+    step(1500);
+    cp_session ss;
+    cs_session_get(A.s, &ss);
+    CHECK((ss.flags & CP_SESS_CONT) && ss.episode == want_ep && ss.part == want_part && ss.game_type == want_gt && ss.difficulty == 2);
+    CHECK(cs_local_character(A.s) == want_char);
+    press(&B, "Ready");
+    step(300);
+    CHECK((row_kind(&A, "Start Game") == LV_NORMAL) == start_ok);
+    if (start_ok) {
+        press(&A, "Start Game");
+        step(300);
+        CHECK(lobby_take_request(A.l) == LR_START && lobby_take_request(B.l) == LR_START);
+        cs_session_get(B.s, &ss);
+        CHECK((ss.flags & CP_SESS_CONT) && ss.episode == want_ep && ss.part == want_part);
+    }
+    cs_free(A.s), cs_free(B.s);
+    lobby_free(A.l), lobby_free(B.l);
+}
+static void test_continue_all(void)
+{
+    cont_room(2, 0, 4, 2, 0, 0, CP_CHAR_CLAIRE, 1, 31);     /* Episode 2, Claire's half */
+    cont_room(3, 1, 7, 3, 1, 0, CP_CHAR_BARRY, 1, 32);      /* Episode 3, Barry's half: the host moves to Barry */
+    cont_room(4, 1, 9, 4, 1, 0, CP_CHAR_BARRY, 1, 33);      /* Episode 4, Barry's half */
+    cont_room(5, 0, 10, 5, 0, 3, CP_CHAR_CLAIRE, 1, 34);    /* The Struggle (game type 3, slot 0) */
+    cont_room(9, 0, 18, 9, 0, 4, CP_CHAR_CLAIRE, 1, 35);    /* Little Miss (game type 4, slot 0) */
+    cont_room(3, 1, 5, 3, 1, 0, CP_CHAR_BARRY, 0, 36);      /* the guest's save is Episode 2 Barry's half: no start with Continue */
+    cont_room(1, 1, 7, 1, 1, 0, CP_CHAR_BARRY, 0, 37);      /* an Episode 1 Continue with a guest save of Episode 3: refused (as in 0.3.0, where such a save carried no bit) */
+}
+
 static void test_all_episodes(void)
 {
     /* the helpers */
@@ -992,7 +1047,7 @@ static void test_all_episodes(void)
     CHECK(!strcmp(row_value(&A, "Episode"), "<  Little Miss  >") && !strcmp(row_value(&B, "Episode"), "Little Miss"));
     CHECK(!vb.info[0] && !strstr(va.info, "forwarded") == 0);
     CHECK(row_kind(&B, "Ready") == LV_NORMAL && view(&B).status_kind != LSK_ERROR);
-    CHECK(row_kind(&A, lobby_own_text(LT_CONTINUE, 0)) < 0);   /* a Continue is an Episode 1 checkpoint: no row for a bonus episode */
+    CHECK(row_value(&A, lobby_own_text(LT_CONTINUE, 0)) && strstr(row_value(&A, lobby_own_text(LT_CONTINUE, 0)), "No"));   /* 0.3.1: the save's Continue row in any room (Yes moves the room to the save's episode) */
     /* the Struggle: Moira and Evgeny (one step left of Little Miss) */
     goto_row(&A, "Episode");
     ev(&A, LE_LEFT);
@@ -1024,7 +1079,7 @@ static void test_all_episodes(void)
     CHECK(row_kind(&A, lobby_own_text(LT_CONTINUE, 0)) == LV_NORMAL);   /* Episode 1 with a co-op save: Continue is offered */
     ev(&A, LE_RIGHT);
     step(300);
-    CHECK(row_kind(&A, lobby_own_text(LT_CONTINUE, 0)) < 0);   /* Episode 2: not */
+    CHECK(row_kind(&A, lobby_own_text(LT_CONTINUE, 0)) == LV_NORMAL);   /* 0.3.1: Episode 2 too (Yes would take the room back to the save's Episode 1) */
     /* from Barry's half into a bonus episode: both characters move to the same slot of part 0 */
     goto_row(&A, "Episode");
     for (int i = 0; i < 3; i++) ev(&A, LE_RIGHT), step(10);   /* 3, 4, The Struggle */
@@ -1102,6 +1157,7 @@ int main(void)
     test_ready_rules();
     test_continue_rule();
     test_all_episodes();
+    test_continue_all();
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

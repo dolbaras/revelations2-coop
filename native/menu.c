@@ -372,10 +372,10 @@ static uint32_t env_now(void *u)
     return GetTickCount();
 }
 /* 0.2.1: the checkpoint this PC's co-op save can continue (the lobby's Continue row) */
-static int env_coop_save(void *u, int *part, int *difficulty)
+static int env_coop_save(void *u, int *episode, int *part, int *difficulty)
 {
     (void)u;
-    return coopsave_summary(part, difficulty, NULL, NULL);
+    return coopsave_summary_ep(episode, part, difficulty);
 }
 
 static void env_save(void *u, const lobby_settings *s)
@@ -768,8 +768,9 @@ static int game_start(int episode, int part, int difficulty, int game_type)
         if (r == 0) return 0;
     }
     if (g_start_cont) {
-        MLOG("start: the stock Continue of the campaign slot (%s)", g_start_follow ? "following the host's checkpoint" : "this PC's checkpoint");
-        if (!coopsave_continue_start(g_start_follow)) return -1;
+        MLOG("start: the stock Continue of the co-op save (episode %d, game type %d, %s)", episode, game_type, g_start_follow ? "following the host's checkpoint" : "this PC's checkpoint");
+        coop_second_half_arm(0);   /* 0.3.1: a Continue lands in its half itself: no Barry-half jump left over from an earlier start */
+        if (!coopsave_continue_start(g_start_follow, lobby_episode_valid(episode) ? lobby_episode_game_type(episode) : 0)) return -1;
         g_start_count++;
         return 1;
     }
