@@ -296,8 +296,9 @@ Tools: `gh` is the portable one at `<workspace>\tools\gh\bin\gh.exe` with `$env:
 ## Release status
 
 Public packages so far: **pre-release 1 (0.1.0)** and **pre-release 2 (0.1.1)** (GitHub pre-releases), the first full release **0.2.0** (tag `v0.2.0`, `--latest`,
-published 2026-11-09 from the public commit `f15ce38`; zip `ce157026...`, setup exe `cb29cff4...`; the 0.1.1 launcher updated a copy to it through the real feed) and
-**0.2.1** (tag `v0.2.1`, `--latest`, published 2026-11-10 from the public commit `8f43c08`; zip `3f230f1f...`, setup exe `053bb404...`).
+published 2026-11-09 from the public commit `f15ce38`; zip `ce157026...`, setup exe `cb29cff4...`; the 0.1.1 launcher updated a copy to it through the real feed),
+**0.2.1** (tag `v0.2.1`, `--latest`, published 2026-11-10 from the public commit `8f43c08`; zip `3f230f1f...`, setup exe `053bb404...`) and **0.3.0** (tag `v0.3.0`, `--latest`,
+published 2026-11-12 from the public commit `227c5c5`; zip `f09658e5...`, setup exe `94dbcb5f...`; see "0.3.0" below).
 Checked after the publication (2026-11-10, throw-away copies, no window): `tests\test_installer.ps1 -Online` 241 of 241; the 0.2.0 launcher of a copy with 0.2.0 installed,
 through the real feed (`-NoStart -NoWindow`, no `-Feed`): `installed 0.2.0, latest v0.2.1`, `downloaded 616868 bytes from https://release-assets.githubusercontent.com`,
 `checksum ok 3F230F1F...BA51`, `installer exit 0`, `version.txt` 0.2.1, the uninstall byte for byte back to the copy before 0.2.0; the setup exe from the release page with
@@ -339,11 +340,17 @@ standalone Ultimate ASI Loader v10.0.2 next to the mod (its source and export ta
 The wording of the known limits in `docs/release-readme.txt` is the one of pre-release 2; the 0.2.0 text is written from the acceptance results (draft outside the repository).
   Real Steam unlocks were allowed by the owner for the lab accounts and one shared record (the flame achievement) was unlocked and read back on both accounts.
 
-**0.3.0 (in preparation, not published)**: every episode and both bonus episodes offered by the lobby (see `docs/lobby.md` "Episodes 2-4 and the bonus episodes (0.3.0)"). Version: `R2_VERSION` in
+**0.3.0** (tag `v0.3.0`, `--latest`, published 2026-11-12 from the public commit `227c5c5`; zip `f09658e5...`, setup exe `94dbcb5f...`; the full SHA-256 values are in the
+release notes): every episode and both bonus episodes offered by the lobby (see `docs/lobby.md` "Episodes 2-4 and the bonus episodes (0.3.0)"). Version: `R2_VERSION` in
 `native/r2.h` is `0.3.0` (the tag `v0.3.0`, the zip `revelations2-coop-0.3.0.zip`, `coop\version.txt` 0.3.0). `CP_PROTO_VERSION` stays 2: no message layout changed (the session block already
 carried `game_type` and `episode`); both PCs still need the same package version, so a 0.2.1 PC and a 0.3.0 PC refuse each other with the "another co-op version" text until the
 0.2.1 PC has started once through its shortcut (it updates itself to the latest full release). `tests\test_installer.ps1 -OldZip work\dist-021\revelations2-coop-0.2.1.zip` (offline, hidden
-windows, stand-in game folders): 244 of 244 checks, including the 0.2.1 launcher's update to 0.3.0, the uninstall back to the clean folder and the ASI loader case. Published without a session
+windows, stand-in game folders): 252 of 252 checks before the publication (with `-OldZip work\dist-020\revelations2-coop-0.2.0.zip -Online`, the real feed read only: 257 of 257),
+including the 0.2.1 launcher's update to 0.3.0, the uninstall back to the clean folder and the ASI loader case; every test of `tests/build.sh` 0 failed.
+Checked after the publication (2026-11-12, throw-away copies, no window): both assets of the release carry GitHub digests equal to the local SHA-256 of the zip and of the setup exe;
+`releases/latest` answers `v0.3.0`; `tests\test_installer.ps1 -OldZip work\dist-021\revelations2-coop-0.2.1.zip -Online`: 257 of 257; the real self-update of the published 0.2.1
+through the real feed on a stand-in folder (`REV2_COOP_ANYEXE=1`, `-NoStart -NoWindow`): `installed 0.2.1, latest v0.3.0`, `checksum ok F09658E5...`, `installer exit 0`,
+`coop\version.txt` 0.3.0, and the uninstall put the folder back byte for byte. Published without a session
 of a human player (the owner's word of 2026-11-12: finish everything that needs no live check and publish; what players find is fixed afterwards): Episodes 2-4 and the bonus
 episodes are verified in the lab stage by stage, nobody has played them through. The not-verified list (Episode 2's step 201 -> 203, the fights in Barry's halves, the final
 bosses 453 / 454, The Struggle's gate in 610, Little Miss's stealth rules, the story's own steps between stages) is in `docs/release-readme.txt` (Limits), the public README and
