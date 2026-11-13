@@ -298,7 +298,8 @@ Tools: `gh` is the portable one at `<workspace>\tools\gh\bin\gh.exe` with `$env:
 Public packages so far: **pre-release 1 (0.1.0)** and **pre-release 2 (0.1.1)** (GitHub pre-releases), the first full release **0.2.0** (tag `v0.2.0`, `--latest`,
 published 2026-11-09 from the public commit `f15ce38`; zip `ce157026...`, setup exe `cb29cff4...`; the 0.1.1 launcher updated a copy to it through the real feed),
 **0.2.1** (tag `v0.2.1`, `--latest`, published 2026-11-10 from the public commit `8f43c08`; zip `3f230f1f...`, setup exe `053bb404...`) and **0.3.0** (tag `v0.3.0`, `--latest`,
-published 2026-11-12 from the public commit `227c5c5`; zip `f09658e5...`, setup exe `94dbcb5f...`; see "0.3.0" below).
+published 2026-11-12 from the public commit `227c5c5`; zip `f09658e5...`, setup exe `94dbcb5f...`; see "0.3.0" below) and **0.3.1** (tag `v0.3.1`, `--latest`,
+published 2026-11-13 from the public commit `dc14ea1`; zip `1ad10936...`, setup exe `9d69865b...`; see "0.3.1" below).
 Checked after the publication (2026-11-10, throw-away copies, no window): `tests\test_installer.ps1 -Online` 241 of 241; the 0.2.0 launcher of a copy with 0.2.0 installed,
 through the real feed (`-NoStart -NoWindow`, no `-Feed`): `installed 0.2.0, latest v0.2.1`, `downloaded 616868 bytes from https://release-assets.githubusercontent.com`,
 `checksum ok 3F230F1F...BA51`, `installer exit 0`, `version.txt` 0.2.1, the uninstall byte for byte back to the copy before 0.2.0; the setup exe from the release page with
@@ -340,7 +341,12 @@ standalone Ultimate ASI Loader v10.0.2 next to the mod (its source and export ta
 The wording of the known limits in `docs/release-readme.txt` is the one of pre-release 2; the 0.2.0 text is written from the acceptance results (draft outside the repository).
   Real Steam unlocks were allowed by the owner for the lab accounts and one shared record (the flame achievement) was unlocked and read back on both accounts.
 
-**0.3.1** (in preparation, NOT published): Continue in the room for every episode and half and both bonus episodes (protocol version 3: the co-op save key in `HELLO` and the lobby rows), the Barry-half start repeated until the guest is in part 1 (event 0x171), more enemy records (up to 128 enemies, up to 4 batches a tick while more than 12 live). Offline: every suite green, the 0.3.0 models of the new rules fail (test_warp, test_wrec, test_coopsave), `test_installer -OldZip` with the published v0.3.0 zip: 252 of 252. The live checks and the hashes are in the release notes `noteseleaseselnotes-rev2-031-github.md` (private).
+**0.3.1** (tag `v0.3.1`, `--latest`, published 2026-11-13 from the public commit `dc14ea1`; zip `1ad10936...`, setup exe `9d69865b...`; the full SHA-256 values are in the
+release notes): Continue in the room for every episode and half and both bonus episodes (protocol version 3: the co-op save key in `HELLO` and the lobby rows), the Barry-half start repeated until the guest is in part 1 (event 0x171), more enemy records (up to 128 enemies, up to 4 batches a tick while more than 12 live). Offline: every suite green, the 0.3.0 models of the new rules fail (test_warp, test_wrec, test_coopsave), `test_installer -OldZip` with the published v0.3.0 zip: 252 of 252.
+Checked after the publication (2026-11-13): the release is neither a draft nor a pre-release, each asset's `digest` equals the local SHA-256, and `releases/latest` answers `v0.3.1`;
+`tests\test_installer.ps1 -Online`: 249 of 249; the real self-update of the published 0.3.0 through the real feed on a stand-in folder (`REV2_COOP_ANYEXE=1`, `-NoStart -NoWindow`):
+`installed 0.3.0, latest v0.3.1`, `downloaded 649459 bytes`, `checksum ok 1AD10936...`, `installer exit 0`, `coop\version.txt` 0.3.1; a second start installed nothing; the uninstall
+put the folder back byte for byte.
 
 **0.3.0** (tag `v0.3.0`, `--latest`, published 2026-11-12 from the public commit `227c5c5`; zip `f09658e5...`, setup exe `94dbcb5f...`; the full SHA-256 values are in the
 release notes): every episode and both bonus episodes offered by the lobby (see `docs/lobby.md` "Episodes 2-4 and the bonus episodes (0.3.0)"). Version: `R2_VERSION` in
