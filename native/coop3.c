@@ -250,6 +250,7 @@ static void puppet_frame(void);
  * change, checkpoint load, end of a cutscene). Cutscene modes 2/3 are left alone. Does not use the camera byte +0x1270 (the game uses that one itself). */
 static volatile int vg_slot = -1;
 static unsigned vg_fixes;
+static int scene_owns_view(void);   /* scene.inc (scene032): an in-engine scene plays here and shows itself through the viewport of its player */
 static void view_guard(void)
 {
     int want = vg_slot;
@@ -259,14 +260,19 @@ static void view_guard(void)
     if (!gm)
         return;
     unsigned mode = rd32(gm + 0x8F4);
+    static unsigned stable;
     if (mode == 2 || mode == 3)
         return;
-    static unsigned stable;
+    if (scene_owns_view()) {   /* scene032: the scene's director put the viewport on the scene's player (live sc032m: the guard put it back 1 s into the knife table scene) */
+        stable = 0;
+        return;
+    }
     if (mode != 0 || (int)rd32(gm + 0x8F8) != want)
         stable++;
     else
         stable = 0;
     if (stable >= 20) {   /* the wrong view has lasted 20 passes: not a transition (load, cutscene change) */
+        int was = (int)rd32(gm + 0x8F8);
         stable = 0;
         unsigned a[3] = {gm, 0, (unsigned)want};
         do_call(2, 0x8882D0, a, 3);   /* GameMan_SetSlot(0, want) */
@@ -275,6 +281,7 @@ static void view_guard(void)
         unsigned cam = rd32(0x15DE88C), c[1] = {cam};
         do_call(2, 0x4AE570, c, 1);   /* Camera_RefreshViewports */
         vg_fixes++;
+        if (vg_fixes <= 40) r2_log("view guard: viewport 0 back on slot %d (it showed slot %d, mode %u; corrections %u)", want, was, mode, vg_fixes);
     }
 }
 
@@ -499,6 +506,7 @@ void s3_run(const char *cmd, char *out, int size)
 #include "coop_game.inc"
 #include "warp.inc"   /* lab stage warp (needs story_block / game_area / do_call) */
 #include "world.inc"
+#include "pmot.inc"   /* 0.3.2 anim032: the motion mirror (needs world.inc / door.inc) */
 #include "downed.inc"
 #include "ach.inc"
 #include "aim.inc"   /* LAB: `net aim` (needs world.inc) */

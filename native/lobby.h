@@ -57,6 +57,9 @@ enum lobby_text {
     /* ---- 0.3.0 all-episodes ---- */
     LT_EP_STRUGGLE, LT_EP_LITTLE,   /* stock m03 #74 / #75: the main menu's names of the bonus episodes "The Struggle" / "Little Miss" (the Episode row's values) */
     LT_EVGENY, LT_DARK_NATALIA,     /* stock m01 #93 / #101: the bonus episodes' second figure (slot 1 of The Struggle / of Little Miss) */
+    /* ---- 0.3.2 scene032: the skip vote of a cutscene (own strips; the cutscene word is the game's own of each language, m33 #25 / m36 #480) ---- */
+    LT_SKIP_WAIT,     /* this player pressed skip: one %s = the partner's name */
+    LT_SKIP_PARTNER,  /* the partner pressed skip: one %s = the partner's name */
     LT_COUNT
 };
 /* the own text for a backend's English failure reason (coop_steam.c "Steam: ..."; CS_N_REFUSED a = 0), -1 when none fits (the caller then shows no reason) */

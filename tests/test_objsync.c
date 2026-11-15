@@ -485,6 +485,59 @@ static void t_digest(void)
     CHECK(n == 1 && out[0] == 320);
 }
 
+/* 0.3.2 (pair run g032g4g, 2026-11-14): the guest pulled the torture lever (101,2,1) uSm1840 and the host's DOOR replay (a bare ChangeAction to 1 = OnMove) crashed
+ * (AV exe+3c4179: cSmLeverAction OnMove start reads the pulling character without a null check when the class id is 0x840). The classes come from the game data
+ * (work\fix032\lever_units.txt: every lever set info of stages 100-799 and its mUnitClass): uSm1840 x14, uSm1773 x7 (a uSmLever too, but not 0x840: null-safe),
+ * uSm1842 x1 (uSmLeverOnOff: its OnMove / OffMove read the character unconditionally), uSm1897 x10 (the crane levers of 451: null-safe).
+ * Built with -DOS_MODEL_BEFORE_LEVER (every lever is a plain set model, every action replayed) the checks of the crashing classes fail. */
+static void t_levers(void)
+{
+    const char *l1840 = "vtable exe+ef4a10, DTI 0157398c: uSm1840(4390) : uSmLever(4390) : uSmLeverBase(4380) : uSetModel(4350)";   /* (101,2,1) torture lever, (300,1,8), (452,0,14), ... */
+    const char *l1773 = "vtable exe+ef3b20, DTI 01575a2c: uSm1773(4390) : uSmLever(4390) : uSmLeverBase(4380) : uSetModel(4350)";   /* (101,2,10) power lever, (452,0,6), (455,10,9), ... */
+    const char *l1842 = "vtable exe+ef5c00, DTI 01573ca4: uSm1842(43a0) : uSmLeverOnOff(43a0) : uSmLeverBase(4380) : uSetModel(4350)";   /* (300,4,1) */
+    const char *l1897 = "vtable exe+ef6d00, DTI 01575e8c: uSm1897(43c0) : uSmLeverCrane(43c0) : uSmLeverBase(4380) : uSetModel(4350)";   /* (451,41,1..10) */
+    int k1840 = os_kind_of(l1840), k1842 = os_kind_of(l1842), k1773 = os_kind_of(l1773), k1897 = os_kind_of(l1897);
+    /* the pull and the push-back are not replayed for the crashing classes (the host of g032g4g would not crash) */
+    CHECK(!os_door_apply(k1840, 1, OS_ACT_NONE));
+    CHECK(!os_door_apply(k1840, 3, OS_ACT_NONE));
+    CHECK(!os_door_apply(k1842, 1, OS_ACT_NONE));
+    CHECK(!os_door_apply(k1842, 3, OS_ACT_NONE));
+    /* the end poses are replayed (they need no character): the lever moves on both PCs */
+    CHECK(os_door_apply(k1840, 2, OS_ACT_NONE));
+    CHECK(os_door_apply(k1840, 0, OS_ACT_NONE));
+    CHECK(os_door_apply(k1840, 4, OS_ACT_NONE));
+    CHECK(os_door_apply(k1842, 2, OS_ACT_NONE));
+    CHECK(os_door_apply(k1842, 0, OS_ACT_NONE));
+    /* the presser's PC still sends every step (the receiver filters) */
+    CHECK(os_door_send(k1840, 1, OS_ACT_LOCAL, 2));
+    CHECK(os_door_send(k1840, 2, OS_ACT_LOCAL, 2));
+    /* the null-safe lever classes and everything else stay exactly as before */
+    CHECK(k1773 == OS_PLAIN && os_door_apply(k1773, 1, OS_ACT_NONE));
+    CHECK(k1897 == OS_PLAIN && os_door_apply(k1897, 1, OS_ACT_NONE));
+    CHECK(os_kind_of(CH_CELL) == OS_PLAIN && os_door_apply(os_kind_of(CH_CELL), 1, OS_ACT_NONE));
+    CHECK(!os_is_coop(k1840) && !os_is_move(k1840));
+}
+
+/* 0.3.2 audit of the hand-operated set models (every set-model action class that sends a player event; decompiled, notes guest-interaction.md 7f): besides the levers
+ * two classes read the operating character with no null check in an action start: uSmBarBoard (Break 1) and uSmDrilledRock (Breaking 1, Cancel 3). Their other steps
+ * (Wait, BreakFinish, Broken / Wait, Broken) need no character and stay replayed. Built with -DOS_MODEL_BEFORE_OPS (both plain) the checks of the skipped steps fail. */
+static void t_operated(void)
+{
+    const char *board = "vtable exe+ee1520, DTI 0156a2dc: uSm1826(43a0) : uSmBarBoard(43a0) : uSetModel(4350)";       /* (100,0,16), (101,1,4), (203,0,9), ... 9 layouts */
+    const char *rock = "vtable exe+f0f800, DTI 0156e004: uSm1813(43c0) : uSmDrilledRock(43c0) : uSetModel(4350)";     /* (201,0,0), (201,0,1), (203,0,0), ... 8 layouts */
+    int kb = os_kind_of(board), kr = os_kind_of(rock);
+    CHECK(!os_door_apply(kb, 1, OS_ACT_NONE));   /* Break */
+    CHECK(os_door_apply(kb, 0, OS_ACT_NONE) && os_door_apply(kb, 2, OS_ACT_NONE) && os_door_apply(kb, 3, OS_ACT_NONE));
+    CHECK(!os_door_apply(kr, 1, OS_ACT_NONE));   /* Breaking */
+    CHECK(!os_door_apply(kr, 3, OS_ACT_NONE));   /* Cancel */
+    CHECK(os_door_apply(kr, 0, OS_ACT_NONE) && os_door_apply(kr, 2, OS_ACT_NONE));
+    CHECK(os_door_send(kb, 1, OS_ACT_LOCAL, 2) && os_door_send(kr, 1, OS_ACT_LOCAL, 2));   /* the breaking PC still sends every step */
+    CHECK(!os_is_coop(kb) && !os_is_move(kb) && !os_is_coop(kr) && !os_is_move(kr));
+    /* the lever rule is unchanged by this: uSm1840 still skips 1 and 3 only */
+    int kl = os_kind_of("x: uSm1840(4390) : uSmLever(4390) : uSmLeverBase(4380)");
+    CHECK(!os_door_apply(kl, 1, OS_ACT_NONE) && !os_door_apply(kl, 3, OS_ACT_NONE) && os_door_apply(kl, 2, OS_ACT_NONE));
+}
+
 int main(void)
 {
     t_kinds();
@@ -498,6 +551,8 @@ int main(void)
     t_prop_wire();
     t_sf();
     t_digest();
+    t_levers();
+    t_operated();
 #ifdef OS_MODEL_RELEASE020
     printf("objsync (model of release-020): %d checks, %d failed\n", g_checks, g_fail);
 #else

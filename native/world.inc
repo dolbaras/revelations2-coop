@@ -55,6 +55,7 @@ enum { EV_W_THROW = 0x134, EV_W_BOOM = 0x135 };   /* combat4: the thrower's PC -
 #include "grapple_logic.h"   /* 0.2.0: the replica's alerted bit follows the host (physical attack on a staggered replica) */
 #include "invmirror_logic.h"   /* combat4: the partner's throw (th_*), the inventory mirror (story.inc) */
 #include "wrec_logic.h"   /* 0.3.0: the turning window of the enemy records, the orphan rule */
+#include "pickup_logic.h"   /* fix032: the flag (= the object id of THIS PC) the replayed pick-up passes to AddItem */
 static int g_w_alert = 1;           /* 0.2.0 (grapple_logic.h): the replica's +0x37B8 bit 30 (alerted) follows the host's record; `net w alert 0|1`, REV2_ALERT=0 */
 static unsigned g_w_alert_set, g_w_alert_clr, g_w_notice_fix;
 
@@ -538,6 +539,7 @@ static __attribute__((thiscall)) void h_killrep(void *story_p, unsigned enemy, u
 static void w_orphan_reset(void);   /* below: the orphan table of the replicas (0.3.0) */
 static void w_orphan_status(char *out, int size);
 #include "story.inc"
+#include "scene.inc"   /* scene032: the cutscene sync (needs story.inc; door.inc calls scene_door_veto) */
 #include "door.inc"
 #include "objsync.inc"
 #include "scen.inc"
@@ -578,7 +580,9 @@ static __attribute__((thiscall)) void *h_create(void *self, unsigned vtbl, int a
     const void *ret = __builtin_return_address(0);
     g_w_n_create++;
     int client = g_w_on && g_cs && cs_active(g_cs) && !cs_is_host(g_cs);
-    if (client && g_w_guard && !g_w_from_host) {   /* the host decides when an enemy appears ... */
+    int sc_actor = 0;
+    if (client && g_w_guard && !g_w_from_host && (sc_actor = scene_actor_allowed(a, bc))) {   /* scene032: the actor of this PC's own in-engine scene (scene.inc; its units wait for it) */
+    } else if (client && g_w_guard && !g_w_from_host) {   /* the host decides when an enemy appears ... */
         if (!g_w_demand_on || !glue_demand_check(g_w_demand, a, bc, GetTickCount())) {
             g_w_refused++;
             if (g_w_refused <= (unsigned)g_w_log_calls) r2_log(W_LOG "CreateEnemy(layout (%d,%u,%u)) refused on the client (the host's SPAWN creates it), caller exe+%x", a, bc & 0xFFFF, bc >> 16, (unsigned)ret - 0x400000);
@@ -589,6 +593,7 @@ static __attribute__((thiscall)) void *h_create(void *self, unsigned vtbl, int a
         r2_log(W_LOG "CreateEnemy(layout (%d,%u,%u)): the client's story asks again and again (%u requests refused so far): created on this PC, caller exe+%x", a, bc & 0xFFFF, bc >> 16, g_w_refused, (unsigned)ret - 0x400000);
     }
     void *r = o_create(self, vtbl, a, bc, p5, p6);
+    if (r && sc_actor) scene_actor_created((unsigned)r, a, bc);
     if (g_w_n_create <= (unsigned)g_w_log_calls) {
         char cn[100] = "-";
         if (r) w_class((unsigned)r, cn, sizeof cn);
@@ -682,6 +687,7 @@ static int w_install(void)
         if (r2_env("REV2_BOOM", tv, sizeof tv) && tv[0] == '0') g_w_boom = 0;
     }
     story_install(&ok);
+    scene_install(&ok);
     scen_install(&ok);
     for (int i = 0; i < W_NVT; i++) {   /* slot 234 of every enemy class vtable (checked against the value read from the image) */
         unsigned slot = w_vts[i].vt + 4 * 234, cur = 0;
@@ -837,13 +843,14 @@ static void w_command(const char *rest, char *out, int size)
             unsigned v = rd32(story + 0xEF0 + 4 * i);
             if (v) o += snprintf(out + o, size - o, " %u:%08x", i, v);
         }
-    } else if (!strcmp(sub, "story")) {   /* net w story [equip 0|1] [barrier 0|1 [ms]] [grant 0|1]: counters and switches of the 6b hooks */
+    } else if (!strcmp(sub, "story")) {   /* net w story [equip 0|1] [barrier 0|1 [ms]] [grant 0|1] [granthold 0|1]: counters and switches of the 6b hooks */
         int v1 = 0, v2 = 0;
         if (sscanf(arg, "equip %d", &v1) == 1) g_w_equip = v1 != 0;
         else if (sscanf(arg, "barrier %d %d", &v1, &v2) >= 1) {
             g_w_barrier = v1 != 0;
             if (v2 > 0) g_w_barrier_ms = v2;
-        } else if (sscanf(arg, "grant %d", &v1) == 1) g_w_grant_sync = v1 != 0;
+        } else if (sscanf(arg, "granthold %d", &v1) == 1) g_w_grant_hold = v1 != 0;   /* 0.3.2: a GRANT for my own human waits for my own story during a scene (default 1) */
+        else if (sscanf(arg, "grant %d", &v1) == 1) g_w_grant_sync = v1 != 0;
         else if (sscanf(arg, "hand %d", &v1) == 1) g_w_hand = v1 != 0;
         else if (sscanf(arg, "scene %d %d", &v1, &v2) >= 1) {
             g_w_scene = v1 != 0;
@@ -1596,7 +1603,11 @@ static void w_on_event(const cp_event *e)
         {
             unsigned se = rd32(SENEMY_CELL);
             if (!se) break;
-            if (w_find_active(SENEMY_CELL, a, lb, lc)) break;   /* already there (it came up by itself) */
+            unsigned ex = w_find_active(SENEMY_CELL, a, lb, lc);
+            if (ex) {   /* already there (it came up by itself) */
+                scene_actor_adopt(ex, "SPAWN");
+                break;
+            }
             g_w_from_host++;
             unsigned args[6] = {se, LAYOUT_VTBL, (unsigned)a, lb | (lc << 16), 0, 0};
             unsigned r = do_call(2, 0x5FD780, args, 6);
@@ -1679,8 +1690,16 @@ static void w_on_event(const cp_event *e)
                 r2_log(W_LOG "PICKUP skipped: object (%d,%u,%u) is not here (item %04x, slot %d)", la, lbb, lcc, item, slot);
                 break;
             }
-            int fl = 0;
-            if (e->len >= 21) memcpy(&fl, b + 17, 4);
+            int fl_sent = 0;
+            if (e->len >= 21) memcpy(&fl_sent, b + 17, 4);
+            /* fix032: AddItem's flag argument is the item object's id on the PC that picked it up (`+0x19C4`, a running number of the order the objects were created there); AddItem's tail removes
+             * the object with that id from the sItem list. Here the same object can carry another number (pair run g032b: sender 128), so the sender's flag removed nothing (the item stayed on this floor)
+             * or another object. Pass this PC's own id of the object found by its LayoutID. */
+            int fl = pk_replay_flag(fl_sent, 1, (int)rd32(obj + 0x19C4));
+            if (pk_flag_differs(fl_sent, fl)) {
+                g_w_pick_idfix++;
+                r2_log(W_LOG "PICKUP: the item's id here is %d, the sender's was %d: the replay passes this PC's own id (the pick-up removes the object that lies here)", fl, fl_sent);
+            }
             unsigned pp = player_obj(slot);
             if (!pp || !o_additem) break;
             g_w_replay++;
@@ -2019,7 +2038,7 @@ static void w_apply_enemy_record(const unsigned char *p)
     float pos[3];
     memcpy(&a16, p, 2), memcpy(&b, p + 2, 2), memcpy(&c, p + 4, 2), memcpy(pos, p + 6, 12), memcpy(&yaw, p + 18, 2), memcpy(&hp, p + 20, 2), memcpy(&act, p + 22, 2), memcpy(&pact, p + 24, 2);
     unsigned en = w_find_active(SENEMY_CELL, (int)a16, b, c);
-    if (en) w_orphan_seen(en);
+    if (en) w_orphan_seen(en), scene_actor_adopt(en, "record");
     if (!en) {   /* no replica yet (the SPAWN was missed or came before this PC was running): a record is as good as a SPAWN, at most once per second per id */
         g_w_rx_nomatch++;
         static unsigned try_t[16], try_k[16];
@@ -2188,6 +2207,7 @@ static void w_tick(void)
     if (cs_is_host(g_cs)) w_send_enemies(), story_send_digest(), mh_tick();
     story_send_items();
     story_inv_tick();   /* combat4: the inventory mirror (both roles) */
+    story_grant_tick();   /* 0.3.2: the GRANTs for this PC's own human that wait for its own story (pickup_logic.h pk_grant_decide) */
     w_sm_tick();
     os_tick();
     w_recv_world();

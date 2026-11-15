@@ -16,6 +16,8 @@
 typedef struct { unsigned obj; int a; unsigned b, c; int act; unsigned char used, ok, kind; unsigned seen; os_prop_t prop; unsigned rp_t; } wsm_t;   /* seen: tick of the last scan that found the object; rp_t: when the partner's press was replayed on it here (os_replay_echo) */
 static wsm_t g_wsm[192];
 static void os_sm_learn_xf(wsm_t *e, unsigned o);   /* objsync.inc */
+static unsigned pm_sm_fill(unsigned o, int kind, int act, unsigned char *body, unsigned len, unsigned cap);   /* 0.3.2 anim032 (pmot.inc): a skipped lever / board / rock step carries the handle's motion */
+static void pm_sm_play(unsigned o, int kind, int act, const cp_event *e, int a, unsigned b, unsigned c);
 static void os_level_reset(void);
 static int g_w_sm_access = 1;   /* `net w doors access 0|1`: hold mAccessType at 0 while a press of the partner is replayed (the presser's PC accepted it) */
 static unsigned g_w_sm_echo_skip, g_w_sm_move_skip, g_w_sm_move_refused, g_w_sm_alias, g_w_sm_full, g_w_sm_access_ovr, g_w_sm_replay_refused;
@@ -172,12 +174,13 @@ static void w_sm_scan(int send)
             }
             char cn[100];
             if ((int)g_w_sm_tx < g_w_sm_log) r2_log(W_LOG "set model %s layout (%d,%u,%u) action %d -> %d (sent)", w_class(o, cn, sizeof cn), l.a, l.b, l.c, prev, act);
-            unsigned char b[31];
+            unsigned char b[48];
             memcpy(b, &l.a, 4), memcpy(b + 4, &l.b, 2), memcpy(b + 6, &l.c, 2), memcpy(b + 8, &act, 4), memcpy(b + 12, &prev, 4);
             b[16] = e->ok ? 0 : 1, b[17] = (unsigned char)g_my_slot;   /* co-op set model: the receiver gives the action the sender's puppet as its actor */
             float pos[3] = {rdf(o + 0x40), rdf(o + 0x44), rdf(o + 0x48)};   /* stage 10 tail: position + kind, for the alias of a border shutter (older receivers read 18 bytes) */
             memcpy(b + 18, pos, 12), b[30] = e->kind;
-            w_ev_send(EV_W_DOOR, b, e->ok ? 16 : 31);
+            unsigned blen = pm_sm_fill(o, e->kind, act, b, e->ok ? 16 : 31, sizeof b);   /* 0.3.2 anim032: + the handle's layer-0 motion for a step the receiver does not replay (48 bytes; b[16] stays 0 = not co-op) */
+            w_ev_send(EV_W_DOOR, b, blen);
             g_w_sm_tx++;
             if (!e->ok) g_w_sm_coop_tx++;
         }
@@ -294,6 +297,20 @@ static void w_sm_event(const cp_event *e)
     if (!coop) {   /* stage 10: push boxes / carried objects: only what needs no actor (os_door_apply) */
         int la = os_is_move(kind) ? w_sm_actor_rel(o) : OS_ACT_NONE;
         if (!os_door_apply(kind, act, la)) {
+            if (kind == OS_LEVER_OP) {   /* 0.3.2 (objsync_logic.h OS_LEVER_OP): the pull / push-back of this lever needs the puller's character here; its end pose comes with the partner's next step, its story flag with the SF sync */
+                static unsigned lever_logs;
+                char lcn[100];
+                if (lever_logs++ < 40) r2_log(W_LOG "DOOR: (%d,%u,%u) %s action %d not replayed: a lever's pull / push-back needs the puller's character on this PC; the lever takes its end pose with the next step and the story flag comes with the flag sync", a, b, c, w_class(o, lcn, sizeof lcn), act);
+                pm_sm_play(o, kind, act, e, a, b, c);   /* 0.3.2 anim032: only the picture: the handle plays the puller's motion on layer 0 (no action, no operator) */
+                return;
+            }
+            if (kind == OS_BOARD_OP || kind == OS_ROCK_OP) {   /* 0.3.2 audit (objsync_logic.h): the breaking step of a plank board / a drilled rock needs the operating character here */
+                static unsigned op_logs;
+                char ocn[100];
+                if (op_logs++ < 40) r2_log(W_LOG "DOOR: (%d,%u,%u) %s action %d not replayed: this step needs the operating character on this PC; the set model takes its end pose with the next step", a, b, c, w_class(o, ocn, sizeof ocn), act);
+                pm_sm_play(o, kind, act, e, a, b, c);   /* 0.3.2 anim032: the board's / rock's layer-0 motion of the operating PC */
+                return;
+            }
             g_w_sm_move_refused++;
             if (g_w_sm_move_refused < 20) r2_log(W_LOG "DOOR: (%d,%u,%u) action %d not replayed: a movable set model (kind %d) moves by its transform (PROP), not by a ChangeAction without its actor", a, b, c, act, kind);
             return;
@@ -313,6 +330,7 @@ static void w_sm_event(const cp_event *e)
         wr(action + 0xC, &actor, 4);
         g_w_sm_coop_applied++;
     }
+    if (!coop && scene_door_veto(o, (int)rd32(o + 0x1A54), act, a, b, c)) return;   /* scene032 (scene.inc): a scene set model (uSmPlayerDemo / uSmOtherDemo) moves only forward */
     if ((int)rd32(o + 0x1A54) == act) {
         g_w_sm_same++;
         return;

@@ -39,6 +39,7 @@ const lobby_stock lobby_stock_ids[LT_COUNT] = {
     [LT_CONTINUE] = {3, 87}, [LT_CONT_NEED] = {-1, 0},   /* 0.2.1 coopsave: m03 #87 "Continue" (the campaign menu's own row) */
     /* 0.3.0 all-episodes: m03 #74 / #75 the main menu's names of the two bonus episodes, m01 #93 "Evgeny" / #101 "Dark Natalia" (the game's character names) */
     [LT_EP_STRUGGLE] = {3, 74}, [LT_EP_LITTLE] = {3, 75}, [LT_EVGENY] = {0, 93}, [LT_DARK_NATALIA] = {0, 101},
+    [LT_SKIP_WAIT] = {-1, 0}, [LT_SKIP_PARTNER] = {-1, 0},   /* 0.3.2 scene032: own (the stock m01 #17 / m40 #1 "Skip?" is the popup's question, not a strip) */
 };
 
 const char *const lobby_lang_names[12] = {"English", "French", "Italian", "German", "Spanish", "Russian", "Polish", "Portuguese (Brazil)", "Japanese", "Korean",
@@ -406,6 +407,19 @@ static const char *const T[LT_COUNT][12] = {
                           "Partner opuści sesję; grasz dalej z partnerem SI.", "Seu parceiro sai da sessão; você continua com o parceiro da IA.",
                           "パートナーがセッションから退出し、AIパートナーとプレイを続けます。", "파트너가 세션에서 나가고 AI 파트너와 계속 플레이합니다.",
                           "同伴将离开游戏，你将与AI同伴继续游戏。", "同伴將離開遊戲，你將與AI同伴繼續遊戲。"},
+    /* 0.3.2 scene032: the skip vote of a cutscene in co-op (the game's own word for the cutscene in each language: m33 #25 / m36 #480) */
+    [LT_SKIP_WAIT] = {"Skip: waiting for %s to skip the cutscene too...", "Passer : en attente de %s pour passer la cinématique...",
+                      "Salta: in attesa che anche %s salti il filmato...", "Überspringen: Warten, bis auch %s die Zwischensequenz überspringt...",
+                      "Saltar: esperando a que %s también salte la escena...", "Пропуск: ожидание, пока %s тоже пропустит ролик...",
+                      "Pomijanie: oczekiwanie, aż %s też pominie przerywnik...", "Pular: aguardando %s também pular a animação...",
+                      "スキップ：%sもカットシーンをスキップするのを待っています…", "건너뛰기: %s님도 영상을 건너뛰기를 기다리는 중...",
+                      "跳过：正在等待%s也跳过过场动画……", "跳過：正在等待%s也跳過過場動畫……"},
+    [LT_SKIP_PARTNER] = {"%s wants to skip the cutscene: skip it too to end it for both.", "%s veut passer la cinématique : passez-la aussi pour la terminer à deux.",
+                         "%s vuole saltare il filmato: saltalo anche tu per chiuderlo per entrambi.", "%s möchte die Zwischensequenz überspringen: Überspringen Sie sie auch.",
+                         "%s quiere saltar la escena: sáltala tú también para terminarla.", "%s хочет пропустить ролик: пропустите его тоже, и он закончится.",
+                         "%s chce pominąć przerywnik: pomiń go też, aby zakończyć go dla obojga.", "%s quer pular a animação: pule também para encerrá-la para os dois.",
+                         "%sがカットシーンをスキップしようとしています。一緒にスキップすると終わります。", "%s님이 영상을 건너뛰려고 합니다. 함께 건너뛰면 영상이 끝납니다.",
+                         "%s想跳过过场动画：你也跳过即可结束。", "%s想跳過過場動畫：你也跳過即可結束。"},
 };
 
 const char *lobby_own_text(int text, int lang)
@@ -487,7 +501,7 @@ int lobby_text_args(int text)
     case LT_REF_MODVER: case LT_PARTNER_SILENT: return 2;
     case LT_REF_MODVER_OLD: case LT_WAIT_LOAD: case LT_DOWN_SELF: case LT_DOWN_PARTNER: case LT_KICK_ASK: case LT_PARTNER_LEFT_ROOM: case LT_PARTNER_LOST_ROOM:
     case LT_PARTNER_LEFT: case LT_PARTNER_LOST: case LT_CONNECTING_TO: case LT_AWAITING: case LT_HOST_WAIT_READY: case LT_HOST_CAN_START: case LT_GUEST_WAIT_HOST:
-    case LT_HOST_NET_HINT: case LT_MS:
+    case LT_HOST_NET_HINT: case LT_MS: case LT_SKIP_WAIT: case LT_SKIP_PARTNER:
         return 1;
     default: return 0;
     }

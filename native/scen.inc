@@ -22,7 +22,7 @@ static bgl_unload_t o_bgl_unload;
 /* stage change gate: the story stage changes when slot 0 stands on a floor of another stage and the old stage's blocks go away with the change; the human who is still on the old floor falls (s6j1/s6j2).
  * The hook on the area update (aEpisodeBase vf2, 0x462780) lets the change through only when every other human's floor already belongs to the new stage (or after GATE_MS): while it waits, the area's
  * own stage id (+0x30) is shown to the game as equal to slot 0's floor stage for the duration of the call. `net w bgl gate 0|1`. */
-#define BGL_GATE_MS 25000
+#define BGL_GATE_MS WL_GATE_MS   /* warp_logic.h */
 typedef void(__attribute__((thiscall)) *epi_upd_t)(unsigned self);
 static epi_upd_t o_epi_upd;
 static int g_stage_gate = 1;
@@ -674,7 +674,7 @@ static void scen_bgl_command(const char *arg, char *out, int size)
     }
     if (!strncmp(arg, "gate", 4)) {   /* net w bgl gate [0|1]: the story stage change waits until every human stands on the new stage's floor (6j) */
         if (arg[4] == ' ' && (arg[5] == '0' || arg[5] == '1')) g_stage_gate = arg[5] - '0';
-        snprintf(out, size, "stage gate %s (hook %s): holds %u frames, released %u, timeouts %u (limit %u ms)", g_stage_gate ? "ON" : "off", o_epi_upd ? "installed" : "NOT installed", g_gate_holds, g_gate_releases, g_gate_timeouts, BGL_GATE_MS);
+        snprintf(out, size, "stage gate %s (hook %s): holds %u frames, released %u, timeouts %u (limit %u ms), waiting jumps applied at the timeout %u", g_stage_gate ? "ON" : "off", o_epi_upd ? "installed" : "NOT installed", g_gate_holds, g_gate_releases, g_gate_timeouts, BGL_GATE_MS, g_gate_jump_applied);
         return;
     }
     if (!strncmp(arg, "hit", 3) || !strncmp(arg, "set", 3)) {   /* net w bgl hit <stage> <block> [...]: what the zone code does after a zone hit, with the named blocks added to the current list (up to five in all); net w bgl set <stage> <block> [...] (6n): the same, but the named blocks REPLACE the list (what the zone code does when the human is in another place) */
@@ -927,9 +927,18 @@ static __attribute__((thiscall)) void h_epi_update(unsigned self)
                     faked = 1;
                     if (!g_gate_holds && g_gate_logs < 30) g_gate_logs++, r2_log(W_LOG "stage gate: slot 0 stands on a stage %d floor (area %d), the human of slot %d does not yet: the change waits", target, cur, wait_for);
                     g_gate_holds++;
-                } else if (!g_gate_timeouts || now - g_gate_since < BGL_GATE_MS + 500) {
-                    g_gate_timeouts++;
-                    if (g_gate_logs < 30) g_gate_logs++, r2_log(W_LOG "stage gate: waited %u ms for the human of slot %d, the change goes ahead", now - g_gate_since, wait_for);
+                } else {
+                    if (!g_gate_timeouts || now - g_gate_since < BGL_GATE_MS + 500) {
+                        g_gate_timeouts++;
+                        /* 0.3.2 (warp_logic.h, pair run g032r5n): a jump of the partner into this very stage that this PC could not take is applied now (restart: the human moves with the stage)
+                         * instead of the bare area change under the human; the area stays where it is for WL_GT_KEEP_MS while that restart takes hold (then the old behaviour) */
+                        if (!wl_gate_keeping(now, g_gate_apply_until) && sh_gate_timeout(target)) g_gate_apply_until = now + WL_GT_KEEP_MS ? now + WL_GT_KEEP_MS : 1;
+                        else if (!wl_gate_keeping(now, g_gate_apply_until) && g_gate_logs < 30) g_gate_logs++, r2_log(W_LOG "stage gate: waited %u ms for the human of slot %d, the change goes ahead", now - g_gate_since, wait_for);
+                    }
+                    if (wl_gate_keeping(now, g_gate_apply_until)) {
+                        wr(self + 0x30, &target, 4);
+                        faked = 1;
+                    }
                 }
             } else {
                 if (g_gate_since) {
@@ -937,8 +946,9 @@ static __attribute__((thiscall)) void h_epi_update(unsigned self)
                     if (g_gate_logs < 30) g_gate_logs++, r2_log(W_LOG "stage gate: every human stands on a stage %d floor (waited %u ms): the change goes ahead", target, now - g_gate_since);
                 }
                 g_gate_since = 0;
+                g_gate_apply_until = 0;   /* 0.3.2: the keep window of an applied jump ends with the gate (never a stale value: wl_gate_keeping compares 31-bit distances) */
             }
-        } else if (target == cur) g_gate_since = 0;
+        } else if (target == cur) g_gate_since = 0, g_gate_apply_until = 0;
     }
     o_epi_upd(self);
     if (faked) wr(self + 0x30, &cur, 4);

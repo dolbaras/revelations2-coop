@@ -16,6 +16,12 @@ What it does
 - The story is kept in step between the two PCs: enemies (the host's PC runs their AI; the guest's blows and shots reach them through the host), doors and
   co-op shutters, boxes that are carried or pushed, slides and boosts, the story flags, item pickups, level loads (both PCs wait for
   each other), deaths and retries, the stage changes, and each player's own Steam achievements.
+- Cutscenes (0.3.2): the pre-rendered movies and the start of play after a load wait for the slower PC (it shows "Waiting for <name> to finish loading..."),
+  so both players see them together. Skipping needs both players, as in Resident Evil 6: a press of the game's skip input (Esc on the keyboard, the pad's
+  skip button) is your vote, the partner reads "<name> wants to skip the cutscene...", and the scene ends on both PCs only when both have pressed. A scene
+  that the partner's character starts (Episode 1's knife on the table) plays on your PC too, with its own camera.
+- The partner's character (0.3.2) shows what its player does where it used to stand still: picking up an item, a fall, lifting and putting down a box,
+  pulling a lever (the lever's handle moves on both screens).
 - Downed / revive (the host's choice in the room, on by default): a player whose health runs out lies down instead of dying and bleeds out after 60 seconds
   unless the partner holds the game's Rescue key next to him (keyboard: the "Rescue" key of the game's key settings, Tab by default; pad: Y). When both
   players are down, or one dies outright (a fall), it is game over for both.
@@ -36,7 +42,7 @@ Install
    version of the mod from GitHub first, if there is one (no internet: the game starts as it is). A new version is installed only when its download matches the
    checksum GitHub gives for it.
 3. In the game choose Campaign, then "Co-Op Play". Both players need the same version of the mod: a player with another version is refused and told so.
-If you had an earlier version (0.1.0, 0.1.1, 0.2.0 or 0.2.1): the shortcut updates it to this version by itself at the next start. Both PCs need the same version.
+If you had an earlier version (0.1.0 to 0.3.1): the shortcut updates it to this version by itself at the next start. Both PCs need the same version.
 
 Remove: run "Uninstall Co-op.bat" in the game folder (or the installer again and choose "Remove co-op"). It deletes what it installed (also the mod's log
 files next to rerev2.exe), puts the backed-up files back and removes the shortcuts. Your saves are not touched: the game's own save stays where Steam keeps
@@ -48,6 +54,18 @@ PowerShell 5.1 (part of Windows). Direct connection by IP: the host needs inboun
 
 Limits
 - Continue in the room (0.3.1) was checked on two PCs in both halves of Episode 2, The Struggle and Little Miss; not yet in Episodes 3 and 4.
+- The second player's own interactions (0.3.2): doors (the co-op doors and shutters, a plain cell door, a key door with its key), picking up items (a herb, a key
+  item, a stackable item), the push box, the carried box, the pair boost and the lever of Episode 1's torture room were used by the second player (guest) and
+  followed on the other PC, on two PCs. Not reached in the lab: the slide with the real key (the test PC's game stalled), the torture room's power switch
+  (already on in the test), ammo and weapons, the plank boards a crowbar breaks and the drill walls (the crash of the partner's game there was fixed from
+  the code reading only), the fence with two levers of Episode 3's stage 354.
+- Cutscenes (0.3.2) were checked on two PCs in Episode 1 (the opening movies of both halves, the start of play after them, the opening scenes of both halves,
+  the knife on the table) and at the start of The Struggle; the other cutscenes were not run in the lab. The first in-engine scene after a load is not held
+  for the slower PC (each PC's story starts it when it gets there: up to 6.6 seconds apart in the lab), and a scene is never corrected while it plays. A pad's
+  skip vote during the movie at the very start of a co-op game was not checked (Esc on the keyboard was).
+- The partner's motions (0.3.2): a partner carrying a box walks without the carrying pose; ladders and climbing were not reached in the lab.
+- The blade traps of Episode 1 (and similar traps that the story starts) run on each PC from the story flag, so their blades can be at different phases on
+  the two screens; damage is always decided on the PC of the player who is hit.
 - Verified in the lab stage by stage, NOT as a complete playthrough. Episode 1 is tested from start to end. Episodes 2-4 and the two bonus episodes: the lobby start with
   the right characters, walking of both players, the fights of Episode 2's village (siege waves and the Pedro boss) and of The Struggle's second chapter, the hand-over
   of Episode 3 and of The Struggle between their stages, and the end of Episodes 2 and 3, The Struggle, Little Miss and the game's last stage were shown on two PCs; most

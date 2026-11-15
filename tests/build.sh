@@ -56,6 +56,12 @@ if ./build/test_objsync_prewpb3c.exe > build/test_objsync_prewpb3c.txt; then ech
 # the put-down of the pair run wpB3d (2026-11-07 23:13 / 23:21): the box keeps its carrier as actor; built as the logic before the attach rule the checks have to fail
 "$ZIG" cc $CF -DOS_MODEL_BEFORE_WPB3D -o build/test_objsync_prewpb3d.exe test_objsync.c
 if ./build/test_objsync_prewpb3d.exe > build/test_objsync_prewpb3d.txt; then echo "FAIL: test_objsync passes on the model before the wpB3d put-down rule"; exit 1; fi
+# 0.3.2 (pair run g032g4g): a lever pull replayed by a bare ChangeAction crashed the partner (uSm1840 / uSmLeverOnOff); built with every lever as a plain set model the checks have to fail
+"$ZIG" cc $CF -DOS_MODEL_BEFORE_LEVER -o build/test_objsync_prelever.exe test_objsync.c
+if ./build/test_objsync_prelever.exe > build/test_objsync_prelever.txt; then echo "FAIL: test_objsync passes on the model before the lever rule"; exit 1; fi
+# 0.3.2 audit: the plank board and the drilled rock (their breaking steps read the operating character with no null check); built with both plain the checks have to fail
+"$ZIG" cc $CF -DOS_MODEL_BEFORE_OPS -o build/test_objsync_preops.exe test_objsync.c
+if ./build/test_objsync_preops.exe > build/test_objsync_preops.txt; then echo "FAIL: test_objsync passes on the model before the board / rock rule"; exit 1; fi
 # 0.2.1 coopsave (native/coopsave_logic.h): a co-op game uses its own save; the solo save (Steam's DATA0.DAT) is never written by it. Built as the 0.2.0 model
 # (no routing: the co-op checkpoints go into the solo save) the checks have to fail
 "$ZIG" cc $CF -o build/test_coopsave.exe test_coopsave.c
@@ -65,6 +71,31 @@ if ./build/test_coopsave_pre.exe > build/test_coopsave_pre.txt; then echo "FAIL:
 # 0.3.1 C1: Continue for every episode and half of the room (Episode 1 exactly as before); built with the 0.3.0 rule (Episode 1 only) the checks have to fail
 "$ZIG" cc $CF -DCPS_MODEL_BEFORE_031 -o build/test_coopsave_pre031.exe test_coopsave.c
 if ./build/test_coopsave_pre031.exe > build/test_coopsave_pre031.txt; then echo "FAIL: test_coopsave passes on the 0.3.0 rule (Continue for Episode 1 only)"; exit 1; fi
+# fix032 (pair runs g032b / g032d, 2026-11-13): the replayed pick-up passes the receiver's OWN object id (AddItem's flag removes the object with that id); built as 0.3.1 (the sender's flag as it came) the checks have to fail
+"$ZIG" cc $CF -o build/test_pickup.exe test_pickup.c
+if ./build/test_pickup.exe > build/test_pickup.txt; then tail -1 build/test_pickup.txt; else grep "^FAIL" build/test_pickup.txt; echo "FAIL: test_pickup"; exit 1; fi
+"$ZIG" cc $CF -DPK_MODEL_BEFORE_G032 -o build/test_pickup_pre.exe test_pickup.c
+if ./build/test_pickup_pre.exe > build/test_pickup_pre.txt; then echo "FAIL: test_pickup passes on the model of 0.3.1 (the sender's flag unchanged)"; exit 1; fi
+# 0.3.2 final regression (r032fs): a GRANT for this PC's own human waits while an in-engine scene plays here and 2 s after (its own story grants it with the stock equip); built as
+# the rule before (the GRANT at once: the guest's Moira ended the knife table scene with the light in her bag but not in her hand) the checks have to fail
+"$ZIG" cc $CF -DPK_MODEL_BEFORE_GRANTHOLD -o build/test_pickup_pregrant.exe test_pickup.c
+if ./build/test_pickup_pregrant.exe > build/test_pickup_pregrant.txt; then echo "FAIL: test_pickup passes on the model before the GRANT hold (the partner's GRANT at once)"; exit 1; fi
+# gate032 (pair run g032r5n, 2026-11-14): the stage gate's timeout applies a waiting Barry-half jump instead of the bare area change under the human; built as 0.3.1 (the change always goes ahead) the checks have to fail
+"$ZIG" cc $CF -o build/test_gate.exe test_gate.c
+if ./build/test_gate.exe > build/test_gate.txt; then tail -1 build/test_gate.txt; else grep "^FAIL" build/test_gate.txt; echo "FAIL: test_gate"; exit 1; fi
+"$ZIG" cc $CF -DWL_MODEL_BEFORE_G032 -o build/test_gate_pre.exe test_gate.c
+if ./build/test_gate_pre.exe > build/test_gate_pre.txt; then echo "FAIL: test_gate passes on the model of 0.3.1 (the area change always goes ahead)"; exit 1; fi
+# scene032 (notes: the owner saw cutscenes out of step between the PCs): the stock start points 7 / 8 hold for the partner, the skip vote of both players, one start per
+# in-engine scene and PC, the door mirror moves a scene set model only forward (native/scene_logic.h); built as rel032 (no kind 7, kind 8 only while the glue ran, one PC skips alone,
+# the hash dedupe, backward door steps) the checks have to fail
+"$ZIG" cc $CF -o build/test_scene.exe test_scene.c
+if ./build/test_scene.exe > build/test_scene.txt; then tail -1 build/test_scene.txt; else grep "^FAIL" build/test_scene.txt; echo "FAIL: test_scene"; exit 1; fi
+"$ZIG" cc $CF -DSC_MODEL_REL032 -o build/test_scene_pre.exe test_scene.c
+if ./build/test_scene_pre.exe > build/test_scene_pre.txt; then echo "FAIL: test_scene passes on the model of rel032 (the checks do not discriminate)"; exit 1; fi
+# 0.3.2 final regression (r032fa): only the scene's own actor is created on the client (a layout one of its enemy units names, sequence state 7); built as the first actor rule
+# (every creation while a scene starts or plays: a snake only the guest made at The Struggle's opening) the checks have to fail
+"$ZIG" cc $CF -DSC_MODEL_ACTOR_ANY -o build/test_scene_preactor.exe test_scene.c
+if ./build/test_scene_preactor.exe > build/test_scene_preactor.txt; then echo "FAIL: test_scene passes on the first actor rule (every creation during a scene)"; exit 1; fi
 "$ZIG" cc $CF -o build/test_radio.exe test_radio.c
 "$ZIG" cc $CF -o build/test_warp.exe test_warp.c
 # the warp back to a part start (run w1 2026-11-07 13:10: no player, black screen): built as the first version the checks have to fail
@@ -106,6 +137,12 @@ if ./build/test_combat2_pre.exe > build/test_combat2_pre.txt; then echo "FAIL: t
 "$ZIG" cc $CF -o build/test_combat3.exe test_combat3.c
 "$ZIG" cc $CF -DPA_MODEL_BEFORE_C3 -o build/test_combat3_pre.exe test_combat3.c
 if ./build/test_combat3_pre.exe > build/test_combat3_pre.txt; then echo "FAIL: test_combat3 passes on the model before the combat3 fix"; exit 1; fi
+# 0.3.2 anim032 (notes\motion-mirror.md): the puppet plays its owner's motions where the action mirror cannot (doors, levers, pickups, ladders, climbs), bank 15 references balanced,
+# a skipped lever / board / rock step carries the handle's motion, the STATE tail keeps the 60 bytes of 0.3.1; built as rel032 cfd6200 (no motion mirror) the checks have to fail
+"$ZIG" cc $CF -o build/test_pmot.exe test_pmot.c ../native/coop_proto.c
+if ./build/test_pmot.exe > build/test_pmot.txt; then tail -1 build/test_pmot.txt; else grep "^FAIL" build/test_pmot.txt; tail -1 build/test_pmot.txt; echo "FAIL: test_pmot"; exit 1; fi
+"$ZIG" cc $CF -DPM_MODEL_BEFORE -o build/test_pmot_pre.exe test_pmot.c ../native/coop_proto.c
+if ./build/test_pmot_pre.exe > build/test_pmot_pre.txt; then echo "FAIL: test_pmot passes on the model before the motion mirror"; exit 1; fi
 # combat4 (notes\combat4.md): the partner's inventory copy follows its owner (consumed items, rounds, herbs, the GUI hand-over, checkpoint / retry), the puppet's hand
 # follows an empty hand and the light, the partner's throw is shown with its damage once; built as rev2-int 7f75163 (only PICKUP / GRANT, the hand set for slots 1..3, no throw) the checks have to fail
 "$ZIG" cc $CF -o build/test_combat4.exe test_combat4.c

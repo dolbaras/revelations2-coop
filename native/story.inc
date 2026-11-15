@@ -17,12 +17,29 @@ static void w_sm_reset(void);   /* door.inc */
 static im_grace g_im_grace;     /* ids this PC itself changed in the partner's copy (story grant, PICKUP / GRANT replay, its own GUI hand-over) */
 static int g_im_op;             /* inside a mirror operation of this file: no grace, no GRANT */
 static int w_session_running(void);
+/* scene032 (scene.inc, included after this file): the cutscene sync; g_sc_on 0 = the behaviour of rel032 below */
+static int g_sc_on;
+static void scene_sync_set(unsigned kind);
+static int scene_sync_check(unsigned kind);
+static void scene_level_reset(void);
+static unsigned scene_own_submit_check(int idx, void *req);
+static void scene_own_started(int idx, void *req, unsigned r, unsigned id);
+static int scene_partner_scene_skip(unsigned id);
+static int scene_gate_keeps_own(unsigned id);
+static int scene_rx_takes(unsigned id);
+static void scene_partner_scene_applied(unsigned id, unsigned r);
 
 enum { WK_FLAGS = 2, WK_ITEMS = 3 };
 static int g_w_equip = 1, g_w_barrier = 1, g_w_barrier_ms = 6000, g_w_grant_sync = 1;
 static int g_w_hand = 1;   /* combat4: the puppet's hand also follows an empty hand and the light (`net w story hand 0|1`) */
 static unsigned g_w_hand_light, g_w_hand_cleared, g_w_hand_logs;
 static unsigned g_w_put_n, g_w_put_rx, g_w_grant_tx, g_w_grant_rx, g_w_grant_skip, g_w_pick_skip, g_w_equip_calls, g_w_equip_miss;
+static unsigned g_w_pick_idfix;   /* fix032: replayed pick-ups whose object id here differed from the sender's */
+static int sc_playing(uint32_t serial);   /* scene.inc: a type-3 scene (sDemo slot) of that serial plays here; 0xFFFFFFFF = any */
+/* 0.3.2 (pickup_logic.h pk_grant_decide): a GRANT for this PC's own human waits while an in-engine scene plays here and 2 s after it; `net w granthold 0|1` (default 1) */
+static int g_w_grant_hold = 1;
+static struct { unsigned item, cnt, t; int slot; unsigned char epoch, used; } g_w_gq[8];
+static unsigned g_w_grant_held, g_w_grant_held_applied, g_w_grant_held_dropped, g_w_gr_play_t, g_w_gr_play_seen;
 static unsigned g_w_bar_tx, g_w_bar_rx, g_w_bar_passed, g_w_bar_timeouts, g_w_bar_since, g_w_bar_waiting, g_w_bar_wait_ms;
 static unsigned g_w_dig_tx, g_w_dig_rx, g_w_dig_applied, g_w_last_digest;
 static unsigned g_w_dig_last[128];
@@ -485,6 +502,10 @@ static int w_session_running(void) { return g_w_on && g_cs && cs_active(g_cs) &&
 static __attribute__((thiscall)) void h_syncset(void *self, unsigned kind)
 {
     o_syncset(self, kind);
+    if (g_sc_on) {   /* scene032: kind 7 / 8 in every glue state (scene.inc) */
+        scene_sync_set(kind & 0xFF);
+        return;
+    }
     if ((kind & 0xFF) == 8 && g_w_barrier && w_session_running()) {
         unsigned char b[8];
         b[0] = 8;
@@ -498,6 +519,7 @@ static __attribute__((thiscall)) void h_syncset(void *self, unsigned kind)
 
 static __attribute__((thiscall)) unsigned h_synccheck(void *self, unsigned kind)
 {
+    if (g_sc_on && ((kind & 0xFF) == 7 || (kind & 0xFF) == 8)) return scene_sync_check(kind & 0xFF) ? o_synccheck(self, kind) : 0;   /* scene032 */
     if ((kind & 0xFF) != 8 || !g_w_barrier || !w_session_running() || !g_w_bar_waiting) return o_synccheck(self, kind);
     unsigned now = GetTickCount();
     int open = g_w_bar_rx > g_w_bar_passed;
@@ -648,6 +670,10 @@ static void scene_recent_add(unsigned h)
 
 static unsigned demosub_common(int idx, void *self, void *req)
 {
+    if (g_sc_on && g_w_on && !g_w_replay && g_w_scene && req) {   /* scene032: the partner's copy of this scene plays here: no second submit (it restarted the scene) */
+        unsigned sup = scene_own_submit_check(idx, req);
+        if (sup) return sup;
+    }
     unsigned r = o_demosub[idx](self, req);
     if (!g_w_on || g_w_replay || !g_w_scene || !req || r == 0xFFFFFFFFu) return r;
     unsigned char buf[0x400];
@@ -661,6 +687,7 @@ static unsigned demosub_common(int idx, void *self, void *req)
     scene_recent_add(h);
     if (!g_cs || !cs_active(g_cs)) return r;
     unsigned id = ++g_scene_id & 0xFF, total = (n + 79) / 80;
+    if (g_sc_on) scene_own_started(idx, req, r, id);   /* scene032: the scene's key (SKEY before the chunks), its start stamp */
     for (unsigned c = 0; c < total; c++) {
         unsigned char b[96];
         unsigned len = n - c * 80 > 80 ? 80 : n - c * 80;
@@ -692,6 +719,12 @@ static void scene_on_chunk(const cp_event *e)
     unsigned n = total * 80 > g_w_scene_len ? g_w_scene_len : total * 80;
     unsigned h = scene_hash(asm_buf, n);
     unsigned sdemo = rd32(0x1581788);
+    if (g_sc_on && (scene_partner_scene_skip(id) || scene_gate_keeps_own(id) || scene_rx_takes(id))) {   /* scene032: this PC's own copy of the same scene plays (the
+                                                     byte hash never matches between the PCs), the first scene after the load starts from this PC's own story, or this PC's
+                                                     own scene set model of that key starts its directors (the request bytes point at the sender's director) */
+        g_scene_skip++;
+        return;
+    }
     if (scene_recent_has(h) || !sdemo || !o_demosub[idx]) {
         g_scene_skip++;
         r2_log(W_LOG "SCENE %u skipped: %s (hash %08x)", idx, scene_recent_has(h) ? "this PC submitted the same request already" : "no sDemo / hook", h);
@@ -705,6 +738,7 @@ static void scene_on_chunk(const cp_event *e)
     g_w_replay--;
     scene_recent_add(h);
     g_scene_applied++;
+    if (g_sc_on) scene_partner_scene_applied(id, r);
     g_scene_last_t = GetTickCount() | 1;
     r2_log(W_LOG "SCENE %u applied from the other PC (vtable %08x, hash %08x) -> %u", idx, rd32((unsigned)req), h, r);
 }
@@ -829,6 +863,7 @@ static void w_level_reset(void)
     g_im_full_tx = 1, g_im_req_t = 0;
     w_sm_reset();
     w_orphan_reset();
+    if (g_sc_on) scene_level_reset();   /* scene032: this PC's own load began */
 }
 
 /* ---------------------------------------------------------------- install / events / tick / status */
@@ -867,6 +902,24 @@ static void story_on_event(const cp_event *e)
             if (inv_find(slot, item) >= 0) {
                 g_w_grant_skip++;
                 break;
+            }
+            if (g_w_grant_hold) {
+                uint32_t now = GetTickCount();
+                int plays = sc_playing(0xFFFFFFFFu);
+                unsigned since = g_w_gr_play_seen ? now - g_w_gr_play_t : 0xFFFFFFFFu;
+                if (plays) since = 0;
+                if (pk_grant_decide(slot == g_my_slot, 0, plays, since, 0) == PK_GR_HOLD) {
+                    int k = -1;
+                    for (int i = 0; i < 8 && k < 0; i++)
+                        if (!g_w_gq[i].used) k = i;
+                    if (k >= 0) {
+                        g_w_gq[k].item = item, g_w_gq[k].cnt = cnt, g_w_gq[k].slot = slot, g_w_gq[k].t = now ? now : 1, g_w_gq[k].epoch = e->epoch, g_w_gq[k].used = 1;
+                        g_w_grant_held++;
+                        r2_log(W_LOG "GRANT held: item %04x for my own human (slot %d): %s; this PC's own story may still grant it with its own equip", item, slot,
+                               plays ? "an in-engine scene plays here" : "an in-engine scene ended here moments ago");
+                        break;
+                    }
+                }
             }
             story_put(slot, item, cnt, 0, "GRANT");
         }
@@ -909,11 +962,41 @@ static void story_on_event(const cp_event *e)
     }
 }
 
+/* w_tick: the GRANTs that wait for this PC's own story (pk_grant_decide); the last moment an in-engine scene played here */
+static void story_grant_tick(void)
+{
+    uint32_t now = GetTickCount();
+    int plays = sc_playing(0xFFFFFFFFu);
+    if (plays) g_w_gr_play_t = now, g_w_gr_play_seen = 1;
+    for (int i = 0; i < 8; i++) {
+        if (!g_w_gq[i].used) continue;
+        if (!g_cs || g_w_gq[i].epoch != (uint8_t)cs_epoch(g_cs)) {
+            g_w_gq[i].used = 0;
+            r2_log(W_LOG "GRANT held: item %04x of an earlier session dropped", g_w_gq[i].item);
+            continue;
+        }
+        int slot = g_w_gq[i].slot;
+        unsigned held = now - g_w_gq[i].t, since = plays ? 0 : (g_w_gr_play_seen ? now - g_w_gr_play_t : 0xFFFFFFFFu);
+        int d = pk_grant_decide(slot == g_my_slot && g_w_grant_hold, inv_find(slot, g_w_gq[i].item) >= 0, plays, since, held);
+        if (d == PK_GR_HOLD) continue;
+        if (d == PK_GR_DROP) {
+            g_w_gq[i].used = 0, g_w_grant_held_dropped++;
+            r2_log(W_LOG "GRANT held: item %04x dropped after %u ms: my own human (slot %d) holds it already (this PC's own story granted it)", g_w_gq[i].item, held, slot);
+            continue;
+        }
+        if (!player_obj(slot)) continue;   /* (a load: applied once the player is there) */
+        g_w_gq[i].used = 0, g_w_grant_held_applied++;
+        char what[48];
+        snprintf(what, sizeof what, "GRANT (held %u ms)", held);
+        story_put(slot, g_w_gq[i].item, g_w_gq[i].cnt, 0, what);
+    }
+}
+
 static void story_status(char *out, int size)
 {
     snprintf(out, size,
-             "story: PutItem %u (pickup tx %u rx %u, grant tx %u rx %u skipped %u, pickup skipped %u), equipment calls %u (item missing %u), cutscene barrier %s (arrived here %u, remote %u, passed %u, timeouts %u, last wait %u ms), flag digests tx %u rx %u applied %u, death scan tx %u, scenes %s tx %u rx %u applied %u skipped %u, item digests tx %u rx %u consumed %u\n",
-             g_w_put_n, g_w_put_tx, g_w_put_rx, g_w_grant_tx, g_w_grant_rx, g_w_grant_skip, g_w_pick_skip, g_w_equip_calls, g_w_equip_miss, g_w_barrier ? "on" : "off", g_w_bar_tx, g_w_bar_rx, g_w_bar_passed, g_w_bar_timeouts, g_w_bar_wait_ms,
+             "story: PutItem %u (pickup tx %u rx %u, grant tx %u rx %u skipped %u held %u (applied later %u, granted by this PC's own story %u, hold %s), pickup skipped %u), equipment calls %u (item missing %u), cutscene barrier %s (arrived here %u, remote %u, passed %u, timeouts %u, last wait %u ms), flag digests tx %u rx %u applied %u, death scan tx %u, scenes %s tx %u rx %u applied %u skipped %u, item digests tx %u rx %u consumed %u\n",
+             g_w_put_n, g_w_put_tx, g_w_put_rx, g_w_grant_tx, g_w_grant_rx, g_w_grant_skip, g_w_grant_held, g_w_grant_held_applied, g_w_grant_held_dropped, g_w_grant_hold ? "on" : "off", g_w_pick_skip, g_w_equip_calls, g_w_equip_miss, g_w_barrier ? "on" : "off", g_w_bar_tx, g_w_bar_rx, g_w_bar_passed, g_w_bar_timeouts, g_w_bar_wait_ms,
              g_w_dig_tx, g_w_dig_rx, g_w_dig_applied, g_w_death_tx, g_w_scene ? "on" : "off", g_scene_tx, g_scene_rx, g_scene_applied, g_scene_skip, g_w_item_tx, g_w_item_rx, g_w_item_killed);
     int o = (int)strlen(out);
     if (o < size - 400) im_status(out + o, size - o);

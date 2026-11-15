@@ -27,6 +27,9 @@ enum os_kind {
     OS_MOVE_CARRY,     /* uSmInteractive (holdable boxes, bricks) */
     OS_MOVE_OTHER,     /* another uSmMoveBox class */
     OS_SCRIPTED        /* the finale helicopters (uSmLastHelicopter, uSmSoftEventHeli*): moved by the stage's own script and mover units, never mirrored (live allepP16 / P20: replaying their actions killed the game at stage 454) */
+    ,OS_LEVER_OP       /* 0.3.2 (pair run g032g4g): levers whose pull / push-back actions (1 OnMove, 3 OffMove) dereference the pulling character without a null check: uSm1840 (a uSmLever: exe+3c4179, `class id & 0xfff == 0x840`) and the uSmLeverOnOff family (exe 0x7c8950 / 0x7c8820); the receiver plays only the end poses (0 Off, 2 On, 4 OnReturn) */
+    ,OS_BOARD_OP       /* 0.3.2 audit: uSmBarBoard (the planks across doors): its Break start (action 1, 0x743130) calls the operator's ChangeAction through a pointer that is null on the receiver (FUN_00743d80(null) = 0 -> (*op)->vf 0xB8): only 1 is skipped */
+    ,OS_ROCK_OP        /* 0.3.2 audit: uSmDrilledRock: Breaking (1, 0x786D00) and Cancel (3, 0x786DC0) read the operator (+0x24) with no null check: 1 and 3 are skipped; Wait (0) and Broken (2) are replayed */
 };
 
 /* a whole class name in the chain text of classes_name ("vtable exe+.., DTI ..: uSm0418(43d0) : uSmShutterCoop(43d0) : ..."): the name is followed by '(' */
@@ -47,6 +50,13 @@ static int os_kind_of(const char *chain)
     p = p ? p + 2 : chain;
 #ifndef OS_MODEL_BEFORE_HELI
     if (os_has_class(p, "uSmLastHelicopter") || strstr(p, "uSmSoftEventHeli")) return OS_SCRIPTED;
+#endif
+#ifndef OS_MODEL_BEFORE_LEVER
+    if (os_has_class(p, "uSm1840") || os_has_class(p, "uSmLeverOnOff")) return OS_LEVER_OP;
+#endif
+#ifndef OS_MODEL_BEFORE_OPS
+    if (os_has_class(p, "uSmBarBoard")) return OS_BOARD_OP;
+    if (os_has_class(p, "uSmDrilledRock")) return OS_ROCK_OP;
 #endif
     if (os_has_class(p, "uSmDoorCoop")) return OS_COOP_DOOR;
     if (os_has_class(p, "uSmShutterCoop")) return OS_COOP_SHUTTER;
@@ -95,6 +105,9 @@ static int os_door_send(int kind, int act, int actor, int coop_mode)
 static int os_door_apply(int kind, int act, int local_actor)
 {
     if (kind == OS_SCRIPTED) return 0;
+    if (kind == OS_LEVER_OP) return act != 1 && act != 3;   /* 0.3.2: the pull (1) and the push-back (3) need the puller's character on this PC (a bare ChangeAction crashed the host: AV exe+3c4179, g032g4g); the end poses need none (decompiled starts 0x7c3f00 / 0x7c4040 / 0x7c41f0, OnOff 0x7c87b0 / 0x7c8900 / 0x7c8a20) */
+    if (kind == OS_BOARD_OP) return act != 1;   /* 0.3.2 audit: the board's Break needs the breaking character; Wait 0 / BreakFinish 2 / Broken 3 need none (0x7433E0 / 0x743290 / 0x743330) */
+    if (kind == OS_ROCK_OP) return act != 1 && act != 3;   /* 0.3.2 audit: Breaking 1 / Cancel 3 need the operator; Wait 0 (0x786DF0, its helper 0x787F40 checks for null) / Broken 2 (0x786D70) need none */
 #ifndef OS_MODEL_RELEASE020
     if (kind == OS_MOVE_CARRY) return os_carry_break_act(act) && local_actor != OS_ACT_LOCAL;
     if (os_is_move(kind)) return 0;

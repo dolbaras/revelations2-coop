@@ -183,7 +183,8 @@ static int reset_cycle(const char *arcdir, int w, int h)
 /* --banner-fit: every in-game strip text (0.2.0) with a long name fits the one-line strip at 16:9, 16:10, 4:3 and 5:4 (the strip cuts with an ellipsis otherwise) */
 static int banner_fit(void)
 {
-    static const int texts[] = {LT_PARTNER_LEFT, LT_PARTNER_LOST, LT_HOST_ENDED, LT_HOST_LOST, LT_EP1_END, LT_WAIT_LOAD, LT_PARTNER_SILENT, LT_DOWN_SELF, LT_DOWN_PARTNER};
+    static const int texts[] = {LT_PARTNER_LEFT, LT_PARTNER_LOST, LT_HOST_ENDED, LT_HOST_LOST, LT_EP1_END, LT_WAIT_LOAD, LT_PARTNER_SILENT, LT_DOWN_SELF, LT_DOWN_PARTNER,
+                                LT_SKIP_WAIT, LT_SKIP_PARTNER};   /* scene032: the skip vote strips */
     static const struct { int w, h; const char *name; } screens[] = {{1920, 1080, "16:9"}, {1920, 1200, "16:10"}, {1440, 1080, "4:3"}, {1280, 1024, "5:4"}};
     const char *name = "Maximilian Grossmann 12";
     int bad = 0, n = 0, worst = 0;

@@ -2,6 +2,8 @@
 
 **Version 3 (0.3.1)**: `HELLO` and every row of the lobby table (in `WELCOME`, `LOBBY_STATE`, `START`) carry one more byte after `flags`: `save` = the key of the player's co-op save checkpoint (room episode x 2 + half: Episode 1 Claire 2, Barry 3, ... Episode 4 Barry 9, The Struggle 10, Little Miss 18; 0 = none; `coopsave_logic.h` `cps_save_key`). A Continue starts only when the guest's key equals the host's. `CP_PROTO_MIN` = `CP_PROTO_VERSION` = 3: a version 2 build (0.3.0 and older) is refused with `REFUSE(VERSION)` (the package version check refused 0.3.0 against 0.3.1 anyway). New event `0x171` HALF_OK (partner -> host, body u16 the partner's story stage): the partner of a Barry-half start is in a stage of part 1; the host repeats the start jump (RETRY 0x170, reason warp, line `<stage> <sp> half`) every 3 s until it arrives (`warp_logic.h` `wl_sh_*`).
 
+**0.3.2, still version 3** (a new event kind, no changed field: section 1 "Extensibility"): event `0x172` SCENE_SYNC (cutscene sync: start points, skip votes, scene keys, clock pings; body in `world.md` "Messages", rules in `world.md` "Cutscenes (0.3.2)"). An older peer drops the unknown kind; a peer that never sends CAPS (or sends CAPS off) is not waited for (10 s at most); the first-scene gate waits only for a peer whose CAPS version is 2.
+
 History: version 2 (stage 5)
 
 Source of truth: `native/coop_proto.h` / `coop_proto.c` (encode and decode, shared by the proxy, the headless bot and the tests), session rules in
@@ -117,6 +119,30 @@ Blocks: **session** = `u32 id` `u8 game_type` `u8 episode` `u8 part` `u8 difficu
 `weapon` (offset 36) now means the weapon slot in the hand (`FUN_006FB060`: 0 none, 1..3 weapon slots, 4 special). A decoder ignores trailing bytes, so later versions may append fields; any change of a field above needs a new version.
 
 States are sent only in `PLAYING`, at most one per 45 ms (a teleport sample goes at once). 1200 bytes/s per direction before ENet's 10-byte-per-message framing.
+
+**0.3.2 motion tail (anim032, `native/pmot_logic.h`, no version change: the forward rule).** While the sender's human is in an action the partner's action mirror does not replay
+(`pmot_logic.h` `pm_enter_id`: the set-model events (action `0xFFFF` on the wire), 42, 55-85, 100-107, 126, 127; then also 0 / 1 as a continuation; never the ids of the puppet mask,
+never while an enemy holds the human) the 60 bytes are followed by the motion layers of its model. A state without the tail is byte for byte the 60 bytes above; a 0.3.1 peer reads
+only those. The tail is all or nothing: a bad count, a repeated layer or an out-of-range frame drops it whole, the 60 bytes stand.
+
+| Offset | Type | Field | Notes |
+|---|---|---|---|
+| 60 | u8 | magic `0x4D` ('M') | |
+| 61 | u8 | n | layers that follow, 1..16 |
+| 62 | u8 | kind | 0 plain, 1 = the sender's bank 15 holds the motion list of the set model below (lever, box) |
+| 63 | u8 | bank | kind 1: the bank of that set model whose list it is |
+| 64 | i16, u16, u16 | a, b, c | kind 1: its layout id |
+| 70 + 18 k | u8 | layer | 0..15 (model `+0x4A0 + layer * 0x140`) |
+| +1 | u16 | id | motion id `bank << 8 \| index` (`+0x04`) |
+| +3 | u16 | nframes | the motion's frame count (`+0x54` + 1): the receiver plays it only when its own motion of that id has the same count |
+| +5 | f32 | frame | the current frame (`+0x4C`) |
+| +9 | i16 | speed | x 1000 (`+0x5C`) |
+| +11 | u16 | weight | x 65535 (`+0x48`) |
+| +13 | u8 | blend | blend frames of the start (`+0x40`) |
+| +14 | u32 | flags | `+0x0C` without the relative-frame bit 0x20000 |
+
+At most 60 + 10 + 16 x 18 = 358 bytes. The receiver holds the puppet in action 0 and plays these motions on its layers through the puppet's own setMotion (vtable `+0x6C`), with
+the same set model's list in the puppet's bank 15 (references given back at the end); see `docs/world.md` (Motion mirror) and `notes/motion-mirror.md` of the workspace.
 
 ### 4.2 Events (0x20), stubs
 

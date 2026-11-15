@@ -147,6 +147,43 @@ static void w_state(W *w, const cp_state *s)
     w32(w, s->pstate), w32(w, s->ctrl);
     for (int i = 0; i < 3; i++) w16(w, s->item[i]);
     w8(w, s->move), w8(w, 0), w16(w, (uint16_t)s->elev), w16(w, 0);
+    /* 0.3.2 anim032: the motion tail (only when the sender filled it): magic 'M', count, kind, source bank, source layout a / b / c, then 18 bytes a layer.
+     * PM_MODEL_BEFORE (tests/build.sh): the rel032 codec without it */
+#ifndef PM_MODEL_BEFORE
+    if (s->mo_n > 0 && s->mo_n <= CP_MO_MAX) {
+        w8(w, CP_MO_MAGIC), w8(w, s->mo_n), w8(w, s->mo_kind), w8(w, s->mo_src_bank);
+        w16(w, (uint16_t)s->mo_src_a), w16(w, s->mo_src_b), w16(w, s->mo_src_c);
+        for (unsigned i = 0; i < s->mo_n; i++) {
+            const cp_motion *m = &s->mo[i];
+            float wt = m->weight < 0 ? 0 : m->weight > 1 ? 1 : m->weight;
+            w8(w, m->layer), w16(w, m->id), w16(w, m->nframes), wf(w, m->frame), w16(w, (uint16_t)quant(m->speed, 1000.0f, 32767));
+            w16(w, (unsigned)lrintf((wt == wt ? wt : 0) * 65535.0f)), w8(w, m->blend), w32(w, m->flags);
+        }
+    }
+#endif
+}
+/* the tail is all or nothing: a malformed one (count, layer, frame) leaves mo_n = 0 and the rest of the state stands */
+static __attribute__((unused)) void r_state_tail(R *r, cp_state *s)
+{
+    if (r->pos + 10 > r->len || r->p[r->pos] != CP_MO_MAGIC) return;
+    cp_state t;
+    memcpy(&t, s, sizeof t);
+    r8(r);
+    unsigned n = r8(r);
+    t.mo_kind = (uint8_t)r8(r), t.mo_src_bank = (uint8_t)r8(r);
+    t.mo_src_a = (int16_t)r16(r), t.mo_src_b = (uint16_t)r16(r), t.mo_src_c = (uint16_t)r16(r);
+    if (n == 0 || n > CP_MO_MAX || r->pos + n * 18u > r->len) return;
+    uint32_t seen = 0;
+    for (unsigned i = 0; i < n; i++) {
+        cp_motion *m = &t.mo[i];
+        m->layer = (uint8_t)r8(r), m->id = (uint16_t)r16(r), m->nframes = (uint16_t)r16(r), m->frame = rf(r);
+        m->speed = (float)(int16_t)r16(r) / 1000.0f, m->weight = (float)r16(r) / 65535.0f, m->blend = (uint8_t)r8(r), m->flags = r32(r);
+        if (m->layer >= CP_MO_MAX || (seen >> m->layer & 1u) || !(m->frame == m->frame) || m->frame > 100000.0f || m->frame < -100000.0f) return;
+        seen |= 1u << m->layer;
+    }
+    if (r->err) return;
+    t.mo_n = (uint8_t)n;
+    memcpy(s, &t, sizeof t);
 }
 static void r_state(R *r, cp_state *s)
 {
@@ -166,6 +203,9 @@ static void r_state(R *r, cp_state *s)
     s->move = (uint8_t)r8(r), r8(r);
     s->elev = (int16_t)r16(r);
     r16(r);
+#ifndef PM_MODEL_BEFORE
+    if (!r->err) r_state_tail(r, s);
+#endif
 }
 
 /* ---- messages ---- */

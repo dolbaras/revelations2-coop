@@ -643,7 +643,7 @@ void menu_banner(int kind, const char *who, unsigned ms)
 {
     if (!g_installed) return;
     EnterCriticalSection(&g_lock);
-    if (kind < MB_PARTNER_LEFT && g_banner_kind >= MB_PARTNER_LEFT && (int)(g_banner_until - GetTickCount()) > 0) {   /* 0.2.0: a loss strip stays up its time (a GO / wait / downed strip after it) */
+    if ((kind < MB_PARTNER_LEFT || kind > MB_EP_END) && g_banner_kind >= MB_PARTNER_LEFT && g_banner_kind <= MB_EP_END && (int)(g_banner_until - GetTickCount()) > 0) {   /* 0.2.0: a loss strip stays up its time (a GO / wait / downed / skip strip after it) */
         LeaveCriticalSection(&g_lock);
         return;
     }
@@ -676,10 +676,10 @@ void menu_present(void *dev)
         return;
     }
     if (!ok) {
-        if (bk == MB_WAIT || bk == MB_DOWN_SELF || bk == MB_DOWN_PARTNER) {   /* no lobby on the screen: only the strip */
+        if (bk == MB_WAIT || bk == MB_DOWN_SELF || bk == MB_DOWN_PARTNER || bk == MB_SKIP_WAIT || bk == MB_SKIP_PARTNER) {   /* no lobby on the screen: only the strip */
             int lang = lobby_lang_from_game(game_lang());
             char line[200];
-            snprintf(line, sizeof line, lobby_own_text(bk == MB_WAIT ? LT_WAIT_LOAD : bk == MB_DOWN_SELF ? LT_DOWN_SELF : LT_DOWN_PARTNER, lang), who);
+            snprintf(line, sizeof line, lobby_own_text(bk == MB_WAIT ? LT_WAIT_LOAD : bk == MB_DOWN_SELF ? LT_DOWN_SELF : bk == MB_DOWN_PARTNER ? LT_DOWN_PARTNER : bk == MB_SKIP_WAIT ? LT_SKIP_WAIT : LT_SKIP_PARTNER, lang), who);
             overlay_banner(dev, line, lang);
         } else if (bk >= MB_PARTNER_LEFT && bk <= MB_EP_END) {   /* 0.2.0: partner left / lost, host ended / lost, the end of Episode 1 */
             static const int lt[5] = {LT_PARTNER_LEFT, LT_PARTNER_LOST, LT_HOST_ENDED, LT_HOST_LOST, LT_EP1_END};

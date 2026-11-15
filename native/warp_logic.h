@@ -439,4 +439,39 @@ static inline int wl_sh_guest_answer(int pending_stage, int my_stage, int my_in_
 #endif
 }
 
+/* ---- 0.3.2 (the stage gate and a waiting Barry-half jump; pair run g032r5n, 2026-11-14, found in the 0.3.1 regression slot G on the 0.3.2 candidate and present in 0.3.1)
+ * scen.inc h_epi_update ("stage gate"): when the host's puppet (slot 0) stands on another stage's floor, this PC's area update waits up to WL_GATE_MS for its own human
+ * to stand there too; after that the area switches to slot 0's stage UNDER this PC's human (no restart, the same player objects, the human stays at the old
+ * coordinates, outside any floor of the new stage): the engine then shows its death screen (aGame state 11) and both players have a game over. g032r5n: the host's
+ * Barry-half jump (R1) had been repeated every 3 s, the guest (lab hold = "not in play") ignored the repeats, released the hold 24 s into the gate and the next repeat
+ * came after the 25 s: f031h (0.3.1) won that race by 0.1 s, g032r1 by 3 s, g032r5n lost it.
+ * Rule: at the timeout, if a jump of the partner into that very stage is waiting (a repeat younger than WL_GT_PENDING_MS: the host repeats every WL_SH_RESEND_MS while it is
+ * unanswered), this PC applies it (the stock restart: the human moves with the stage) instead of the bare area change, and keeps the area where it is for WL_GT_KEEP_MS while
+ * that restart takes hold; without such a jump the old behaviour stays. -DWL_MODEL_BEFORE_G032 = the 0.3.1 rule (the change always goes ahead): tests/build.sh checks that
+ * test_gate fails with it. */
+#define WL_GATE_MS 25000u          /* scen.inc BGL_GATE_MS */
+#define WL_GT_PENDING_MS 9000u     /* a waiting jump is "fresh" for 3 repeat periods */
+#define WL_GT_KEEP_MS 5000u        /* the area is held this long after the jump was applied (the restart takes effect within a second or two); no longer: no infinite wait */
+enum { WL_GT_GO_AHEAD = 0, WL_GT_APPLY_JUMP = 1 };
+static inline int wl_gate_timeout_decide(int have_wait, unsigned wait_age_ms, int jump_stage, int gate_target, int agame_state, int my_hp, int rc_on, const char **why)
+{
+#ifdef WL_MODEL_BEFORE_G032
+    (void)have_wait, (void)wait_age_ms, (void)jump_stage, (void)gate_target, (void)agame_state, (void)my_hp, (void)rc_on;
+    *why = "0.3.1: the area change goes ahead";
+    return WL_GT_GO_AHEAD;
+#else
+    if (!rc_on) { *why = "the retry coupling is off"; return WL_GT_GO_AHEAD; }
+    if (!have_wait) { *why = "no jump of the partner is waiting"; return WL_GT_GO_AHEAD; }
+    if (wait_age_ms > WL_GT_PENDING_MS) { *why = "the waiting jump is stale (no repeat for 9 s)"; return WL_GT_GO_AHEAD; }
+    if (jump_stage <= 0 || jump_stage != gate_target) { *why = "the waiting jump goes to another stage than the area change"; return WL_GT_GO_AHEAD; }
+    if (agame_state == 11) { *why = "this PC shows its death screen"; return WL_GT_GO_AHEAD; }
+    if (agame_state != 3) { *why = "this game is not in play (a load, a scene state or a menu): no restart now"; return WL_GT_GO_AHEAD; }
+    if (my_hp <= 0) { *why = "my human is dead"; return WL_GT_GO_AHEAD; }
+    *why = "the partner's jump was waiting: it is applied (restart, the human moves with the stage)";
+    return WL_GT_APPLY_JUMP;
+#endif
+}
+/* the area stays where it is while now < until (wrap-safe); until == 0: not armed */
+static inline int wl_gate_keeping(unsigned now, unsigned until) { return until != 0 && (int)(until - now) > 0; }
+
 #endif

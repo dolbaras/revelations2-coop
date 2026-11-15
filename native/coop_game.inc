@@ -38,6 +38,13 @@ static int w_demo_running(void);
 static int scen_get(int idx);   /* scen.inc */
 static void scen_tick(void);   /* stage 6e (scen.inc): scenario flag watch / sync, runs every frame, session or not */
 static int w_install(void);
+static int g_sc_on;                                          /* scene032 (scene.inc): the cutscene sync */
+static void scene_on_event(const cp_event *e);
+static void scene_frame(void);
+static void scene_session_start(void);
+static void scene_command(const char *arg, char *out, int size);
+static int scene_owns_view(void);
+static int scene_plays_here(void);
 static void w_puppet_catchup(int remote_area);   /* 6m (scen.inc): the partner's puppet at a stage change that the other PC began */
 static void session_defaults(void);   /* 6i (world.inc): what the lab switched on by hand is the default of a real session */
 static int g_defaults_off;            /* REV2_WORLD_DEFAULTS=0 / `net w defaults 0`: a lab run keeps its own switches */
@@ -51,6 +58,10 @@ static void downed_probe(void);           /* downed.inc: the live probe (test in
 static void downed_on_event(const cp_event *e);
 static void downed_on_sample(const cp_state *o);
 static int downed_my_flag(void);
+static void pm_tx_fill(unsigned p, cp_state *st);   /* 0.3.2 anim032 (pmot.inc, pmot_logic.h): the motion tail of my character's state */
+static int pm_rx_frame(unsigned p, const cp_state *o);   /* the puppet plays its owner's motions while the action mirror cannot (1 = it runs this frame) */
+static void pm_level_reset(void);
+static void pm_command(const char *rest, char *out, int size);
 static int g_dl_on;                      /* the rule is active this pass (downed.inc); read by the damage gate in world.inc */
 static int downed_hit(unsigned p, int *amount);
 static void downed_command(const char *rest, char *out, int size);
@@ -308,6 +319,7 @@ static int sample_local(cp_state *st)
         if (dx * dx + dy * dy + dz * dz > 500.0f * 500.0f) st->flags |= CP_SF_TELEPORT;
     }
     g_last_local[0] = st->pos[0], g_last_local[1] = st->pos[1], g_last_local[2] = st->pos[2], g_have_last_local = 1;
+    pm_tx_fill(p, st);   /* 0.3.2 anim032: the motions while my action is one the partner's action mirror does not replay */
     return 1;
 }
 
@@ -390,7 +402,8 @@ static void apply_remote(const cp_state *o)
         }
     } else
         g_pup_script_since = 0;
-    if (g_anim && !pup_scripted) {
+    int pm_run = pm_rx_frame(p, o);   /* 0.3.2 anim032: the owner is in an action the mirror below does not replay: the puppet (held in action 0) plays its motions instead */
+    if (g_anim && !pup_scripted && !pm_run) {
         unsigned act = o->action, tnow = GetTickCount();
         if (p != g_pa_pup) pa_guard_reset(&g_pa), g_pa_pup = p;   /* a new puppet object (level, roles): a fresh guard */
         int d = g_pa_on ? pa_decide(&g_pa, g_anim_bits, act, pup_cur, tnow) : (act != pup_cur && gp_puppet_anim_allowed(g_anim_bits, act));
@@ -409,7 +422,7 @@ static void apply_remote(const cp_state *o)
             }
         }
     }
-    if (g_anim && (o->flags & CP_SF_HELD) && g_hold_act > 0 && rd32(p + 0x1A54) != (unsigned)g_hold_act) {   /* the owner is held by an enemy: its action id is INT_MIN (nothing to replay), show a hold pose */
+    if (g_anim && !pm_run && (o->flags & CP_SF_HELD) && g_hold_act > 0 && rd32(p + 0x1A54) != (unsigned)g_hold_act) {   /* the owner is held by an enemy: its action id is INT_MIN (nothing to replay), show a hold pose */
         unsigned vt = rd32(p), fn = rd32(vt + 0xB8);
         if (fn > 0x400000 && fn < 0x1400000) {
             unsigned args[6] = {p, (unsigned)g_hold_act, 1, 0, 0xFFFFFFFFu, 0};
@@ -689,6 +702,15 @@ static int setup_roles_step(void)
         g_t_spoof = now, g_t_join = now;
         return 0;
     }
+    static unsigned defer_since, defer_logs;   /* scene032: an in-engine scene plays here (the guest's own WakeUp right after the load): the join, the types and the view wait
+                                                  until it ends (live sc032m: the set-up in the middle of the WakeUp put the guest's viewport on its own human), 40 s at most */
+    if (scene_plays_here() && (!defer_since || now - defer_since < 40000)) {
+        if (!defer_since) defer_since = now ? now : 1;
+        if (defer_logs++ < 5) r2_log(NETLOG_PREFIX "role set-up waits: an in-engine scene plays here (the set-up would take the view away from it)");
+        return 0;
+    }
+    if (defer_since) r2_log(NETLOG_PREFIX "role set-up goes on after %u ms: %s", now - defer_since, scene_plays_here() ? "the 40 s limit" : "the scene has ended");
+    defer_since = 0;
     if (rd32(gm + 0x8F0) != 1) {   /* no second human yet: the game's own join (the pad must have been assigned by its scan) */
         glue_local_t l;
         glue_local(&l);
@@ -712,13 +734,14 @@ static int setup_roles_step(void)
 /* the former puppet becomes the game's AI partner again; the view stays on the local player */
 static void release_puppet(void)
 {
+    pm_level_reset();   /* 0.3.2 anim032: bank 15 of the puppet given back before it is the AI partner again */
     if (g_rem_slot >= 0 && rd32(0x157AE00)) set_slot_type(g_rem_slot, 1);
 }
 
 static void glue_set_state(int s)
 {
     if (g_state != s) r2_log(NETLOG_PREFIX "glue %s -> %s", g_state_names[g_state], g_state_names[s]);
-    if (s == G_LOAD || s == G_SETUP) w_level_reset();   /* object pointers and barrier counters of the old level instance are void */
+    if (s == G_LOAD || s == G_SETUP) w_level_reset(), pm_level_reset();   /* object pointers and barrier counters of the old level instance are void (anim032: the puppet's bank 15 given back while the objects are there) */
     if (s != G_RUN) g_scene_gate = 0;   /* the gate belongs to one barrier; a new load / set-up starts its own */
     g_state = s;
     g_t_state = GetTickCount();
@@ -764,6 +787,9 @@ static void handle_notes(void)
         if (!have) break;
         if (ev.kind == CP_EV_USER + 0x70) { retry_on_event(&ev); continue; }   /* RETRY: in any glue state (see warp.inc) */
         if (ev.kind == CP_EV_USER + 0x71) { sh_ok_on_event(&ev); continue; }   /* HALF_OK (0.3.1 R1): in any glue state */
+        if (ev.kind == CP_EV_USER + 0x72) { scene_on_event(&ev); continue; }   /* SCENE_SYNC (scene032): in any glue state (the movies play inside loads) */
+        if (ev.kind == CP_EV_USER + 0x27 && g_sc_on && g_state >= G_SETUP && g_state != G_RUN && game_in_episode()) { w_on_event(&ev); continue; }   /* scene032 (live sc032a): the
+                                                     partner's SCENE also while this PC's glue still sets up / waits after the load (the game plays: the opening scene came 4 s later here) */
         if (g_state == G_RUN) {
             if (ev.kind >= CP_EV_USER + 0x60 && ev.kind <= CP_EV_USER + 0x6F) downed_on_event(&ev);   /* stage 9: downed / revive */
             else if (ev.kind >= CP_EV_USER + 0x50 && ev.kind <= CP_EV_USER + 0x5F) ach_on_event(&ev);   /* stage 8b: forwarded achievement causes */
@@ -805,6 +831,7 @@ static void handle_notes(void)
         case CS_N_START:
             session_defaults();
             roles_from_session();
+            if (g_sc_on) scene_session_start();
             g_t_spoof = 0;
             r2_log(NETLOG_PREFIX "START: I am %s (slot %d), the other player is slot %d", cp_char_name((unsigned)cs_local_character(g_cs)), g_my_slot, g_rem_slot);
             glue_set_state(G_SETUP);
@@ -885,6 +912,7 @@ static void coop_game_frame(void)
     aim_frame();
     cs_poll(g_cs);
     handle_notes();
+    scene_frame();   /* scene032: CAPS / clock pings, the movie's end, the skip strips (nothing while `net scene 0`) */
     if (!cs_active(g_cs)) {
         if (g_state != G_OFF) {
             if (g_state >= G_SETUP) release_puppet();
@@ -1116,6 +1144,8 @@ int coop_net_command(const char *arg, char *out, int size)
         sscanf(rest, "%d %d", &a, &b);
         g_die_with = a != 0, g_auto_retry = b != 0;
         snprintf(out, size, "partner death ends my run: %d, retry follows the partner: %d (deaths taken over %u)", g_die_with, g_auto_retry, g_died_with);
+    } else if (!strcmp(cmd, "scene")) {   /* net scene [0|1]: scene032, the cutscene sync (scene.inc); 0 = the behaviour of rel032 */
+        scene_command(rest, out, size);
     } else if (!strcmp(cmd, "hold")) {   /* net hold [0|1]: the watcher that frees my character from a hold whose holder is gone / dead / past the cap (hold_watch, 6g); counters */
         if (!strncmp(rest, "orphan", 6)) {
             g_hold_test_orphan = atoi(rest + 6) != 0;
@@ -1189,6 +1219,14 @@ int coop_net_command(const char *arg, char *out, int size)
         int ao = snprintf(out, size, "puppet animation %d (guard %s, refusals %u), ids:", g_anim, g_pa_on ? "on" : "OFF", g_pa.n_refused);
         for (int i = 0; i < 256 && ao < size - 8; i++)
             if (g_anim_bits[i >> 5] & (1u << (i & 31))) ao += snprintf(out + ao, size - ao, " %d", i);
+    } else if (!strcmp(cmd, "motion")) {   /* net motion [0|1] | sm 0|1 | hold 1|2 | layers <hex> : 0.3.2 anim032, the motion mirror (pmot.inc); game thread */
+        if (!lt_on_game_thread()) {
+            char c[400];
+            snprintf(c, sizeof c, "net motion %s", rest);
+            lt_post(c, out, size);
+            return 1;
+        }
+        pm_command(rest, out, size);
     } else if (!strcmp(cmd, "w")) {   /* net w on|off|observe|guard|log|status|obj|spawn: stage 6 world sync (world.inc) */
         w_command(rest, out, size);
     } else if (!strcmp(cmd, "ach")) {   /* net ach status|totals|table|gate|fwd|...: stage 8b achievements (ach.inc); game thread */
@@ -1297,6 +1335,11 @@ static void net_env_autostart(void)
     if (r2_env("REV2_WORLD_DEFAULTS", v, sizeof v) && v[0] == '0') g_defaults_off = 1;
     if (r2_env("REV2_REPLICA_AI", v, sizeof v) && v[0] == '1') g_w_replica_ai = 1;   /* stage 6c: keep the replicas' own AI on a client */
     if (r2_env("REV2_PUPGUARD", v, sizeof v) && v[0] == '0') g_pa_on = 0;   /* combat3: the old replay rule (pupanim_logic.h) */
+    if (r2_env("REV2_MOTION", v, sizeof v) && (v[0] == '0' || v[0] == '1')) {   /* 0.3.2 anim032: the motion mirror and the handle motion (pmot.inc) */
+        char o2[600];
+        pm_command(v[0] == '1' ? "1" : "0", o2, sizeof o2);
+        pm_command(v[0] == '1' ? "sm 1" : "sm 0", o2, sizeof o2);
+    }
     if (r2_env("REV2_INPUT", v, sizeof v)) g_input_pref = !strncmp(v, "pad", 3) ? 0 : !strncmp(v, "kbm", 3) || !strncmp(v, "key", 3) ? 1 : 2;
     if (!r2_env("REV2_NET", v, sizeof v)) return;
     if (!strncmp(v, "host", 4)) {

@@ -23,7 +23,8 @@ void menu_command(const char *arg, char *out, int size);
 void menu_on_note(const cs_note *n);
 /* stage 6i: a one-line strip at the top of the screen (any thread). MB_WAIT = "Waiting for <who> to finish loading..." for `ms` milliseconds; MB_NONE clears it */
 enum { MB_NONE = 0, MB_WAIT = 1, MB_DOWN_SELF = 2, MB_DOWN_PARTNER = 3,   /* stage 9: the downed / revive strips; `who` carries the seconds left as text */
-       MB_PARTNER_LEFT = 4, MB_PARTNER_LOST = 5, MB_HOST_ENDED = 6, MB_HOST_LOST = 7, MB_EP_END = 8 };   /* 0.2.0 (lobbymust_logic.h LM_S_*): who = the partner's name */
+       MB_PARTNER_LEFT = 4, MB_PARTNER_LOST = 5, MB_HOST_ENDED = 6, MB_HOST_LOST = 7, MB_EP_END = 8,   /* 0.2.0 (lobbymust_logic.h LM_S_*): who = the partner's name */
+       MB_SKIP_WAIT = 9, MB_SKIP_PARTNER = 10 };   /* scene032: the skip vote (who = the partner's name); below MB_PARTNER_LEFT in rank: drawn as the MB_WAIT kind */
 void menu_banner(int kind, const char *who, unsigned ms);
 const char *menu_player_name(void);  /* the name of the lobby settings (the Steam persona name once the lobby asked Steam), "" when none */
 

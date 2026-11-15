@@ -110,6 +110,9 @@ static int g_shh_acked, g_shg_have, g_shg_pending;
 static unsigned g_shg_applied_t, g_sh_logs, g_sh_resends, g_sh_answers;
 static char g_shh_line[48], g_shg_line[48];   /* the host's start jump; the last half jump this PC applied as the partner */
 static unsigned g_sh_hold_until;   /* lab: `warp couple hold <ms>` */
+static char g_shg_wait_line[48];   /* 0.3.2: the partner's last half jump this PC could not take (not in play), kept for the stage gate's timeout (warp_logic.h wl_gate_timeout_decide) */
+static unsigned g_shg_wait_t, g_gate_apply_until, g_gate_jump_applied;
+static int g_shg_wait_have;
 static int sh_held(void) { return (int)(g_sh_hold_until - GetTickCount()) > 0; }
 static int sh_in_play(void)
 {
@@ -162,6 +165,50 @@ static void sh_retry_frame(void)
         r2_log(WARP_LOG "Barry's half: the repeats of the jump end: %s (%u repeats)", why, g_shh.sent);
 }
 
+/* the retry coupling's APPLY_WARP branch (also used by the stage gate's timeout below): write the partner's checkpoint into the restart copy and restart; a Barry-half jump is answered later */
+static void rc_apply_warp_line(const char *line, int half)
+{
+    char out[300];
+    warp_do(line, out, sizeof out, 1);
+    g_rc_warp++;
+    if (half && strncmp(out, "warp: stage", 11) == 0) {   /* written and the restart asked for: answer the host from that stage */
+        g_shg_have = 1, g_shg_applied_t = GetTickCount(), g_shg_pending = atoi(line);
+        snprintf(g_shg_line, sizeof g_shg_line, "%s", line);
+    }
+    r2_log(WARP_LOG "retry coupling: applied the partner's warp '%s': %s", line, out);
+}
+
+/* scen.inc h_epi_update: the stage gate's WL_GATE_MS are over and the area is about to switch to the stage of slot 0's floor (target) under this PC's human. If the partner's Barry-half jump
+ * into that stage is waiting here, apply it now (the stock restart: the human moves with the stage) instead of the bare area change; returns 1 then (the caller keeps the area where it is).
+ * The real aGame state is read (not the lab hold's 8): a hold only pretends. Nothing waiting: 0, the old behaviour. */
+static int sh_gate_timeout(int target)
+{
+    /* Threads: retry_on_event runs from handle_notes, which frame_callbacks (the game's logic thread) calls after cs_poll; the network notification only copies the event into g_evq under g_nlock,
+     * so g_shg_wait_* are written on the game thread. h_epi_update is the game's own area update on the same logic thread; the guard below makes that checkable (and safe if it ever were not):
+     * off the game thread nothing is read or applied here (the old behaviour, one log line). */
+    if (!lt_on_game_thread()) {
+        static int logged;
+        if (!logged++) r2_log(WARP_LOG "stage gate: the area update runs off the game's logic thread: a waiting jump is not touched there");
+        return 0;
+    }
+    unsigned now = GetTickCount(), ar = game_area(), lp = player_obj(g_my_slot);
+    int st = ar ? (int)(rd32(ar + 4) & 0xFF) : -1, hp = lp ? (int)rd32(lp + 0x1A08) : 0;
+    const char *why = "";
+    int d = wl_gate_timeout_decide(g_shg_wait_have, g_shg_wait_have ? now - g_shg_wait_t : 0xFFFFFFFFu, atoi(g_shg_wait_line), target, st, hp, g_rc_on, &why);
+    if (d != WL_GT_APPLY_JUMP) {
+        static unsigned logs;
+        if (g_shg_wait_have && logs++ < 10) r2_log(WARP_LOG "stage gate: the partner's jump '%s' is waiting but not applied: %s", g_shg_wait_line, why);
+        return 0;
+    }
+    char line[sizeof g_shg_wait_line];
+    snprintf(line, sizeof line, "%s", g_shg_wait_line);
+    g_shg_wait_have = 0;
+    g_gate_jump_applied++;
+    r2_log(WARP_LOG "stage gate: the 25 s are over with the partner's jump '%s' waiting (%s): applied it instead of the bare area change to stage %d", line, why, target);
+    rc_apply_warp_line(line, 1);
+    return 1;
+}
+
 /* coop_game.inc handle_notes: the partner's RETRY (any glue state: the partner's load notice may already have moved this PC to "waiting") */
 static void retry_on_event(const cp_event *e)
 {
@@ -186,22 +233,25 @@ static void retry_on_event(const cp_event *e)
         }
     }
     int act = wl_retry_decide(g_rc_on, reason, st, hp, &why);
+    if (half && act == WL_RC_IGNORE) {   /* 0.3.2: this game cannot take the jump now: remember it for the stage gate's timeout (each repeat refreshes it) */
+        int l0 = e->len - 2;
+        if (l0 < 0) l0 = 0;
+        if (l0 > (int)sizeof g_shg_wait_line - 1) l0 = (int)sizeof g_shg_wait_line - 1;
+        memcpy(g_shg_wait_line, e->body + 2, (size_t)l0), g_shg_wait_line[l0] = 0;
+        g_shg_wait_t = GetTickCount(), g_shg_wait_have = 1;
+    }
     r2_log(WARP_LOG "retry coupling: the partner (slot %d) %s; aGame state %d, my hp %d: %s", slot, reason == WL_RC_WARP ? "warped" : "chose Retry in its pause menu", st, hp, why);
     if (act == WL_RC_RESTART) {
         do_call(0, WARP_A_RESTART_REQ, NULL, 0);
         g_rc_restart++, g_warp_req++;
     } else if (act == WL_RC_APPLY_WARP) {
-        char line[CP_EVENT_MAX], out[300];
+        char line[CP_EVENT_MAX];
         int l = e->len - 2;
+        if (l < 0) l = 0;
         if (l > (int)sizeof line - 1) l = (int)sizeof line - 1;
         memcpy(line, e->body + 2, (size_t)l), line[l] = 0;
-        warp_do(line, out, sizeof out, 1);
-        g_rc_warp++;
-        if (half && strncmp(out, "warp: stage", 11) == 0) {   /* written and the restart asked for: answer the host from that stage */
-            g_shg_have = 1, g_shg_applied_t = GetTickCount(), g_shg_pending = atoi(line);
-            snprintf(g_shg_line, sizeof g_shg_line, "%s", line);
-        }
-        r2_log(WARP_LOG "retry coupling: applied the partner's warp '%s': %s", line, out);
+        g_shg_wait_have = 0;   /* 0.3.2: applied now: nothing waits any more */
+        rc_apply_warp_line(line, half);
     } else g_rc_ignored++;
 }
 

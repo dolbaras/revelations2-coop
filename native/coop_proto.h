@@ -128,6 +128,22 @@ typedef struct {
     char mod[CP_MOD_MAX + 1];
 } cp_hello;
 
+/* 0.3.2 anim032 (native/pmot_logic.h, notes\motion-mirror.md): one motion layer of the sender's human, carried in the STATE tail while its action is one the action mirror
+ * does not replay (doors / levers / pickups / ladders / climbs ...). Encoded 18 bytes: layer u8, id u16, nframes u16, frame f32, speed i16 (x1000), weight u16 (x65535), blend u8, flags u32. */
+#define CP_MO_MAX 16
+#define CP_MO_MAGIC 0x4Du   /* 'M': first byte of the tail */
+typedef struct {
+    uint8_t layer;          /* 0..15 (model + 0x4A0 + layer * 0x140) */
+    uint16_t id;            /* motion id bank << 8 | index (record +0x04) */
+    uint16_t nframes;       /* the motion's frame count (record +0x54 + 1): the receiver plays it only when its own motion of that id has the same count */
+    float frame;            /* the current frame (+0x4C) at the sample time */
+    float speed;            /* +0x5C */
+    float weight;           /* +0x48, 0..1 */
+    uint8_t blend;          /* blend frames of the start (+0x40), 0..255 */
+    uint32_t flags;         /* +0x0C (the 0x20000 relative-frame bit is cleared by the sender) */
+} cp_motion;
+enum { CP_MOK_PLAIN = 0, CP_MOK_SETMODEL = 1 };   /* cp_state.mo_kind: what the sender's bank 15 holds (1 = the motion list of the set model mo_src_*) */
+
 typedef struct {
     uint8_t pid;
     uint16_t seq;           /* per sender, wraps */
@@ -147,6 +163,13 @@ typedef struct {
     uint16_t item[3];       /* item ids in the weapon slots 1..3 (0 = empty): inventory entry +4 of the entry FUN_006fb270(slot) names */
     uint8_t move;           /* locomotion intensity 0..255 (+0x792C: 0 idle, 255 full walk/run blend) */
     int16_t elev;           /* aim elevation, degrees * 100 (+0x7954) */
+    /* 0.3.2 anim032: the motion tail (forward rule: appended after the 60 bytes, an older decoder ignores it; mo_n = 0: no tail on the wire) */
+    uint8_t mo_n;           /* layers in mo[] (0..CP_MO_MAX) */
+    uint8_t mo_kind;        /* CP_MOK_* */
+    uint8_t mo_src_bank;    /* CP_MOK_SETMODEL: the bank of the set model whose list is the sender's bank 15 */
+    int16_t mo_src_a;       /* that set model's layout id */
+    uint16_t mo_src_b, mo_src_c;
+    cp_motion mo[CP_MO_MAX];
 } cp_state;
 
 typedef struct {
