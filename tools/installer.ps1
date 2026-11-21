@@ -1,7 +1,9 @@
 ﻿# Resident Evil Revelations 2 Co-op installer / uninstaller for players (shipped in the release zip as "Install Co-op.bat" + coop-installer.ps1 + coop-texts.ps1,
 # the payload in the "files" folder next to them). Built by tools\package.ps1 from tools\installer.ps1.
-#   install: finds the game folder (this folder, the Steam install record, the Steam libraries, or the player picks it), checks that rerev2.exe is the supported
-#            Steam build (3658995), keeps a dinput8.dll of someone else's in <game>\coop-backup, copies the mod (dinput8.dll + coop\) and writes
+#   install: finds the game folder (this folder, the Steam install record, the Steam libraries, common folders, or the player picks it), checks rerev2.exe against
+#            the table of known builds (exe-variants.h = native\exe_variants.h: the Steam build 3658995 and a copy of it with the Steam wrapper removed; any other
+#            exe: the window asks "install anyway?" and records the player's yes in coop\anyexe.txt, which the mod's proxy reads: without it the mod stays off on
+#            an unknown exe), keeps a dinput8.dll of someone else's in <game>\coop-backup, copies the mod (dinput8.dll + coop\) and writes
 #            <game>\coop\install.txt (what it installed, what it backed up). When that dinput8.dll is an Ultimate ASI Loader (the loader of the Fusion
 #            Fix and of most ASI mods) a copy of it runs on as winmm.dll, so its plugins stay on (Chain-Plan).
 #   update:  the same over an older version; originals already backed up are kept. A dinput8.dll another mod put over the co-op one meanwhile
@@ -18,10 +20,11 @@
 # so every later installer has to take these: -AutoClose closes the window after a successful install, -NoShortcut keeps the shortcuts as they are (only
 # those already made are refreshed). -ShortcutDir puts new shortcuts in that folder instead (tests).
 # -AnyExe: skip the check of rerev2.exe's hash (tests on a stand-in folder only).
+# -AcceptUnknownExe: the player's "install anyway" for an exe that is not in the table, given on the command line (-Quiet has no window to ask in).
 # Usage: coop-installer.ps1 [-Game <folder>] [-Uninstall] [-Quiet] [-Lang en|fr|it|de|es|ru|pl|pt-br|ja|ko|zh-cn|zh-tw]
-#                           [-AutoClose] [-NoShortcut] [-ShortcutDir <folder>]
+#                           [-AutoClose] [-NoShortcut] [-ShortcutDir <folder>] [-AcceptUnknownExe]
 param([string] $Game = "", [switch] $Uninstall, [switch] $Quiet, [switch] $IgnoreRunning, [string] $Lang = "",
-      [switch] $AutoClose, [switch] $NoShortcut, [string] $ShortcutDir = "", [switch] $AnyExe)
+      [switch] $AutoClose, [switch] $NoShortcut, [string] $ShortcutDir = "", [switch] $AnyExe, [switch] $AcceptUnknownExe)
 $ErrorActionPreference = "Stop"
 # (tests: the launcher starts a new release's installer without -AnyExe; REV2_COOP_ANYEXE=1 does the same)
 if ($env:REV2_COOP_ANYEXE -eq "1") { $AnyExe = [switch]::Present }
@@ -32,8 +35,6 @@ $script:setupDir = if ($env:COOP_SETUP_DIR -and (Test-Path -LiteralPath $env:COO
 $here = $PSScriptRoot
 $payload = Join-Path $here "files"
 $script:TITLE = "Resident Evil Revelations 2 Co-op"
-# The exe the mod is made for (Steam build 3658995); any other exe: the mod stays off, so nothing is installed.
-$script:EXE_SHA = "55AC7D2BD80704C6A8A1FA7BD2371726ADBAA01AE0FDA056198FB042404367F9"
 $script:STEAM_APP = "287290"
 $script:DLL_MARK = "RE Revelations 2 co-op proxy"
 . (Join-Path $here "coop-texts.ps1")
@@ -146,10 +147,37 @@ function Sha256-File($p) {
     try { ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($fs)) -replace "-", "").ToUpper() } finally { $fs.Close() }
 }
 
-# 1 = the supported exe, 0 = another one
-function Exe-Ok($g) {
-    if ($AnyExe) { return $true }
-    (Sha256-File (Join-Path $g "rerev2.exe")) -eq $script:EXE_SHA
+# The builds of rerev2.exe the mod knows: the proxy's own table, native\exe_variants.h (the package carries it as exe-variants.h next to this script, and in coop\;
+# the source tree has it as ..\native\exe_variants.h). One line per build: R2_VARIANT("sha256", "name", "kind", level, caveat).
+function Read-Variants {
+    if ($script:variants) { return $script:variants }
+    $file = $null
+    foreach ($c in @((Join-Path $here "exe-variants.h"), (Join-Path $here "..\native\exe_variants.h"))) { if (-not $file -and (Test-Path -LiteralPath $c)) { $file = $c } }
+    if (-not $file) { throw (L "nofiles") }
+    $t = @{}
+    foreach ($m in [regex]::Matches([IO.File]::ReadAllText($file), 'R2_VARIANT\("([0-9a-fA-F]{64})",\s*"([^"]*)",\s*"([^"]*)",\s*(\d),\s*(\d)\)')) {
+        $t[$m.Groups[1].Value.ToUpper()] = @{ name = $m.Groups[2].Value; kind = $m.Groups[3].Value; level = [int]$m.Groups[4].Value; caveat = [int]$m.Groups[5].Value }
+    }
+    if ($t.Count -eq 0) { throw (L "nofiles") }
+    $script:variants = $t
+    $t
+}
+
+# What the exe in a game folder is. state: "known" (a build of the table), "unknown" (not in the table: the player has to say yes), "lab" (-AnyExe, tests); the table's entry
+# (variant), the SHA-256 (upper case) and the size, and whether the player already said yes for exactly this exe (coop\anyexe.txt, written by an earlier install: the
+# launcher's update does not ask again).
+function Exe-Info($g) {
+    $exe = Join-Path $g "rerev2.exe"
+    $i = @{ state = "known"; variant = $null; sha = ""; size = 0; consented = $false }
+    if ($AnyExe) { $i.state = "lab"; return $i }
+    $i.sha = Sha256-File $exe
+    $i.size = (Get-Item -LiteralPath $exe).Length
+    $v = (Read-Variants)[$i.sha]
+    if ($v) { $i.variant = $v; return $i }
+    $i.state = "unknown"
+    $cf = Join-Path $g "coop\anyexe.txt"
+    if (Test-Path -LiteralPath $cf) { $i.consented = @(@(Get-Content -LiteralPath $cf -ErrorAction SilentlyContinue) -match ('^sha256=' + $i.sha + '\s*$')).Count -gt 0 }
+    $i
 }
 
 # Candidate game folders, most likely first.
@@ -180,6 +208,23 @@ function Find-Games {
         }
     }
     foreach ($p in @("$env:ProgramFiles (x86)\Steam\steamapps\common\RESIDENT EVIL REVELATIONS 2", "C:\Games\RESIDENT EVIL REVELATIONS 2", "D:\Games\RESIDENT EVIL REVELATIONS 2")) { $c.Add($p) }
+    # A copy that is not a Steam install has no install record and no appmanifest (a download, a repack): look one level down in the places such copies are put, for
+    # a folder named like the game that holds rerev2.exe (REV2_COOP_SCAN_ROOTS = ';' separated folders, tests).
+    $roots = @()
+    if ($env:REV2_COOP_SCAN_ROOTS) { $roots = @($env:REV2_COOP_SCAN_ROOTS -split ';' | Where-Object { $_ }) }
+    else {
+        foreach ($d in [IO.DriveInfo]::GetDrives()) {
+            if ($d.DriveType -ne "Fixed" -or -not $d.IsReady) { continue }
+            foreach ($sub in "", "Games", "Program Files", "Program Files (x86)", "Games\Resident Evil") { $roots += (Join-Path $d.Name $sub) }
+        }
+    }
+    foreach ($r in $roots) {
+        try {
+            foreach ($sub in Get-ChildItem -LiteralPath $r -Directory -ErrorAction SilentlyContinue) {
+                if ($sub.Name -match 'revelations\s*2|biohazard.*(rev|2)|rerev2') { $c.Add($sub.FullName) }
+            }
+        } catch { }
+    }
     # (one form of each folder: "...\Revelations\" is the same as "...\Revelations")
     $c | Where-Object { Test-Game $_ } | ForEach-Object {
         $p = (Resolve-Path -LiteralPath $_).Path
@@ -505,9 +550,10 @@ function Need-Admin($g) {
 
 # This installer again with administrator rights for the same folder (Windows asks the player);
 # its exit code, -1 when the player said no.
-function Run-Elevated($g, [switch] $Remove) {
+function Run-Elevated($g, [switch] $Remove, [switch] $Accept) {
     $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Quote-Arg $PSCommandPath), "-Game", (Quote-Arg $g))
     if ($Remove) { $a += "-Uninstall" }
+    if ($Accept -or $AcceptUnknownExe) { $a += "-AcceptUnknownExe" }   # (the player's yes for an exe that is not in the table was given in this window)
     if ($AutoClose) { $a += "-AutoClose" }
     if ($NoShortcut) { $a += "-NoShortcut" }
     if ($ShortcutDir) { $a += @("-ShortcutDir", (Quote-Arg $ShortcutDir)) }
@@ -522,11 +568,15 @@ function Run-Elevated($g, [switch] $Remove) {
 # ---------------------------------------------------------------------------------------------
 # Install
 
-function Do-Install($g) {
+function Do-Install($g, [switch] $Accept) {
     Ui-Step "check" "run"
     Ui-Progress 1 $g
     if (-not (Test-Path -LiteralPath $payload)) { throw (L "nofiles") }
-    if (-not (Exe-Ok $g)) { throw (L "badexe") }
+    # (0.3.3) a build of the table goes on; an exe that is not in it only with the player's yes (the window's "install anyway", -AcceptUnknownExe, or the yes an earlier install recorded)
+    $exe = Exe-Info $g
+    if ($exe.state -eq "unknown" -and -not ($Accept -or $AcceptUnknownExe -or $exe.consented)) { throw (L "badexe" $exe.sha ("{0:N0}" -f $exe.size)) }
+    if ($exe.state -eq "unknown") { Ui-Log ("exe: unknown build, SHA-256 " + $exe.sha + ", " + $exe.size + " bytes: installed by the player's yes") }
+    elseif ($exe.variant) { Ui-Log ("exe: " + $exe.variant.name + " (" + $exe.variant.kind + ")") }
     # The payload first into a folder of this installer's own: whatever happens to the folder it came in (an old launcher started twice cleans it up) cannot
     # take files away mid-copy.
     $snap = Join-Path ([IO.Path]::GetTempPath()) ("rev2-coop-payload-" + $PID)
@@ -610,6 +660,12 @@ function Do-Install($g) {
         Copy-Item -LiteralPath $item.FullName $dst -Force
         $files.Add($rel)
     }
+    # An exe that is not in the table: the player's yes for exactly this build, which the proxy reads (coop\anyexe.txt: one line sha256=<hash>; the hooks stay off on an unknown exe
+    # without it). It is in the record, so an update keeps it and the removal deletes it; for a build of the table no such file is made, and an old one is dropped below.
+    if ($exe.state -eq "unknown") {
+        Set-Content -LiteralPath (Join-Path $g "coop\anyexe.txt") -Encoding ASCII -Value @("# the player chose to install on a game version the mod does not know; the line below names exactly that exe", ("sha256=" + $exe.sha.ToLower()))
+        $files.Add("coop\anyexe.txt")
+    }
     Ui-Log (L "copied" $($all.Count))
     # The player's ASI loader (kept in coop-backup) runs on as winmm.dll (Chain-Plan): the copies are in the record before they are made, so a run that breaks off
     # leaves nothing the uninstaller does not know.
@@ -637,13 +693,15 @@ function Do-Install($g) {
     Remove-Item -LiteralPath $snap -Recurse -Force -ErrorAction SilentlyContinue
     Ui-Step "finish" "done"
     Ui-Progress 100 ""
-    @{ old = $old.version; links = $links.Count; chain = $plan.state }
+    @{ old = $old.version; links = $links.Count; chain = $plan.state; sha = $exe.sha; other = ($exe.state -eq "unknown" -or ($exe.variant -and $exe.variant.caveat -eq 1)) }
 }
 
 function Install-Message($g, $r) {
     $t = if ($r.links -gt 0) { L "done" } else { L "donenolink" }
     # (another mod's dinput8.dll: what became of it)
     if ($r.chain -eq "asi") { $t += "`n`n" + (L "asinote") } elseif ($r.chain -eq "off") { $t += "`n`n" + (L "offnote") }
+    # (0.3.3) another game version than the one the mod was made on: the caveat, the exe's hash and where to send a report
+    if ($r.other) { $t += "`n`n" + (L "othernote" $r.sha) }
     $t
 }
 
@@ -779,9 +837,9 @@ $tbGame.BackColor = $C.panel; $tbGame.ForeColor = $C.text; $tbGame.BorderStyle =
 $pSetup.Controls.Add($tbGame)
 $btBrowse = New-Button $pSetup (L "browse") 512 45 120 $false
 $lbInfo = New-Label $pSetup "" 28 96 604 250 (Font 10.5) $C.text
-$btRemove = New-Button $pSetup (L "remove") 28 360 220 $false   # (i18n: 220 / 160 px hold the longest labels: pt "Remover o mod cooperativo", pl "Zainstaluj ponownie")
-$btCancel = New-Button $pSetup (L "cancel") 342 360 120 $false
-$btGo = New-Button $pSetup (L "install") 472 360 160 $true
+$btRemove = New-Button $pSetup (L "remove") 28 360 220 $false   # (i18n: 220 / 200 px hold the longest labels: pt "Remover o mod cooperativo", pl "Zainstaluj ponownie", ru "Всё равно установить")
+$btCancel = New-Button $pSetup (L "cancel") 302 360 120 $false
+$btGo = New-Button $pSetup (L "install") 432 360 200 $true   # (200 px: "Install anyway" in French / Russian is wider than the 160 of "Install")
 
 # --- page 2: the steps and the progress
 $pWork = New-Object Windows.Forms.Panel
@@ -827,7 +885,7 @@ $btClose.Visible = $false
 # --- page 3 (over page 2's steps): the result
 $lbResIcon = New-Label $pWork "" 24 60 60 60 (Font 30 "Bold" "Segoe UI Symbol") $C.ok
 $lbResIcon.Visible = $false
-$lbResText = New-Label $pWork "" 92 66 540 160 (Font 10.5) $C.text
+$lbResText = New-Label $pWork "" 92 66 540 270 (Font 10.5) $C.text   # (270: up to the buttons at 366; the longest result holds the notes of another mod's dinput8.dll and of another game version)
 $lbResText.Visible = $false
 
 $form.ResumeLayout($false)
@@ -881,12 +939,13 @@ function Update-Setup {
         $lines += (L "nogame")
     } elseif (-not (Test-Game $g)) {
         $lines += ([string][char]0x2716 + "  " + (L "noexe"))
-    } elseif (-not (Exe-Ok $g)) {
-        $lines += ([string][char]0x2714 + "  " + (L "found"))
-        $lines += ([string][char]0x2716 + "  " + (L "badexe"))
     } else {
         $ok = $true
+        $ei = Exe-Info $g
         $lines += ([string][char]0x2714 + "  " + (L "found"))
+        # (0.3.3) a copy of the game that is not the build the mod was made on: the caveat; an exe that is not in the table: its hash and size, and the button asks
+        if ($ei.state -eq "unknown") { $lines += ([string][char]0x26A0 + "  " + (L "unknownexe" $ei.sha ("{0:N0}" -f $ei.size))) }
+        elseif ($ei.variant -and $ei.variant.caveat -eq 1) { $lines += ([string][char]0x26A0 + "  " + (L "variantexe")) }
         $m = Read-Manifest $g
         if ($m.files.Count -gt 0) {
             $btRemove.Visible = $true; $btRemove.Tag = 1
@@ -898,10 +957,14 @@ function Update-Setup {
                 $btGo.Text = L "update"
             }
         } else { $btGo.Text = L "install" }
-        $lines += ""
-        $lines += (L "what")
-        $lines += ""
-        $lines += (L "need")
+        if ($ei.state -eq "unknown" -and -not $ei.consented) { $btGo.Text = L "anyway" }
+        # (an exe that is not in the table has its own long text: the two paragraphs about what the installer does and how to start are left out of the page then)
+        if ($ei.state -ne "unknown") {
+            $lines += ""
+            $lines += (L "what")
+            $lines += ""
+            $lines += (L "need")
+        }
     }
     $lbInfo.Text = $lines -join "`n"
     # (the uninstaller's page keeps asking its question when the language is switched; the install text was shown under the Remove button before, window test 2026-11-04)
@@ -945,11 +1008,11 @@ function Show-Result($ok, $title, $text) {
 }
 
 # A folder Windows protects (Program Files): the same work by an elevated copy of this installer, this window closes with its result.
-function Elevated-Instead($g, [switch] $Remove) {
+function Elevated-Instead($g, [switch] $Remove, [switch] $Accept) {
     if (-not (Need-Admin $g)) { return $false }
     Ui-Log (L "noadmin")
     $form.Hide()
-    $code = Run-Elevated $g -Remove:$Remove
+    $code = Run-Elevated $g -Remove:$Remove -Accept:$Accept
     if ($code -lt 0) {
         $form.Show()
         Show-Result $false $(if ($Remove) { L "rfail" } else { L "ifail" }) (L "noadmin")
@@ -960,9 +1023,9 @@ function Elevated-Instead($g, [switch] $Remove) {
     $true
 }
 
-function Start-Install($g) {
+function Start-Install($g, [bool] $Accept = $false) {
     $g = (Resolve-Path -LiteralPath $g).Path
-    if (Elevated-Instead $g) { return }
+    if (Elevated-Instead $g -Accept:$Accept) { return }
     $script:target = $g
     $ic = Window-Icon $g
     if ($ic) { $form.Icon = $ic }
@@ -972,7 +1035,7 @@ function Start-Install($g) {
         @("finish", (L "s_finish")))
     Ui-Log ($g)
     try {
-        $r = Do-Install $g
+        $r = Do-Install $g -Accept:$Accept
         Save-Log $g
         $title = $(if ($r.old -and $r.old -ne $version) { L "updated" $($r.old) $version } else { L "installed" $version })
         $script:exitCode = 0
@@ -1031,12 +1094,20 @@ $btCancel.Add_Click({ $form.Close() })
 $btClose.Add_Click({ $form.Close() })
 $btGo.Add_Click({
     $g = $tbGame.Text.Trim().Trim('"')
-    if (-not (Test-Game $g) -or -not (Exe-Ok $g)) { return }
+    if (-not (Test-Game $g)) { return }
     if (-not $IgnoreRunning -and (Game-Running $g)) {
         [Windows.Forms.MessageBox]::Show($form, (L "closegame"), $script:TITLE, "OK", "Warning") | Out-Null
         return
     }
-    Start-Install $g
+    # (0.3.3) an exe that is not in the table of known builds: the player says yes once (it is recorded for exactly this exe)
+    $accept = $false
+    $ei = Exe-Info $g
+    if ($ei.state -eq "unknown" -and -not $ei.consented -and -not $AcceptUnknownExe) {
+        $q = [Windows.Forms.MessageBox]::Show($form, (L "anyq"), $script:TITLE, "YesNo", "Warning")
+        if ($q -ne "Yes") { return }
+        $accept = $true
+    }
+    Start-Install $g $accept
 })
 $btRemove.Add_Click({
     $g = $tbGame.Text.Trim().Trim('"')
@@ -1073,6 +1144,9 @@ $form.Add_Shown({
             $tbGame.ReadOnly = $true; $btBrowse.Enabled = $false
             $btRemove.Focus()
         } else {
+            # (an exe that is not in the table: the page asks, the install does not start by itself)
+            $ei = Exe-Info $tbGame.Text
+            if ($ei.state -eq "unknown" -and -not $ei.consented -and -not $AcceptUnknownExe) { Update-Setup; return }
             Start-Install $tbGame.Text
         }
     } else {

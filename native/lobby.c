@@ -485,7 +485,7 @@ static void job_done(lobby_t *l, const char *out)
     if (kind == JOB_HOST) {
         if (strstr(out, "failed") || !strstr(out, "hosting")) {
             goto_screen(l, LS_HOST_WAY);
-            if (strstr(out, "not ready") || strstr(out, "not available")) set_status(l, LSK_ERROR, 6000, "%s", tx(l, LT_STEAM_NA));
+            if (strstr(out, "not ready") || strstr(out, "not available") || strstr(out, "offline")) set_status(l, LSK_ERROR, 6000, "%s", tx(l, LT_STEAM_NA));
             else set_status(l, LSK_ERROR, 6000, "%s", tx(l, LT_FAIL_CREATE));
             return;
         }
@@ -501,7 +501,7 @@ static void job_done(lobby_t *l, const char *out)
     if (kind == JOB_JOIN) {
         if (strstr(out, "failed") || strstr(out, "usage") || strstr(out, "no friend") || strstr(out, "no pending")) {
             goto_screen(l, l->way == 0 ? LS_FRIENDS : LS_JOIN_IP);
-            if (strstr(out, "not ready") || strstr(out, "not available")) set_status(l, LSK_ERROR, 6000, "%s", tx(l, LT_STEAM_NA));
+            if (strstr(out, "not ready") || strstr(out, "not available") || strstr(out, "offline")) set_status(l, LSK_ERROR, 6000, "%s", tx(l, LT_STEAM_NA));
             else set_status(l, LSK_ERROR, 6000, "%s", tx(l, LT_FAIL_JOIN));
             return;
         }

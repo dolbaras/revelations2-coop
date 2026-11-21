@@ -1,5 +1,5 @@
 /*
- * dinput8.dll proxy for Resident Evil Revelations 2 (Steam build 3658995, 32-bit, SteamDRM-wrapped).
+ * dinput8.dll proxy for Resident Evil Revelations 2 (Steam build 3658995, 32-bit, SteamDRM-wrapped; other builds by native/exe_variants.h).
  *
  * Placed next to rerev2.exe it forwards DirectInput8Create and installs the mod. The exe on disk is never
  * modified and nothing here touches the Steam stub: this DLL is loaded by the exe's own import table (the Windows
@@ -8,7 +8,8 @@
  *
  *   REV2_LOG=<file>   the mod's log (default rev2_coop.log next to the exe, rotated at start: rev2_coop.1..4.log;
  *                     a set REV2_LOG is appended to and never rotated)
- *   REV2_ANYEXE=1     install the hooks on an exe that is not the supported build (lab only)
+ *   REV2_ANYEXE=1     install the hooks on an exe that is not in native/exe_variants.h (lab only)
+ * Which exe runs the mod: native/gate_logic.h (the table of exe_variants.h, else the consent file coop\anyexe.txt the installer writes for exactly that SHA-256).
  *   REV2_MULTI=1      a second copy of the game on one PC (TEST copies only): the single-instance mutex gets a per-process name
  * Chain rule: a file dinput8_real.dll next to this DLL (a dinput8 wrapper the player renamed) is loaded instead of the system dinput8.dll
  * and gets the forwarded calls; never an Ultimate ASI Loader (it closes the game under that name; the installer runs it as winmm.dll) and
@@ -23,6 +24,7 @@
 #include "r2.h"
 #include "testbox_logic.h"
 #include "chain_logic.h"
+#include "gate_logic.h"
 
 typedef HRESULT (WINAPI *DirectInput8Create_t)(HINSTANCE, DWORD, REFIID, LPVOID *, LPUNKNOWN);
 static DirectInput8Create_t real_DirectInput8Create;
@@ -30,6 +32,8 @@ static char log_path[MAX_PATH];
 static CRITICAL_SECTION log_lock;
 static int exe_ok;
 static char exe_sha[65];
+static const char *exe_name = "";
+static int exe_caveat;
 
 void r2_log(const char *fmt, ...)
 {
@@ -65,6 +69,8 @@ static int pass_through;
 int r2_pass(void) { return pass_through; }
 int r2_exe_ok(void) { return exe_ok; }
 const char *r2_exe_sha(void) { return exe_sha; }
+const char *r2_exe_name(void) { return exe_name; }
+int r2_exe_caveat(void) { return exe_caveat; }
 
 int r2_safe_read(const void *addr, void *out, unsigned size)
 {
@@ -404,6 +410,28 @@ static void load_real_dinput8(HINSTANCE self)
         real_DirectInput8Create = (DirectInput8Create_t)GetProcAddress(h, "DirectInput8Create");
 }
 
+/* coop\anyexe.txt next to the exe: the installer wrote it after the player said "install anyway" for a build that is not in the table (plain file calls: DllMain, loader lock). */
+static size_t read_consent(char *out, size_t size)
+{
+    char path[MAX_PATH];
+    DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
+    char *slash = strrchr(path, '\\');
+    out[0] = 0;
+    if (!n || !slash || slash - path + 16 >= MAX_PATH)
+        return 0;
+    strcpy(slash + 1, "coop\\anyexe.txt");
+    HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE)
+        return 0;
+    DWORD got = 0;
+    BOOL ok = ReadFile(f, out, (DWORD)(size - 1), &got, NULL);
+    CloseHandle(f);
+    if (!ok)
+        return 0;
+    out[got] = 0;
+    return got;
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
     (void)reserved;
@@ -431,13 +459,29 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
             real_CreateMutexA = (CreateMutexA_t)r2_patch_iat("KERNEL32.dll", "CreateMutexA", (void *)hook_CreateMutexA);
             r2_log("multi: REV2_MULTI=1, CreateMutexA hook %s", real_CreateMutexA ? "installed" : "NOT installed (import not found)");
         }
-        if (hash_exe(exe_sha))
-            exe_ok = strcmp(exe_sha, R2_EXE_SHA256) == 0;
-        if (!exe_ok && r2_env("REV2_ANYEXE", v, sizeof v) && v[0] == '1') {
-            exe_ok = 1;
-            r2_log("gate: REV2_ANYEXE=1, hooks installed on an unsupported exe");
+        if (!hash_exe(exe_sha))
+            exe_sha[0] = 0;
+        {
+            /* The gate (0.3.3): the table of known builds (exe_variants.h), else the player's consent for exactly this hash (coop\anyexe.txt, written by the installer), else the lab switch. */
+            char consent[512];
+            size_t cn = read_consent(consent, sizeof consent);
+            char lab[8];
+            int lab_any = r2_env("REV2_ANYEXE", lab, sizeof lab) && lab[0] == '1';
+            gate_t gt = gate_decide(exe_sha, consent, cn, lab_any);
+            exe_ok = gt.mode != GATE_OFF;
+            if (gt.mode == GATE_TABLE)
+                r2_log("gate: exe sha256 %s -> %s (%s)%s", exe_sha, gt.variant->name, gt.variant->kind,
+                       gt.variant->caveat ? ": not the build the mod was made on, a licensed copy is recommended and stable work is not guaranteed" : "");
+            else if (gt.mode == GATE_CONSENT)
+                r2_log("gate: unknown exe sha256 %s run by consent (coop\\anyexe.txt names this hash): the hooks check their own bytes and stay off where they differ", exe_sha);
+            else if (gt.mode == GATE_LAB)
+                r2_log("gate: exe sha256 %s, REV2_ANYEXE=1: hooks installed on an unsupported exe", exe_sha[0] ? exe_sha : "(unreadable)");
+            else
+                r2_log("gate: exe sha256 %s -> %s, forwarding only", exe_sha[0] ? exe_sha : "(unreadable)",
+                       gt.variant ? "known build, switched off in the table" : "UNSUPPORTED (not in the table, no consent recorded)");
+            exe_name = gt.variant ? gt.variant->name : gt.mode == GATE_CONSENT ? "unknown build, by consent" : gt.mode == GATE_LAB ? "unknown build, lab" : "";
+            exe_caveat = gt.mode == GATE_CONSENT || gt.mode == GATE_LAB || (gt.variant && gt.variant->caveat);
         }
-        r2_log("gate: exe sha256 %s -> %s", exe_sha[0] ? exe_sha : "(unreadable)", exe_ok ? "supported build 3658995" : "UNSUPPORTED, forwarding only");
         if (exe_ok) {
             pass_through = r2_env("REV2_PASS", v, sizeof v) && v[0] == '1';
             if (pass_through)

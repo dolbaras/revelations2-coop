@@ -2,10 +2,11 @@
 # A stand-in game folder (a tiny fake rerev2.exe, -AnyExe) is made under %TEMP%; the supported exe's hash check is tested on a fake exe (refusal) and,
 # when -RealGame <folder> is given, on a COPY of the real rerev2.exe (the folder must be a throw-away one that holds only that copy: the test refuses a Steam
 # library folder and anything named game; it never writes there, it copies the exe into its own temp folder).
+# -RepackGame <folder>: also installs / removes a COPY of the real unwrapped exe (a copy of the game with the Steam wrapper removed; only its rerev2.exe is read) through the table.
 # -OldZip <released zip>: also the update from that release (its own launcher) to a 0.2.0 package of this tree (section 4b).
 # -Online: also reads the real GitHub (read only) and downloads the published v0.1.1 zip once through this tree's launcher (section 4c).
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_installer.ps1 [-RealGame <folder with a copy of the real rerev2.exe>] [-OldZip <zip>] [-Online] [-Keep]
-param([string] $RealGame = "", [switch] $Keep, [string] $OldZip = "", [switch] $Online)
+param([string] $RealGame = "", [switch] $Keep, [string] $OldZip = "", [switch] $Online, [string] $RepackGame = "")
 if ($OldZip) { if (-not (Test-Path -LiteralPath $OldZip -PathType Leaf)) { throw "-OldZip: $OldZip not found" }; $OldZip = (Resolve-Path -LiteralPath $OldZip).Path }
 if ($RealGame -and ($RealGame -match '\\steamapps\\' -or (Split-Path $RealGame -Leaf) -ieq "game" -or $RealGame -match 'RESIDENT EVIL REVELATIONS')) { throw "-RealGame must be a throw-away folder with a copy of rerev2.exe, not a game install: $RealGame" }
 $ErrorActionPreference = "Stop"
@@ -60,6 +61,7 @@ if (-not (Test-Path $dll)) {
     $pkgRoot = Join-Path $base "repo"
     New-Item -ItemType Directory -Force (Join-Path $pkgRoot "native\build") | Out-Null
     Copy-Item $tools (Join-Path $pkgRoot "tools") -Recurse; Copy-Item (Join-Path $root "docs") (Join-Path $pkgRoot "docs") -Recurse; Copy-Item (Join-Path $root "LICENSE") $pkgRoot
+    Copy-Item (Join-Path $root "native\exe_variants.h") (Join-Path $pkgRoot "native\exe_variants.h")
     [IO.File]::WriteAllBytes((Join-Path $pkgRoot "native\build\dinput8.dll"), [Text.Encoding]::ASCII.GetBytes("MZ stand-in RE Revelations 2 co-op proxy 0.0"))
 }
 $dist = Join-Path $base "dist"
@@ -90,13 +92,14 @@ Check ($en.Count -ge 18 -and $bs.Count -eq 0 -and ($en -contains "files/coop/coo
 $x1 = Join-Path $base "x1"; $x2 = Join-Path $base "x2"
 [IO.Compression.ZipFile]::ExtractToDirectory($zip1, $x1); [IO.Compression.ZipFile]::ExtractToDirectory($zip2, $x2)
 $names = (Get-ChildItem $x1 -File | ForEach-Object Name) -join ","
-Check ($names -eq "coop-installer.ps1,coop-texts.ps1,ENET-LICENSE.txt,Install Co-op.bat,LICENSE.txt,README-COOP.txt") "the zip root: $names"
+Check ($names -eq "coop-installer.ps1,coop-texts.ps1,ENET-LICENSE.txt,exe-variants.h,Install Co-op.bat,LICENSE.txt,README-COOP.txt") "the zip root: $names"
 # (0.3.0) the players' readme names the package's version (@VERSION@ filled in), ENet's notice ships beside the mod's license
 $rm1 = Get-Content -LiteralPath (Join-Path $x1 "README-COOP.txt") -TotalCount 1
 Check ($rm1 -eq "Resident Evil Revelations 2 Co-op - version 0.0.1") "README-COOP.txt first line: $rm1"
 Check (-not ((Get-Content -LiteralPath (Join-Path $x2 "files\coop\README.txt") -Raw).Contains("@VERSION@"))) "coop\README.txt of the 0.0.2 package has no @VERSION@ left"
 Check ((Get-Content -LiteralPath (Join-Path $x1 "ENET-LICENSE.txt") -Raw) -match "Lee Salzman") "ENET-LICENSE.txt holds the notice of ENet"
 $payload1 = @(Get-Content (Join-Path $x1 "files\coop\payload.txt"))
+Check ($payload1 -contains "coop\exe-variants.h") "payload list names the table of known exe builds (coop\exe-variants.h)"
 Check ((($payload1 -contains "dinput8.dll") -and ($payload1 -contains "coop\coop-launcher.ps1") -and ($payload1 -contains "coop\coop-installer.ps1") -and ($payload1 -contains "coop\coop-texts.ps1") -and ($payload1 -contains "coop\version.txt"))) "payload list names the DLL, launcher, installer, texts and version"
 Check ((($payload1 -contains "coop\collect-logs.ps1") -and ($payload1 -contains "coop\Collect logs.bat") -and ($payload1 -contains "coop\log-profiles\revelations2.psd1"))) "payload list names the log collector, its .bat and the profile"
 Check ((Get-Content -LiteralPath (Join-Path $x1 "files\coop\Collect logs.bat") -Raw) -like '*collect-logs.ps1" -Mod revelations2*') "Collect logs.bat runs collect-logs.ps1 -Mod revelations2"
@@ -126,6 +129,7 @@ $clean = Snap $g
 Run-PS (Join-Path $x1 "coop-installer.ps1") @("-Quiet", "-Game", "`"$g`"", "-Lang", "en")
 Check ($script:exit -eq 1) "a fake exe is refused (exit $($script:exit))"
 Check ($script:out -match "3658995") "the refusal names the supported build"
+Check ($script:out -match (Sha (Join-Path $g "rerev2.exe"))) "the refusal gives the exe's SHA-256 (to send in a report)"
 Check (Same $clean (Snap $g)) "nothing changed after the refusal"
 
 # 2. install 0.0.1 over a game that has a foreign dinput8.dll
@@ -581,6 +585,128 @@ Check ($script:exit -eq 0) "uninstall from it"
 Check ((Test-Path -LiteralPath (Join-Path $g3 "rev2_coop\shots\shot0001_012.bmp")) -and (Test-Path -LiteralPath (Join-Path $g3 "rev2_coop.notes.log")) -and
        -not (Test-Path -LiteralPath (Join-Path $g3 "rev2_coop.log"))) "uninstall keeps a screenshot and rev2_coop.notes.log, removes rev2_coop.log"
 
+
+# 7b. (0.3.3) other versions of the game: the table of known builds (native\exe_variants.h, read by the proxy and by the installer), the player's "install anyway" for
+#     an exe that is not in it (coop\anyexe.txt, read by the proxy), the finder for copies that are no Steam install. Stand-in folders only: the table of a copy of
+#     this package is replaced by one that names the stand-in exe, so no 18 MB exe is needed (-RepackGame <folder> also runs a COPY of the real unwrapped exe).
+$varHeader = Join-Path $root "native\exe_variants.h"
+$hdrText = Get-Content -LiteralPath $varHeader -Raw
+$hdrRows = @([regex]::Matches($hdrText, 'R2_VARIANT\("([0-9a-f]{64})",\s*"([^"]*)",\s*"([^"]*)",\s*(\d),\s*(\d)\)'))
+Check ($hdrRows.Count -ge 2) "native\exe_variants.h: $($hdrRows.Count) builds in the table"
+Check ((Sha (Join-Path $x2 "exe-variants.h")) -eq (Sha $varHeader) -and (Sha (Join-Path $x2 "files\coop\exe-variants.h")) -eq (Sha $varHeader)) "the package carries the proxy's table as it is (exe-variants.h at the root and in coop\)"
+# the installer reads the same rows (its own Read-Variants, taken out of the shipped script)
+$insAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $x2 "coop-installer.ps1"), [ref]$null, [ref]$null)
+$rvAst = $insAst.Find({ param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq "Read-Variants" }, $true)
+Check ($null -ne $rvAst) "installer: Read-Variants is there"
+if ($rvAst) {
+    . ([scriptblock]::Create($rvAst.Extent.Text))
+    $here = $x2; $script:variants = $null
+    . (Join-Path $tools "coop-texts.ps1")
+    $tab = Read-Variants
+    $same = ($tab.Count -eq $hdrRows.Count)
+    foreach ($r in $hdrRows) {
+        $e = $tab[$r.Groups[1].Value.ToUpper()]
+        if (-not $e -or $e.name -ne $r.Groups[2].Value -or $e.kind -ne $r.Groups[3].Value -or $e.level -ne [int]$r.Groups[4].Value -or $e.caveat -ne [int]$r.Groups[5].Value) { $same = $false }
+    }
+    Check $same "the installer reads exactly the rows of the proxy's table ($($tab.Count) of $($hdrRows.Count))"
+    $steamRow = $tab["55AC7D2BD80704C6A8A1FA7BD2371726ADBAA01AE0FDA056198FB042404367F9"]
+    Check ($steamRow -and $steamRow.kind -eq "steam" -and $steamRow.level -eq 2 -and $steamRow.caveat -eq 0) "the Steam build 3658995 is level 2 without the caveat"
+    $unwrRow = $tab["4C26BA8C7736DB96C2C2FC82AC96E8A1A942AE11A4BE75E70EC3EF1547BB4133"]
+    Check ($unwrRow -and $unwrRow.kind -eq "unwrapped" -and $unwrRow.level -ge 1 -and $unwrRow.caveat -eq 1) "the copy with the Steam wrapper removed is known, with the caveat"
+}
+# a package of this tree with a table that names the stand-in exe below (the exe of "variant game")
+$xv = Join-Path $base "xv"
+[IO.Compression.ZipFile]::ExtractToDirectory($zip2, $xv)
+function New-Table($path, $exeFile, $caveat, $kind) {
+    $h = Sha $exeFile
+    $other = "R2_VARIANT(`"" + ("0" * 64) + "`", `"another`", `"other`", 1, 0)"
+    Set-Content -LiteralPath $path -Encoding ASCII -Value @("R2_VARIANT(`"$($h.ToLower())`", `"stand-in build`", `"$kind`", 1, $caveat)", $other)
+}
+function Out-Wrote($g) { (Get-ChildItem -LiteralPath $g -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($g.Length + 1) }) }
+# (a) a known build with the caveat: installs without a question, the caveat is in the result, no consent file
+$gv = New-Game "variant game"
+New-Table (Join-Path $xv "exe-variants.h") (Join-Path $gv "rerev2.exe") 1 "unwrapped"
+$cleanV = Snap $gv
+Run-PS (Join-Path $xv "coop-installer.ps1") @("-Quiet", "-Game", "`"$gv`"", "-ShortcutDir", "`"$(Join-Path $base 'links var')`"", "-Lang", "en")
+Check ($script:exit -eq 0) "a known build (unwrapped, caveat) installs without -AnyExe and without a question (exit $($script:exit): $($script:out.Trim()))"
+Check ($script:out -match "licensed copy is recommended" -and $script:out -match "stable work is not guaranteed" -and $script:out -match (Sha (Join-Path $gv "rerev2.exe"))) "the result names the caveat and the exe's SHA-256"
+Check (-not (Test-Path -LiteralPath (Join-Path $gv "coop\anyexe.txt"))) "no consent file for a build of the table"
+$recV = Get-Content -LiteralPath (Join-Path $gv "coop\install.txt")
+Check (-not ($recV -match "anyexe")) "the install record has no anyexe.txt line"
+Run-PS (Join-Path $gv "coop\coop-installer.ps1") @("-Quiet", "-Uninstall", "-Game", "`"$gv`"")
+Check (($script:exit -eq 0) -and (Same $cleanV (Snap $gv))) "uninstall: byte for byte the clean folder (steam_api.dll and every other file of the copy untouched)"
+# (b) a known build without the caveat (the Steam build's row): no note at all
+New-Table (Join-Path $xv "exe-variants.h") (Join-Path $gv "rerev2.exe") 0 "steam"
+Run-PS (Join-Path $xv "coop-installer.ps1") @("-Quiet", "-Game", "`"$gv`"", "-ShortcutDir", "`"$(Join-Path $base 'links var')`"", "-Lang", "en")
+Check (($script:exit -eq 0) -and $script:out -notmatch "licensed copy") "a build of the table without the caveat: no caveat note ($($script:out.Trim()))"
+Run-PS (Join-Path $gv "coop\coop-installer.ps1") @("-Quiet", "-Uninstall", "-Game", "`"$gv`"")
+Check (Same $cleanV (Snap $gv)) "uninstall again: clean"
+# (c) an exe that is not in the table: refused without the player's yes (nothing changes), the refusal gives the hash and the size
+Set-Content -LiteralPath (Join-Path $xv "exe-variants.h") -Encoding ASCII -Value @("R2_VARIANT(`"" + ("1" * 64) + "`", `"somebody else's`", `"other`", 1, 1)")
+$expSha = Sha (Join-Path $gv "rerev2.exe")
+Run-PS (Join-Path $xv "coop-installer.ps1") @("-Quiet", "-Game", "`"$gv`"", "-ShortcutDir", "`"$(Join-Path $base 'links var')`"", "-Lang", "en")
+Check ($script:exit -eq 1 -and $script:out -match $expSha -and $script:out -match "bytes" -and $script:out -match "3658995") "an unknown exe is refused in -Quiet mode, the message gives the SHA-256 and the size (exit $($script:exit))"
+Check (Same $cleanV (Snap $gv)) "nothing changed after that refusal"
+# (d) with the player's yes (-AcceptUnknownExe: what the window's 'Install anyway' button gives): installs, writes coop\anyexe.txt (listed in the record), result says why
+Run-PS (Join-Path $xv "coop-installer.ps1") @("-Quiet", "-AcceptUnknownExe", "-Game", "`"$gv`"", "-ShortcutDir", "`"$(Join-Path $base 'links var')`"", "-Lang", "en")
+Check ($script:exit -eq 0 -and $script:out -match "licensed copy is recommended") "an unknown exe with the player's yes installs, the result carries the caveat (exit $($script:exit))"
+$cf = Join-Path $gv "coop\anyexe.txt"
+$cfLines = if (Test-Path -LiteralPath $cf) { @(Get-Content -LiteralPath $cf) } else { @() }
+Check (($cfLines -contains ("sha256=" + $expSha.ToLower())) -and ($cfLines.Count -le 2)) "coop\anyexe.txt holds sha256=<this exe's hash> (lower case) and nothing else but a comment"
+Check ((Get-Content -LiteralPath (Join-Path $gv "coop\install.txt")) -contains "file=coop\anyexe.txt") "the install record lists coop\anyexe.txt"
+Check ((Sha (Join-Path $gv "rerev2.exe")) -eq $expSha -and (Get-Content -LiteralPath (Join-Path $gv "steam_api.dll") -Raw) -eq "steam api") "rerev2.exe and steam_api.dll are untouched"
+# (e) an update (the launcher's run) over it: no question, the consent stays
+Run-PS (Join-Path $xv "coop-installer.ps1") @("-Quiet", "-NoShortcut", "-Game", "`"$gv`"", "-Lang", "en")
+Check ($script:exit -eq 0 -and (Test-Path -LiteralPath $cf)) "the update over it needs no new yes (the consent for this exe is on record)"
+# (f) the game updates and its exe changes: the old yes does not apply to the new exe
+$exeBak = [IO.File]::ReadAllBytes((Join-Path $gv "rerev2.exe"))
+[IO.File]::WriteAllText((Join-Path $gv "rerev2.exe"), "MZ fake game exe - another build")
+Run-PS (Join-Path $xv "coop-installer.ps1") @("-Quiet", "-NoShortcut", "-Game", "`"$gv`"", "-Lang", "en")
+Check ($script:exit -eq 1) "another exe than the one the player said yes to is refused again (exit $($script:exit))"
+[IO.File]::WriteAllBytes((Join-Path $gv "rerev2.exe"), $exeBak)
+# (g) the build joins the table later: the update drops the old consent file
+New-Table (Join-Path $xv "exe-variants.h") (Join-Path $gv "rerev2.exe") 1 "other"
+Run-PS (Join-Path $xv "coop-installer.ps1") @("-Quiet", "-NoShortcut", "-Game", "`"$gv`"", "-Lang", "en")
+Check ($script:exit -eq 0 -and -not (Test-Path -LiteralPath $cf)) "once the build is in the table an update removes the consent file"
+# (h) the uninstall of a consented install is byte for byte clean (the consent file goes with the rest)
+Run-PS (Join-Path $xv "coop-installer.ps1") @("-Quiet", "-AcceptUnknownExe", "-Game", "`"$gv`"", "-NoShortcut", "-Lang", "en")
+Set-Content -LiteralPath (Join-Path $xv "exe-variants.h") -Encoding ASCII -Value @("R2_VARIANT(`"" + ("1" * 64) + "`", `"somebody else's`", `"other`", 1, 1)")
+Run-PS (Join-Path $xv "coop-installer.ps1") @("-Quiet", "-AcceptUnknownExe", "-Game", "`"$gv`"", "-NoShortcut", "-Lang", "en")
+Check ((Test-Path -LiteralPath $cf)) "(an unknown exe again: the consent file is back)"
+Run-PS (Join-Path $gv "coop\coop-installer.ps1") @("-Quiet", "-Uninstall", "-Game", "`"$gv`"")
+Check (($script:exit -eq 0) -and (Same $cleanV (Snap $gv))) "uninstall of a consented install: byte for byte the clean folder, anyexe.txt gone"
+# (i) -RepackGame: a COPY of the real unwrapped exe (read only), no stand-in table: known through the real table
+if ($RepackGame) {
+    $rp = Join-Path $base "repack copy"
+    New-Item -ItemType Directory -Force $rp | Out-Null
+    Copy-Item (Join-Path $RepackGame "rerev2.exe") (Join-Path $rp "rerev2.exe")
+    Check ((Sha (Join-Path $rp "rerev2.exe")) -eq "4C26BA8C7736DB96C2C2FC82AC96E8A1A942AE11A4BE75E70EC3EF1547BB4133") "the copy of the real unwrapped exe has the table's hash"
+    $cleanRp = Snap $rp
+    Run-PS (Join-Path $x2 "coop-installer.ps1") @("-Quiet", "-Game", "`"$rp`"", "-ShortcutDir", "`"$(Join-Path $base 'links repack')`"", "-Lang", "en")
+    Check ($script:exit -eq 0 -and $script:out -match "licensed copy is recommended" -and -not (Test-Path -LiteralPath (Join-Path $rp "coop\anyexe.txt"))) "the real unwrapped exe installs through the table (no question, caveat shown, no consent file)"
+    Run-PS (Join-Path $rp "coop\coop-installer.ps1") @("-Quiet", "-Uninstall", "-Game", "`"$rp`"")
+    Check (($script:exit -eq 0) -and (Same $cleanRp (Snap $rp))) "uninstall leaves only the exe copy, byte for byte"
+}
+# (j) the finder: a copy that is no Steam install (a repack folder with steam_emu.ini, no appmanifest) in a place such copies are put; other folders are left out
+$fa = $insAst.Find({ param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq "Find-Games" }, $true)
+$ta = $insAst.Find({ param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq "Test-Game" }, $true)
+Check ($null -ne $fa -and $null -ne $ta) "installer: Find-Games and Test-Game are there"
+if ($fa -and $ta) {
+    . ([scriptblock]::Create($ta.Extent.Text)); . ([scriptblock]::Create($fa.Extent.Text))
+    $scan = Join-Path $base "scan"
+    $repackDir = Join-Path $scan "Games\Resident Evil Revelations 2 [repack]"
+    New-Item -ItemType Directory -Force $repackDir, (Join-Path $scan "Games\Some Other Game"), (Join-Path $scan "Games\Resident Evil Revelations 2 empty") | Out-Null
+    Set-Content -LiteralPath (Join-Path $repackDir "rerev2.exe") -Value "MZ fake"
+    Set-Content -LiteralPath (Join-Path $repackDir "steam_emu.ini") -Value "[Settings]"
+    Set-Content -LiteralPath (Join-Path $scan "Games\Some Other Game\rerev2.exe") -Value "MZ other game's exe"
+    $env:REV2_COOP_SCAN_ROOTS = (Join-Path $scan "Games")
+    $here = $x2; $script:setupDir = $null; $script:STEAM_APP = "287290"
+    $foundList = @(Find-Games)
+    Remove-Item Env:\REV2_COOP_SCAN_ROOTS -ErrorAction SilentlyContinue
+    Check ($foundList -contains $repackDir) "the finder lists a repack folder without appmanifest (name like the game, holds rerev2.exe)"
+    Check (-not ($foundList | Where-Object { $_ -like "*Some Other Game*" -or $_ -like "*empty*" })) "the finder leaves out a folder not named like the game and one without rerev2.exe"
+}
+
 # 8. the real exe's hash is accepted (read only), a changed exe is refused
 if ($RealGame) {
     $exe = Join-Path $RealGame "rerev2.exe"
@@ -631,6 +757,30 @@ foreach ($lg in "en", "ru", "ja", "ko", "zh-tw", "pt-br") {
 Check ($st["en|ui good"][4] -eq "Install" -and $st["en|ui installed"][4] -eq "Reinstall" -and $st["en|ui older"][4] -eq "Update") "ui en : Install / Reinstall / Update"
 Check ($st["ja|ui good"][3] -match "rerev2|Resident Evil") "ui ja : the info text is in Japanese and names the game"
 
+# 8c. (0.3.3) the window's page 1 for an exe that is not in the table ("Install anyway", its hash and size on the page) and for a known build with the caveat, 12 languages
+$xw = Join-Path $base "xw"
+[IO.Compression.ZipFile]::ExtractToDirectory($zip2, $xw)
+$uiU = New-Game "ui unknown"; $uiK = New-Game "ui variant"
+New-Table (Join-Path $xw "exe-variants.h") (Join-Path $uiK "rerev2.exe") 1 "unwrapped"
+$env:REV2_COOP_UI_SELFTEST = (@($uiU, $uiK) -join ";")
+$o = Join-Path $base "ui2-out.txt"
+$p = Start-Process powershell -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$(Join-Path $xw 'coop-installer.ps1')`"") -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $o
+Remove-Item Env:\REV2_COOP_UI_SELFTEST -ErrorAction SilentlyContinue
+$ui2Lines = @(Get-Content -LiteralPath $o -Encoding UTF8 | Where-Object { $_ -like "UI|*" })
+Check ($p.ExitCode -eq 0 -and $ui2Lines.Count -eq 12 * 2) "the window code runs for 12 languages x 2 states of the exe ($($ui2Lines.Count) lines, exit $($p.ExitCode))"
+$st2 = @{}
+foreach ($l in $ui2Lines) { $f = $l.Split("|"); $st2["$($f[1])|$([IO.Path]::GetFileName($f[2]))"] = $f }
+$shaU = Sha (Join-Path $uiU "rerev2.exe")
+. (Join-Path $tools "coop-texts.ps1")
+foreach ($lg in $script:LANGS.Keys) {
+    $u = $st2["$lg|ui unknown"]; $k = $st2["$lg|ui variant"]
+    $txU = $script:TEXTS[$lg]
+    Check ($u -and $u[6] -eq "True" -and $u[4] -eq $txU["anyway"] -and $u[4] -ne $txU["install"]) "ui $lg : an unknown exe enables the button, which says '$($txU['anyway'])'"
+    Check ($u -and $u[3].Contains($shaU)) "ui $lg : an unknown exe's page shows its SHA-256"
+    Check ($u -and $u[3] -match "revelations2-coop/issues" -and $u[3] -match "Collect logs") "ui $lg : the page says where to send a report"
+    Check ($k -and $k[6] -eq "True" -and $k[4] -eq $txU["install"] -and $k[3].Contains(($txU["variantexe"] -replace "\|\|", " // "))) "ui $lg : a known build with the caveat shows the caveat and the plain Install button"
+}
+
 # 9. texts: 12 languages, the same keys and placeholders as English, nothing empty, translated
 # (i18n2) PowerShell takes U+2018 U+2019 U+201A U+201B as single quotes and U+201C U+201D U+201E as double ones: a typographic quote in a text can end its string and break the whole file
 foreach ($ps in "coop-texts.ps1", "installer.ps1", "launcher.ps1") {
@@ -676,22 +826,26 @@ if ($srAst) {
     $script:lang = $langWas
     Check ((Get-Content -LiteralPath (Join-Path $tools "launcher.ps1") -Raw) -match '\(Lt "failed"\) -f \$shown,') "launcher: the failure box shows Shown-Reason's text"
 }
-# the result page's text with the note about another mod's dinput8.dll fits its label (540 x 160 at 96 DPI, Segoe UI 10.5; measured without a window)
+# the result page's text with the notes (another mod's dinput8.dll, another game version) fits its label (540 x 270 at 96 DPI, Segoe UI 10.5; measured without a window)
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 $resFont = New-Object Drawing.Font("Segoe UI", 10.5)
 $tall = @()
 foreach ($lg in $script:LANGS.Keys) {
     foreach ($k in "asinote", "offnote") {
-        $txt = ($script:TEXTS[$lg]["done"] + "||||" + $script:TEXTS[$lg][$k]).Replace("||", "`n")
+        # (with the note about the game version below it: the longest result)
+        $txt = ($script:TEXTS[$lg]["done"] + "||||" + $script:TEXTS[$lg][$k] + "||||" + ($script:TEXTS[$lg]["othernote"] -f ("A" * 64))).Replace("||", "`n")
         $hgt = [Windows.Forms.TextRenderer]::MeasureText($txt, $resFont, (New-Object Drawing.Size(540, 2000)), [Windows.Forms.TextFormatFlags]::WordBreak).Height
-        if ($hgt -gt 160) { $tall += "$lg/$k $hgt px" }
+        if ($hgt -gt 270) { $tall += "$lg/$k $hgt px" }
     }
     # (ual-rev2) the removal's result with the note about another mod's dinput8.dll left in place
     $txt = ($script:TEXTS[$lg]["gone"] + "||||" + $script:TEXTS[$lg]["leftnote"]).Replace("||", "`n")
     $hgt = [Windows.Forms.TextRenderer]::MeasureText($txt, $resFont, (New-Object Drawing.Size(540, 2000)), [Windows.Forms.TextFormatFlags]::WordBreak).Height
-    if ($hgt -gt 160) { $tall += "$lg/leftnote $hgt px" }
+    if ($hgt -gt 270) { $tall += "$lg/leftnote $hgt px" }
+    $txt = ($script:TEXTS[$lg]["done"] + "||||" + ($script:TEXTS[$lg]["othernote"] -f ("A" * 64))).Replace("||", "`n")
+    $hgt = [Windows.Forms.TextRenderer]::MeasureText($txt, $resFont, (New-Object Drawing.Size(540, 2000)), [Windows.Forms.TextFormatFlags]::WordBreak).Height
+    if ($hgt -gt 270) { $tall += "$lg/othernote $hgt px" }
 }
-Check ($tall.Count -eq 0) "the result text with the dinput8.dll note fits its 160-px label in every language ($($tall -join ', '))"
+Check ($tall.Count -eq 0) "the result text with the dinput8.dll and game-version notes fits its 270-px label in every language ($($tall -join ', '))"
 # (i18n2) page 1 and the launcher's window in every language, measured the same way: the info text (found, have, what, need) in its 604 x 286 label, the
 # buttons (220 / 120 / 160 px), the launcher's update line in its 424 x 62 label
 $f10 = New-Object Drawing.Font("Segoe UI", 10); $f10b = New-Object Drawing.Font("Segoe UI", 10, [Drawing.FontStyle]::Bold)
@@ -703,7 +857,15 @@ foreach ($lg in $script:LANGS.Keys) {
     if ($tx.ContainsKey("net")) { $info += ""; $info += $tx["net"] }
     $hgt = [Windows.Forms.TextRenderer]::MeasureText(($info -join "`n"), $resFont, (New-Object Drawing.Size(604, 2000)), $wbf).Height
     if ($hgt -gt 286) { $big += "$lg info $hgt px" }
-    foreach ($b in @(@("remove", 220, $f10), @("cancel", 120, $f10), @("browse", 120, $f10), @("install", 160, $f10b), @("update", 160, $f10b), @("reinstall", 160, $f10b))) {
+    # (0.3.3) an exe that is not in the table: found + its own long text (with a 64-character hash and a size); a known build with the caveat: found + the caveat + the usual text. The label is 250 px high
+    # and the buttons start at 264 px below its top.
+    $infoU = @(([string][char]0x2714 + "  " + $tx["found"]), ([string][char]0x26A0 + "  " + ($tx["unknownexe"] -f ("A" * 64), "18,315,248")))
+    $hgt = [Windows.Forms.TextRenderer]::MeasureText(($infoU -join "`n"), $resFont, (New-Object Drawing.Size(604, 2000)), $wbf).Height
+    if ($hgt -gt 260) { $big += "$lg unknown-exe info $hgt px" }
+    $infoV = @(([string][char]0x2714 + "  " + $tx["found"]), ([string][char]0x26A0 + "  " + $tx["variantexe"]), ([string][char]0x2022 + "  " + ($tx["have"] -f "0.2.10", "0.3.10")), "", $tx["what"], "", $tx["need"])
+    $hgt = [Windows.Forms.TextRenderer]::MeasureText(($infoV -join "`n"), $resFont, (New-Object Drawing.Size(604, 2000)), $wbf).Height
+    if ($hgt -gt 260) { $big += "$lg variant info $hgt px" }
+    foreach ($b in @(@("remove", 220, $f10), @("cancel", 120, $f10), @("browse", 120, $f10), @("install", 200, $f10b), @("update", 200, $f10b), @("reinstall", 200, $f10b), @("anyway", 200, $f10b))) {
         $w = [Windows.Forms.TextRenderer]::MeasureText($tx[$b[0]], $b[2]).Width + 12
         if ($w -gt $b[1]) { $big += "$lg $($b[0]) $w px" }
     }
@@ -726,13 +888,11 @@ Check (@($shipped | Where-Object { $_ -match 'REV2_ACHBLOCK|REV2_CONSOLE|REV2_AN
 $launcherText = Get-Content -LiteralPath (Join-Path $x2 "files\coop\coop-launcher.ps1") -Raw -Encoding UTF8
 Check ($launcherText.Contains("api.github.com/repos/dolbaras/revelations2-coop/releases/latest") -and $launcherText.Contains("revelations2-coop-*.zip") -and
        $launcherText.Contains("https://github.com/dolbaras/revelations2-coop/releases/download/*")) "the launcher's feed: dolbaras/revelations2-coop, asset revelations2-coop-*.zip, download URL checked"
-# the exe's SHA-256 in the installer is the one of the mod's own gate (native\r2.h R2_EXE_SHA256)
+# (0.3.3) the installer has no exe hash of its own any more: the table is the proxy's (section 7b); nothing else may hold the Steam build's hash
+$insText = Get-Content -LiteralPath (Join-Path $x2 "coop-installer.ps1") -Raw -Encoding UTF8
+Check ($insText -notmatch '(?i)55AC7D2BD80704C6') "the installer script does not repeat the Steam build's hash (one table: native\exe_variants.h)"
 $r2h = Join-Path $root "native\r2.h"
-if (Test-Path -LiteralPath $r2h) {
-    $m = [regex]::Match((Get-Content -LiteralPath $r2h -Raw), '#define R2_EXE_SHA256 "([0-9a-f]{64})"')
-    $ins = [regex]::Match((Get-Content -LiteralPath (Join-Path $x2 "coop-installer.ps1") -Raw -Encoding UTF8), '\$script:EXE_SHA = "([0-9A-F]{64})"')
-    Check ($m.Success -and $ins.Success -and $m.Groups[1].Value.ToUpper() -eq $ins.Groups[1].Value) "the installer's exe hash is the mod's own gate (r2.h R2_EXE_SHA256)"
-}
+if (Test-Path -LiteralPath $r2h) { Check ((Get-Content -LiteralPath $r2h -Raw) -notmatch '(?i)R2_EXE_SHA256|55ac7d2bd80704c6') "native\r2.h does not repeat the hash either" }
 
 # 11. the launcher starts the game through Steam (steam://rungameid/287290) for a Steam folder, by the exe otherwise (no game is started: -NoStart)
 $steamRoot = Join-Path $base "steam lib\steamapps"

@@ -2,10 +2,10 @@
 #define R2_H
 #include <windows.h>
 
-#define R2_VERSION "0.3.2"
+#define R2_VERSION "0.3.3"
 
-/* The Steam build 3658995 exe (SHA-256 of rerev2.exe on disk). Any other exe: the proxy only forwards DirectInput8Create. */
-#define R2_EXE_SHA256 "55ac7d2bd80704c6a8a1fa7bd2371726adbaa01ae0fda056198fb042404367f9"
+/* The builds of rerev2.exe the mod knows: native/exe_variants.h (SHA-256 of rerev2.exe on disk), the rule is native/gate_logic.h. An exe that is neither in the
+ * table nor named by the player's consent file (coop\anyexe.txt): the proxy only forwards DirectInput8Create. */
 
 /* proxy.c: log, environment, import-table and vtable patches, safe reads */
 void r2_log(const char *fmt, ...);
@@ -13,8 +13,10 @@ int r2_env(const char *name, char *out, int size);
 void *r2_patch_iat(const char *dll, const char *func, void *hook);   /* returns the previous pointer; remembered for r2_iat_check */
 void *r2_patch_vtable(void *obj, int index, void *hook);
 int r2_safe_read(const void *addr, void *out, unsigned size);        /* 1 = all bytes read (ReadProcessMemory on ourselves) */
-int r2_exe_ok(void);                                                   /* 1 = the exe is the supported build */
+int r2_exe_ok(void);                                                   /* 1 = the hooks run on this exe (a build of the table, the player's consent, or the lab switch) */
 const char *r2_exe_sha(void);
+const char *r2_exe_name(void);                                         /* the table's name of the build, "unknown build, by consent", ... ("" = off) */
+int r2_exe_caveat(void);                                               /* 1 = not the build the mod was made on (the README caveat applies) */
 void r2_iat_check(const char *when);                                   /* logs and repairs patched import slots the stub/game changed */
 /* How "unpacked" .text is: ratio of 0x00 and 0x8B bytes in a sample (code ~ 12% / 6%, an encrypted body ~ 0.4% each). */
 void r2_text_state(char *out, int size);

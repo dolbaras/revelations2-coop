@@ -1,5 +1,6 @@
 ﻿# Build the release archive dist\revelations2-coop-<version>.zip:
-#   Install Co-op.bat + coop-installer.ps1 + coop-texts.ps1   the installer (backs up what it replaces, uninstalls; 12 languages)
+#   Install Co-op.bat + coop-installer.ps1 + coop-texts.ps1 + exe-variants.h   the installer (backs up what it replaces, uninstalls; 12 languages; the table of
+#                                                            known rerev2.exe builds = native\exe_variants.h, the proxy's own table)
 #   files\                                                   what goes into the game folder (dinput8.dll = the mod's proxy, coop\coop-launcher.ps1 behind the
 #                                                            shortcut, coop\coop-installer.ps1 + coop-texts.ps1 for the uninstaller, coop\version.txt,
 #                                                            coop\collect-logs.ps1 + coop\log-profiles\*.psd1 + coop\Collect logs.bat: the bug-report
@@ -52,6 +53,10 @@ Copy-Item (Join-Path $PSScriptRoot "launcher.ps1") (Join-Path $files "coop\coop-
 # The installer and its texts also go into the game folder (coop\): "Uninstall Co-op.bat" runs them.
 Copy-Item (Join-Path $PSScriptRoot "installer.ps1") (Join-Path $files "coop\coop-installer.ps1")
 Copy-Item (Join-Path $PSScriptRoot "coop-texts.ps1") (Join-Path $files "coop\coop-texts.ps1")
+# The table of known rerev2.exe builds: the proxy's own source (native\exe_variants.h), which the installer reads with a regular expression (0.3.3).
+$variants = Join-Path $root "native\exe_variants.h"
+if (-not (Test-Path -LiteralPath $variants)) { throw "native\exe_variants.h missing (the table of known rerev2.exe builds)" }
+Copy-Item -LiteralPath $variants (Join-Path $files "coop\exe-variants.h")
 # The players' readme carries the version (@VERSION@ in docs\release-readme.txt), so it cannot go out with the number of an older release.
 $readme = Get-Content -LiteralPath (Join-Path $root "docs\release-readme.txt") -Raw
 if (-not $readme.Contains("@VERSION@")) { throw "docs\release-readme.txt has no @VERSION@ (its first line names the version)" }
@@ -76,6 +81,7 @@ Set-Content -Path (Join-Path $files "coop\payload.txt") -Value (@($list) + "coop
 # Installer at the archive's root (the launcher runs <zip>\coop-installer.ps1 -Game <folder> -AutoClose -NoShortcut)
 Copy-Item (Join-Path $PSScriptRoot "installer.ps1") (Join-Path $stage "coop-installer.ps1")
 Copy-Item (Join-Path $PSScriptRoot "coop-texts.ps1") (Join-Path $stage "coop-texts.ps1")
+Copy-Item -LiteralPath $variants (Join-Path $stage "exe-variants.h")
 Set-Content -Path (Join-Path $stage "Install Co-op.bat") -Encoding ASCII `
     -Value '@start "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0coop-installer.ps1" %*'
 Set-Content -Path (Join-Path $stage "README-COOP.txt") -Value $readme -Encoding ASCII -NoNewline

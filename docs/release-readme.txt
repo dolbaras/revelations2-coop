@@ -49,8 +49,17 @@ files next to rerev2.exe), puts the backed-up files back and removes the shortcu
 it, and the co-op save and the settings file stay in %LOCALAPPDATA%\CAPCOM\RESIDENT EVIL REVELATIONS2 (rev2_coop_save_<number>.dat and .rec, rev2_coop.ini;
 delete them by hand if you want them gone); screenshots you took with the mod stay in rev2_coop\shots.
 
-Needs: the Steam version of Resident Evil Revelations 2, build 3658995 (the installer checks rerev2.exe and refuses any other one), Windows 10 or 11,
+Needs: the Steam version of Resident Evil Revelations 2, build 3658995 (the version the mod is made and tested on), Windows 10 or 11,
 PowerShell 5.1 (part of Windows). Direct connection by IP: the host needs inbound UDP port 28410 (Windows asks once to allow the game through its firewall).
+
+Other versions of the game (0.3.3)
+- A licensed copy is recommended; on other versions stable work is not guaranteed.
+- The installer knows two builds of rerev2.exe: the Steam build 3658995 and a copy of it with the Steam wrapper removed from the exe (the game code is the same,
+  compared byte for byte). For any other rerev2.exe the installer shows its SHA-256 and size and asks "Install anyway?"; with a yes the mod is installed and
+  switches itself off wherever the game does not match the bytes it expects. The yes is kept in coop\anyexe.txt for exactly that exe (a game update that changes
+  the exe asks again). The installer also looks for such copies in the Games folders of your drives. It never touches steam_api.dll or any other file of the game.
+- Steam friends need the Steam client: on a copy that has no real Steam use the host's IP address.
+- If something does not work on another version, send the SHA-256 shown by the installer and the zip of coop\Collect logs.bat (see "Reporting a bug").
 
 Limits
 - Continue in the room (0.3.1) was checked on two PCs in both halves of Episode 2, The Struggle and Little Miss; not yet in Episodes 3 and 4.

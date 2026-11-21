@@ -205,6 +205,9 @@ if ./build/test_resil.exe > build/test_resil.txt; then tail -1 build/test_resil.
 # reason of coop_steam.c, and (with the game folder) the caption the game itself shows in each language
 "$ZIG" cc $CF -o build/test_lang.exe test_lang.c ../native/lobby_text.c
 if ./build/test_lang.exe "${ARC%/nativePCNext/*}" > build/test_lang.txt; then tail -2 build/test_lang.txt; else grep "^FAIL" build/test_lang.txt; tail -1 build/test_lang.txt; echo "FAIL: test_lang"; exit 1; fi
+# 0.3.3 the exe gate (native/exe_variants.h + native/gate_logic.h): the table of known builds, the player's consent file, the lab switch
+"$ZIG" cc $CF -o build/test_gate_exe.exe test_gate_exe.c
+if ./build/test_gate_exe.exe > build/test_gate_exe.txt; then tail -1 build/test_gate_exe.txt; else grep "^FAIL" build/test_gate_exe.txt; tail -1 build/test_gate_exe.txt; echo "FAIL: test_gate_exe"; exit 1; fi
 # 0.2.0 the chain rule (native/chain_logic.h): an Ultimate ASI Loader or a copy of the mod as dinput8_real.dll is never loaded, a plain wrapper is.
 # Real files when present: the system's 32-bit dinput8.dll (load), the mod's own build (copy of the mod), UAL_FILES="<dll>;<dll>" (loaders, not in the repository)
 "$ZIG" cc $CF -o build/test_chain.exe test_chain.c

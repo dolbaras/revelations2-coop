@@ -195,7 +195,7 @@ static cs_t *net_session(void)
     }
     c.name = g_name;
     c.want_char = CP_CHAR_NONE;
-    snprintf(sha, sizeof sha, "%s", r2_exe_sha());
+    snprintf(sha, sizeof sha, "%s", gate_build_tag(r2_exe_sha()));   /* 0.3.3: an unwrapped copy of the Steam build counts as that build */
     for (int i = 0; i < 8 && strlen(sha) >= (size_t)(2 * i + 2); i++) {
         char b[3] = {sha[2 * i], sha[2 * i + 1], 0};
         c.exe_tag[i] = (uint8_t)strtoul(b, NULL, 16);
